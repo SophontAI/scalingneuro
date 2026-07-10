@@ -1,0 +1,16 @@
+# Local credentials
+.env
+.env.*
+!.env.example
+
+# Local neuroimaging inputs (never publish or commit without explicit clearance)
+*.nii
+*.nii.gz
+
+# Cloudflare and package-manager artifacts
+.wrangler/
+node_modules/
+dist/
+
+# macOS
+.DS_Store

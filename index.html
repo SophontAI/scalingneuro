@@ -1,0 +1,315 @@
+<!doctype html>
+<html lang="en" data-theme="atlas">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Scaling Neuro — An Open Data Commons for Brain Foundation Models</title>
+  <meta name="description" content="A community-led plan to turn prospectively consented structural and functional MRI into an open, privacy-first training resource for brain foundation models." />
+  <meta name="theme-color" content="#29203c" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&amp;family=EB+Garamond:ital,wght@0,400;0,500;0,600;0,700;1,400;1,500;1,600&amp;family=JetBrains+Mono:wght@400;500&amp;family=Patrick+Hand&amp;family=Space+Grotesk:wght@400;500;600;700&amp;display=swap" rel="stylesheet" />
+  <script>
+    try {
+      const savedTheme = localStorage.getItem('scaling-neuro-theme');
+      const migratedTheme = ({ signal: 'whiteboard', afterimage: 'whiteboard', lab: 'fieldnote' })[savedTheme] || savedTheme;
+      if (['atlas', 'whiteboard', 'fieldnote'].includes(migratedTheme)) document.documentElement.dataset.theme = migratedTheme;
+    } catch (_) {}
+  </script>
+  <link rel="stylesheet" href="styles.css?v=11" />
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🧠</text></svg>" />
+  <script type="importmap">
+  { "imports": {
+      "three": "https://cdn.jsdelivr.net/npm/three@0.161.0/build/three.module.js",
+      "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.161.0/examples/jsm/"
+  }}
+  </script>
+</head>
+<body>
+  <a class="skip-link" href="#main-content">Skip to content</a>
+  <!-- ============ NAV ============ -->
+  <header class="nav" id="nav">
+    <a class="brand" href="#top">
+      <span class="brand-mark"><svg viewBox="0 0 28 28" width="22" height="22"><use href="#logo-brain"/></svg></span>
+      Scaling&nbsp;Neuro
+    </a>
+    <nav class="nav-links" aria-label="Primary">
+      <a href="#top">Scale</a>
+      <a href="#pipeline">Pipeline</a>
+      <a href="#vault">Explorer</a>
+      <a href="#contribute">Contribute</a>
+    </nav>
+    <a class="btn btn-sage" href="#contribute">Pilot the script</a>
+  </header>
+
+  <aside class="theme-switcher" aria-label="Try a visual direction">
+    <span class="theme-switcher-label">Try the look</span>
+    <div class="theme-options">
+      <button type="button" class="theme-option is-active" data-theme-value="atlas" aria-pressed="true">
+        <span class="theme-dot theme-dot-atlas"></span><span>Atlas</span>
+      </button>
+      <button type="button" class="theme-option" data-theme-value="whiteboard" aria-pressed="false">
+        <span class="theme-dot theme-dot-whiteboard"></span><span>Whiteboard</span>
+      </button>
+      <button type="button" class="theme-option" data-theme-value="fieldnote" aria-pressed="false">
+        <span class="theme-dot theme-dot-fieldnote"></span><span>Fieldnote</span>
+      </button>
+    </div>
+  </aside>
+
+  <main id="main-content">
+    <!-- ============ HERO ============ -->
+    <section class="band band-plum hero" id="top">
+      <canvas id="neuralCanvas" aria-hidden="true"></canvas>
+      <div class="wrap hero-grid">
+        <div class="hero-copy">
+          <div class="label hero-eyebrow reveal">Academic-led infrastructure for open neuroimaging</div>
+          <h1 class="hero-statement reveal">The next MRI dataset already exists—across our institutions.</h1>
+          <p class="hero-para reveal">
+            Our CortexMAE work found strict power-law improvement as open fMRI pretraining data grew. Scaling Neuro gives US academic labs a low-friction, institution-governed path to build that shared commons together.
+          </p>
+          <p class="hero-provenance reveal">Built by academic neuroimaging researchers behind <a href="https://medarc-ai.github.io/mindeye/" target="_blank" rel="noopener">MindEye</a>, <a href="https://arxiv.org/abs/2510.13768" target="_blank" rel="noopener">CortexMAE</a>, and <a href="https://github.com/MedARC-AI/brainmarks" target="_blank" rel="noopener">Brainmarks</a></p>
+          <div class="hero-cta reveal">
+            <a class="btn btn-sage" href="#contribute">How labs contribute</a>
+            <a class="hero-text-link" href="#vault">Explore a scan <span aria-hidden="true">→</span></a>
+          </div>
+        </div>
+
+        <figure class="hero-scale reveal" aria-labelledby="scale-title" aria-describedby="scale-note">
+          <div class="scale-kicker">
+            <span>THE SCALE OPPORTUNITY</span>
+            <span>ONE YEAR</span>
+          </div>
+          <h2 id="scale-title">One year can exceed decades of shared data.</h2>
+
+          <div class="scale-bars" role="img" aria-label="Three flagship imaging sources represent 151,787 participant records. Six academic medical centers operating at Boston University's reported annual MRI volume would collect 165,462 exams in one year.">
+            <div class="scale-bar-group">
+              <div class="scale-bar-label"><span>UKB + OpenNeuro + HCP</span><strong>151,787</strong></div>
+              <div class="scale-track">
+                <div class="scale-reference">
+                  <i class="scale-ukb"></i><i class="scale-openneuro"></i><i class="scale-hcp"></i>
+                </div>
+              </div>
+              <div class="scale-key" aria-hidden="true"><span>UKB&nbsp;100k</span><span>OpenNeuro&nbsp;50.7k</span><span>HCP&nbsp;1.1k</span></div>
+            </div>
+
+            <div class="scale-bar-group scale-bar-year">
+              <div class="scale-bar-label"><span>6 centers · 1 year</span><strong>165,462</strong></div>
+              <div class="scale-track">
+                <div class="scale-network"><i></i><i></i><i></i><i></i><i></i><i></i></div>
+                <div class="scale-threshold"><span>today</span></div>
+              </div>
+            </div>
+          </div>
+
+          <div class="scaling-law" role="img" aria-label="A CortexMAE-style scaling curve shows the performance frontier attainable with public data today as a solid line, then extends as a dotted line toward the lower loss that coordinated sharing across academic institutions could make possible.">
+            <div class="plot-y"><span>reconstruction loss</span><b>↓</b></div>
+            <svg viewBox="0 0 520 158" aria-hidden="true">
+              <path class="plot-grid" d="M28 20H504M28 70H504M28 120H504" />
+              <path class="plot-axis" d="M28 12V132H510" />
+              <path class="plot-curve" d="M44 29C108 52 174 76 270 96" />
+              <path class="plot-forecast" d="M270 96C344 111 419 126 492 137" />
+              <path class="plot-frontier" d="M270 17V132" />
+              <g class="plot-points">
+                <circle cx="52" cy="32" r="4"/><circle cx="112" cy="53" r="4"/><circle cx="178" cy="77" r="4"/><circle cx="270" cy="96" r="6" class="plot-current"/>
+              </g>
+              <circle cx="492" cy="137" r="5" class="plot-future"/>
+              <text x="42" y="151">PUBLIC DATA</text>
+              <text x="361" y="151">SHARED INSTITUTIONAL DATA</text>
+              <text class="plot-note plot-note-now" x="182" y="35">PUBLIC FRONTIER TODAY</text>
+              <text class="plot-note plot-note-future" x="322" y="82">COORDINATED SHARING</text>
+            </svg>
+          </div>
+
+          <figcaption id="scale-note">
+            <details>
+              <summary>Sources + assumptions</summary>
+              <p><a href="https://www.ukbiobank.ac.uk/discoveries-and-impact/major-achievements/" target="_blank" rel="noopener">UK Biobank</a> 100k · <a href="https://docs.openneuro.org/api.html" target="_blank" rel="noopener">OpenNeuro MRI</a> 50,674 · <a href="https://www.humanconnectome.org/study/hcp-young-adult/data-releases" target="_blank" rel="noopener">HCP</a> 1,113. Six centers use <a href="https://www.bumc.bu.edu/radiology/radiology/a-unique-department/equipment/" target="_blank" rel="noopener">BU’s 27,577 MRI exams/year</a>. Capacity comparison only: exams are not participants, and not every exam is brain imaging, consented, or shareable. The dotted curve is a conceptual extension of the strict data-scaling trend reported in <a href="https://arxiv.org/abs/2510.13768" target="_blank" rel="noopener">CortexMAE</a>, not a performance projection.</p>
+            </details>
+          </figcaption>
+        </figure>
+      </div>
+    </section>
+
+    <!-- ============ PIPELINE ============ -->
+    <section class="band band-plum" id="pipeline">
+      <div class="wrap">
+        <div style="max-width:760px;margin-bottom:clamp(40px,6vw,72px)">
+          <span class="label reveal" style="display:block;margin-bottom:20px">01 — The contribution flow</span>
+          <h2 class="h-sec reveal" style="color:var(--cream-txt);margin-bottom:20px">One approved folder becomes a continuous contribution.</h2>
+          <p class="lede reveal">
+            Point the tool at the folder where DICOMs already land. No labels or manual curation required.
+          </p>
+        </div>
+        <div class="manifesto reveal">
+          <div class="mani"><div class="mani-no"><span class="num">01</span> / Consent</div><h4>Approve</h4><p>Only approved projects enter.</p></div>
+          <div class="mani"><div class="mani-no"><span class="num">02</span> / Capture</div><h4>Watch</h4><p>Detect new series automatically.</p></div>
+          <div class="mani"><div class="mani-no"><span class="num">03</span> / De-ID</div><h4>Strip</h4><p>Remove identifying metadata locally.</p></div>
+          <div class="mani"><div class="mani-no"><span class="num">04</span> / Privacy</div><h4>Clear</h4><p>Process structural faces; hold uncertainty.</p></div>
+          <div class="mani"><div class="mani-no"><span class="num">05</span> / Commons</div><h4>Share</h4><p>Encrypt, transfer, and return access.</p></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============ THE NEURAL VAULT ============ -->
+    <section class="band band-cream" id="vault">
+      <div class="wrap">
+        <div style="max-width:820px;margin-bottom:clamp(36px,5vw,60px)">
+          <span class="label reveal" style="display:block;margin-bottom:20px">02 — The archive</span>
+          <h2 class="h-sec reveal" style="margin-bottom:20px">A bucket humans can actually understand.</h2>
+          <p class="lede reveal">
+            Browse by participant, compare metadata, and inspect a scan instantly.
+            <span class="badge-demo">Synthetic public previews · real NIfTI stays local</span>
+          </p>
+        </div>
+
+        <div class="access-policy reveal" aria-label="Proposed modality access policy">
+          <div><span class="policy-icon policy-open">01</span><p><strong>Functional: cleared</strong><small>Consent + metadata de-identification.</small></p></div>
+          <div><span class="policy-icon policy-local">02</span><p><strong>Structural: cleared</strong><small>Local face processing + privacy check.</small></p></div>
+          <div><span class="policy-icon policy-view">03</span><p><strong>Compute: beside data</strong><small>Avoid needless duplication.</small></p></div>
+        </div>
+
+        <div class="vault-grid reveal">
+          <!-- archive browser -->
+          <aside class="vault-left" aria-label="Scan archive">
+            <div class="vault-head">
+              <span class="label" id="archiveRoot">s3://scaling-neuro/ <b>concept</b></span>
+              <span class="mchip mchip-sage" id="archiveState">planned</span>
+            </div>
+            <div class="filters" id="filters">
+              <button class="filt is-active" data-filt="all">All</button>
+              <button class="filt" data-filt="bold">EPI</button>
+              <button class="filt" data-filt="dwi">DWI</button>
+              <button class="filt" data-filt="anat">T1w</button>
+            </div>
+            <div class="browser-list" id="scanList"><!-- populated by JS --></div>
+          </aside>
+
+          <!-- black instant-view viewer -->
+          <div class="vault-right on-dark">
+            <div class="viewer-head">
+              <span class="label" id="viewerMode">Instant View · loading</span>
+              <span class="viewer-title" id="viewerTitle">// loading preview</span>
+            </div>
+            <div class="viewer-stage" id="viewerStage">
+              <canvas id="brainCanvas"></canvas>
+              <div class="viewer-metaoverlay" id="viewerMeta" hidden></div>
+              <div class="viewer-empty" id="viewerEmpty">
+                <svg viewBox="0 0 24 24" width="38" height="38"><use href="#i-cube"/></svg>
+                <p>Select one of the synthetic collection previews. Local development can also load a private NIfTI test volume.</p>
+              </div>
+              <div class="viewer-loading" id="viewerLoading" hidden>
+                <div class="load-ring"></div>
+                <pre id="loadLog"></pre>
+              </div>
+              <div class="viewer-hud" id="viewerHud" hidden>
+                <span class="hud-pill" id="hudPath">s3://…</span>
+                <span class="hud-pill hud-drag">drag · scroll to zoom</span>
+              </div>
+            </div>
+            <div class="viewer-controls" id="viewerControls" hidden>
+              <label class="ctrl"><span>Axial</span><input type="range" min="0" max="100" value="50" data-axis="z" /></label>
+              <label class="ctrl"><span>Coronal</span><input type="range" min="0" max="100" value="50" data-axis="y" /></label>
+              <label class="ctrl"><span>Sagittal</span><input type="range" min="0" max="100" value="50" data-axis="x" /></label>
+              <button class="ctrl-btn is-active" id="spinBtn" type="button" title="Auto-rotate" aria-label="Toggle auto-rotate" aria-pressed="true"><svg viewBox="0 0 24 24" width="15" height="15"><use href="#i-rotate"/></svg></button>
+            </div>
+          </div>
+        </div>
+
+      </div>
+    </section>
+
+    <!-- ============ CONTRIBUTE (script) ============ -->
+    <section class="band band-plum contribute" id="contribute">
+      <div class="wrap">
+        <span class="label reveal" style="display:block;margin-bottom:24px">03 — For every new session</span>
+        <h2 class="display reveal" style="font-size:clamp(2.4rem,7vw,5rem)">Point it at one folder. Let every future scan count.</h2>
+        <p class="hero-para reveal">
+          Keep the scanner workflow. One portable tool clears approved functional and structural scans locally, then shares only what passes.
+        </p>
+
+        <div class="adoption-line reveal" aria-label="Why a lab should adopt the tool">
+          <span>One command</span><span>CPU-only</span><span>Fails closed</span>
+        </div>
+
+        <div class="terminal reveal">
+          <div class="term-tabs" role="tablist" aria-label="Script walkthrough">
+            <button class="term-tab is-active" id="tab-install" data-tab="install" role="tab" aria-selected="true" aria-controls="pane-install">1 · Preview</button>
+            <button class="term-tab" id="tab-run" data-tab="run" role="tab" aria-selected="false" aria-controls="pane-run" tabindex="-1">2 · Portable run</button>
+            <button class="term-tab" id="tab-inside" data-tab="inside" role="tab" aria-selected="false" aria-controls="pane-inside" tabindex="-1">Safety contract</button>
+          </div>
+          <div class="term-body">
+            <pre class="term-pane is-active" id="pane-install" data-pane="install" role="tabpanel" aria-labelledby="tab-install"><code><span class="c-com"># the downloadable preview is safe: it reads and uploads nothing</span>
+<span class="c-p">$</span> bash neuro-sync-preview.sh --deface auto ./new_session_dicoms
+<span class="c-ok">✓</span> Source folder accepted: <span class="c-hi">./new_session_dicoms</span>
+<span class="c-ok">✓</span> Plan: classify → de-identify → privacy-check → upload
+<span class="c-ok">✓</span> Laptop mode: CPU-only · one series at a time · resumable
+<span class="c-skip">i</span> Preview mode only. No files were opened or transmitted.</code></pre>
+            <pre class="term-pane" id="pane-run" data-pane="run" role="tabpanel" aria-labelledby="tab-run"><code><span class="c-com"># proposed experience — one file; privacy pack fetched only if needed</span>
+<span class="c-p">$</span> ./neuro-sync ./my_lab_dicoms --project LAB_04
+
+<span class="c-dim">[device]</span> CPU-only · 1 series at a time · safe to stop and resume
+<span class="c-dim">[watch]</span>  ./my_lab_dicoms  →  4 new series
+  <span class="c-ok">↑</span> task-rest_bold    EPI 2.0mm  480 vol   <span class="c-ok">shared</span>
+  <span class="c-ok">↑</span> task-movie_bold   EPI 1.6mm  610 vol   <span class="c-ok">shared</span>
+  <span class="c-ok">↑</span> dwi_dir98         DWI 1.5mm   99 vol   <span class="c-ok">shared</span>
+  <span class="c-ok">↑</span> T1w_mprage        face → processed → QC pass   <span class="c-ok">shared</span>
+<span class="c-dim">[deid]</span>  stripped PHI · kept scanner·field·TR·TE
+<span class="c-dim">[up]</span>    s3://scaling-neuro/  (encrypted)  <span class="c-ok">complete</span></code></pre>
+            <pre class="term-pane" id="pane-inside" data-pane="inside" role="tabpanel" aria-labelledby="tab-inside"><code><span class="c-kw">consent</span>  only process projects approved for open research sharing
+<span class="c-kw">watch</span>    the DICOM directory for newly written series
+<span class="c-kw">detect</span>   modality and whether structural facial anatomy is present
+<span class="c-kw">clear</span>    process faces locally; no-face FOVs pass unchanged
+<span class="c-kw">verify</span>   check face removal and brain preservation
+<span class="c-kw">hold</span>     anything uncertain stays on this machine
+<span class="c-kw">budget</span>   one scan at a time; checkpoint every completed series
+<span class="c-kw">convert</span>  DICOM → research-ready NIfTI
+<span class="c-kw">deid</span>     remove names, MRNs, dates; keep TR/TE, field
+<span class="c-kw">upload</span>   to encrypted, redundant S3 (server-side enc.)
+<span class="c-kw">rule</span>     nothing leaves the building without a privacy pass</code></pre>
+          </div>
+        </div>
+
+        <div class="contribute-actions reveal">
+          <a class="btn btn-sage" href="downloads/neuro-sync-preview.sh" download id="dlBtn">Download safe preview script</a>
+          <button class="btn btn-outline-d" id="copyBtn" type="button">Copy preview command</button>
+        </div>
+        <div class="term-foot reveal"><span style="color:var(--sage)">safe preview</span>&nbsp;&nbsp;·&nbsp;&nbsp;reads and uploads nothing&nbsp;&nbsp;·&nbsp;&nbsp;production CLI forthcoming</div>
+
+      </div>
+    </section>
+
+    <!-- ============ FOOTER ============ -->
+    <footer class="band band-cream" id="footer">
+      <div class="wrap">
+        <div class="footer-principles reveal">
+          <span>Academic-led</span><span>Institution-governed</span><span>Open by design</span>
+        </div>
+
+        <div class="plusmark reveal">
+          <svg viewBox="0 0 60 60" width="52" height="52"><circle cx="30" cy="30" r="29" stroke-width="1"/><path d="M30 18v24M18 30h24" stroke-width="1.2"/></svg>
+        </div>
+        <div class="foot-brand reveal">Scaling Neuro</div>
+        <div class="foot-legal reveal">
+          © 2026 Scaling Neuro Initiative · concept prototype · working name<br/>
+          All shared data intended as an open resource · source: “Scaling Up Neuroimaging Data for Foundation Models”
+        </div>
+      </div>
+    </footer>
+  </main>
+
+  <div class="toast" id="toast" role="status" aria-live="polite"></div>
+
+  <!-- ============ SVG SPRITE ============ -->
+  <svg width="0" height="0" style="position:absolute" aria-hidden="true"><defs>
+    <symbol id="logo-brain" viewBox="0 0 28 28">
+      <path d="M14 4c-1.8 0-3.1 1-3.5 2.3C9.3 6.1 7.4 6.9 7 8.8 5.4 9.2 4.4 10.6 4.4 12.2c0 .9.3 1.7.9 2.3-.5.6-.9 1.4-.9 2.3 0 1.7 1.3 3.1 3 3.3.5 1.5 2 2.5 3.6 2.3.5 1.1 1.7 1.9 3 1.9s2.5-.8 3-1.9c1.6.2 3.1-.8 3.6-2.3 1.7-.2 3-1.6 3-3.3 0-.9-.4-1.7-.9-2.3.6-.6.9-1.4.9-2.3 0-1.6-1-3-2.6-3.4-.4-1.9-2.3-2.7-3.5-2.5C17.1 5 15.8 4 14 4Z" stroke-width="1.4" stroke-linejoin="round"/>
+      <path d="M14 6.3v16.4M9.6 9.8c1.3.4 2.2 1.4 2.2 2.7M18.4 9.8c-1.3.4-2.2 1.4-2.2 2.7" stroke-width="1.1" stroke-linecap="round" opacity=".6"/>
+    </symbol>
+    <symbol id="i-cube" viewBox="0 0 24 24"><path d="M12 2 3 7v10l9 5 9-5V7l-9-5Zm0 0v20M3 7l9 5 9-5" stroke-width="1.4" stroke-linejoin="round"/></symbol>
+    <symbol id="i-rotate" viewBox="0 0 24 24"><path d="M20 12a8 8 0 1 1-2.3-5.6M20 4v4h-4" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+  </defs></svg>
+
+  <script type="module" src="app.js?v=9"></script>
+</body>
+</html>
