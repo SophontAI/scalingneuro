@@ -119,7 +119,7 @@ def validate_metadata_policy(
     metadata_policy = sidecar_schema["properties"]["metadata_policy"]["properties"]
     if metadata_policy["policy_id"].get("const") != policy["policy_id"]:
         raise ValueError("sidecar metadata policy ID does not match policy artifact")
-    if metadata_policy["policy_version"].get("const") != policy["schema_version"]:
+    if metadata_policy["policy_version"].get("const") != policy["policy_version"]:
         raise ValueError("sidecar metadata policy version does not match policy artifact")
 
 
@@ -207,7 +207,7 @@ def validate_client_shape(schemas: dict[Path, dict[str, Any]]) -> None:
     policy = read_json(ROOT / "metadata-policy-v1.json")
     if rust_string_constant(bundle_source, "METADATA_POLICY_ID") != policy["policy_id"]:
         raise ValueError("client metadata policy ID differs from policy artifact")
-    if rust_string_constant(bundle_source, "METADATA_POLICY_VERSION") != policy["schema_version"]:
+    if rust_string_constant(bundle_source, "METADATA_POLICY_VERSION") != policy["policy_version"]:
         raise ValueError("client metadata policy version differs from policy artifact")
 
 
@@ -359,6 +359,26 @@ def validate_api_error_detail_variants(
             "7c2a5f77f3ab6c6d9e011234/scan.json"
         },
         {"consent_policy_version": "pilot-2026-07"},
+        {"minimum_client_version": "0.1.1"},
+        {
+            "reason": "active_exact_match",
+            "existing_bundles": [
+                {
+                    "bundle_id": "7c2a5f77f3ab6c6d9e011234",
+                    "series_id": "45fa0d3f9a2e9af111223344",
+                    "subject_id": "a4b73d9e6f12a2b011223344",
+                    "session_id": "b9e5cf2f5a74a3f811223344",
+                    "protocol_group_id": "27f2a6f4d9a3aa6b11223344",
+                    "upload_id": "0190f86f-e0de-7f2a-a24c-0a6abf16ec81",
+                    "nii_uncompressed_sha256": "a" * 64,
+                }
+            ],
+        },
+        {
+            "reason": "privacy_contract_stale",
+            "bundle_id": "7c2a5f77f3ab6c6d9e011234",
+            "series_id": "45fa0d3f9a2e9af111223344",
+        },
     ]
     for details in variants:
         instance = {

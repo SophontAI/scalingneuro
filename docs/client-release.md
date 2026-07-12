@@ -32,7 +32,9 @@ The workflow downloads official `rordenlab/dcm2niix` release assets at tag `v1.0
 
 The macOS converter is already a universal x86_64/arm64 Mach-O. The workflow builds both Rust targets and combines them with `lipo` into a universal `neuro-sync` executable. Windows includes the runtime DLLs shipped in the official converter archive.
 
-The Linux client is built for `x86_64-unknown-linux-gnu`. Both the native XDG folder picker and the official converter use the desktop Linux runtime; the converter requires glibc 2.19 or newer, which is the bundle's actual compatibility floor. The release gate installs the Wayland development headers needed to compile the portal picker, while collaborator machines need a normal desktop portal/Wayland runtime rather than a compiler toolchain.
+The Linux client is built for `x86_64-unknown-linux-gnu` inside the digest-pinned PyPA `manylinux_2_28_x86_64` image. The supported runtime floor is glibc 2.28 (for example, Ubuntu 20.04+, Debian 10+, or RHEL 8+). The workflow inspects imported ELF symbol versions and refuses the package if either `neuro-sync` or the bundled converter requires a newer glibc. It also verifies that `neuro-sync` remains linked to `libwayland-client.so.0` and that the pinned converter reports the expected version. This preserves the native XDG portal folder picker and converter while preventing a future `ubuntu-latest` update from silently raising the compatibility floor. Collaborator machines need `libwayland-client.so.0` plus a working `xdg-desktop-portal` backend; they do not need a compiler toolchain.
+
+The build image is currently `quay.io/pypa/manylinux_2_28_x86_64@sha256:b04887b645dde99b9e955aeae3ff4da414992d0bd88259f046295b56361c5614`. Updating it is a reviewed release change and must retain the glibc-symbol gate.
 
 Updating dcm2niix requires a separate reviewed change to the version, all three official asset digests, converter regression fixtures, metadata policy if output semantics changed, and the `converter_version` constant in the scan-sidecar schema.
 

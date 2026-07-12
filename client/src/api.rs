@@ -3,7 +3,11 @@ use reqwest::{Client, Response};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use std::time::Duration;
 
-use crate::{CLIENT_VERSION, config::ClientConfig, model::ManifestBundle};
+use crate::{
+    CLIENT_VERSION,
+    config::ClientConfig,
+    model::{ExistingArchiveBundle, ManifestBundle},
+};
 
 #[derive(Debug, thiserror::Error)]
 #[error("ingest API request failed ({code})")]
@@ -11,6 +15,8 @@ pub struct ApiFailure {
     pub code: String,
     pub status: u16,
     retry_after: Option<Duration>,
+    duplicate_reason: Option<String>,
+    existing_bundles: Vec<ExistingArchiveBundle>,
 }
 
 impl ApiFailure {
@@ -24,6 +30,13 @@ impl ApiFailure {
 
     pub fn retry_after(&self) -> Option<Duration> {
         self.retry_after
+    }
+
+    pub fn exact_existing_bundles(&self) -> Option<&[ExistingArchiveBundle]> {
+        (self.code == "DUPLICATE_BUNDLE"
+            && self.duplicate_reason.as_deref() == Some("active_exact_match")
+            && !self.existing_bundles.is_empty())
+        .then_some(self.existing_bundles.as_slice())
     }
 }
 
@@ -405,10 +418,13 @@ async fn decode<T: DeserializeOwned>(response: Response) -> Result<T> {
     let bytes = response.bytes().await?;
     if !status.is_success() {
         let code = error_code(&bytes).unwrap_or_else(|| format!("http_{}", status.as_u16()));
+        let (duplicate_reason, existing_bundles) = duplicate_details(&bytes);
         return Err(ApiFailure {
             code,
             status: status.as_u16(),
             retry_after,
+            duplicate_reason,
+            existing_bundles,
         }
         .into());
     }
@@ -439,6 +455,23 @@ fn error_code(bytes: &[u8]) -> Option<String> {
         .or_else(|| json.get("code"))?
         .as_str()
         .map(str::to_owned)
+}
+
+fn duplicate_details(bytes: &[u8]) -> (Option<String>, Vec<ExistingArchiveBundle>) {
+    let json: serde_json::Value = match serde_json::from_slice(bytes) {
+        Ok(value) => value,
+        Err(_) => return (None, Vec::new()),
+    };
+    let reason = json
+        .pointer("/error/details/reason")
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_owned);
+    let existing_bundles = json
+        .pointer("/error/details/existing_bundles")
+        .cloned()
+        .and_then(|value| serde_json::from_value(value).ok())
+        .unwrap_or_default();
+    (reason, existing_bundles)
 }
 
 fn is_loopback_http(value: &str) -> bool {
@@ -520,12 +553,16 @@ mod tests {
             code: "INVALID_REQUEST".into(),
             status: 400,
             retry_after: None,
+            duplicate_reason: None,
+            existing_bundles: Vec::new(),
         };
         assert!(!deterministic.is_retryable());
         let unavailable = ApiFailure {
             code: "STORAGE_UNAVAILABLE".into(),
             status: 503,
             retry_after: Some(Duration::from_secs(2)),
+            duplicate_reason: None,
+            existing_bundles: Vec::new(),
         };
         assert!(unavailable.is_retryable());
         assert_eq!(unavailable.retry_after(), Some(Duration::from_secs(2)));
@@ -533,8 +570,38 @@ mod tests {
             code: "CONFLICT".into(),
             status: 409,
             retry_after: None,
+            duplicate_reason: None,
+            existing_bundles: Vec::new(),
         };
         assert!(busy.is_retryable());
+    }
+
+    #[test]
+    fn parses_only_structured_active_duplicate_reconciliation() {
+        let bytes = serde_json::to_vec(&serde_json::json!({
+            "error": {
+                "code": "DUPLICATE_BUNDLE",
+                "message": "already committed",
+                "request_id": "request-123",
+                "details": {
+                    "reason": "active_exact_match",
+                    "existing_bundles": [{
+                        "bundle_id": "a".repeat(24),
+                        "series_id": "b".repeat(24),
+                        "subject_id": "c".repeat(24),
+                        "session_id": "d".repeat(24),
+                        "protocol_group_id": "e".repeat(24),
+                        "upload_id": "11111111-1111-4111-8111-111111111111",
+                        "nii_uncompressed_sha256": "f".repeat(64)
+                    }]
+                }
+            }
+        }))
+        .unwrap();
+        let (reason, bundles) = duplicate_details(&bytes);
+        assert_eq!(reason.as_deref(), Some("active_exact_match"));
+        assert_eq!(bundles.len(), 1);
+        assert_eq!(bundles[0].bundle_id, "a".repeat(24));
     }
 
     #[test]

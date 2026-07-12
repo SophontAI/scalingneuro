@@ -1,6 +1,6 @@
 # Scaling Neuro
 
-Scaling Neuro is a privacy-first ingestion path for building a scientifically usable, acquisition-space functional MRI archive. The current `0.1.0` pilot is a working EPI-only system: a researcher enrolls once, opens `neuro-sync`, chooses a folder of newly exported DICOMs, and lets the client classify, convert, quality-check, resume, and commit eligible scans to Cloudflare R2.
+Scaling Neuro is a privacy-first ingestion path for building a scientifically usable, acquisition-space functional MRI archive. The current `0.1.1` pilot is a working EPI-only system: a researcher enrolls once, opens `neuro-sync`, chooses a folder of newly exported DICOMs, and lets the client classify, convert, quality-check, resume, and commit eligible scans to Cloudflare R2.
 
 This is no longer a static workflow mockup. The repository contains the cross-platform Rust client, Cloudflare control plane, D1 migrations, R2 multipart transport, strict public schemas, release automation, and the Scaling Neuro site. It remains an invite-only research pilot, not a clinical device or a substitute for IRB, consent, or data-use review.
 

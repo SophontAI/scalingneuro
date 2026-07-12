@@ -13,14 +13,14 @@ You need:
 
 An invite authorizes one workstation to access an institutionally pre-approved project; it is not evidence of participant consent and does not make an otherwise unauthorized scan upload permissible. The uploader remains responsible for confirming that the selected scans are covered by the institution’s IRB, consent, and data-use approvals. The client is a research data-transfer tool, not a clinical device or a substitute for those reviews.
 
-Pilot releases support Apple Silicon and Intel macOS through one universal package, Windows x64, and Linux x64. Scanner compatibility comes from the pinned multi-vendor dcm2niix converter and fail-closed validation; no software can honestly guarantee every historical or malformed scanner export. Unsupported series stay local and appear in the report.
+Pilot releases support Apple Silicon and Intel macOS through one universal package, Windows x64, and Linux x64. The Linux package requires glibc 2.28 or newer (for example, Ubuntu 20.04+, Debian 10+, or RHEL 8+), `libwayland-client.so.0`, and a working `xdg-desktop-portal` backend for the folder picker. Scanner compatibility comes from the pinned multi-vendor dcm2niix converter and fail-closed validation; no software can honestly guarantee every historical or malformed scanner export. Unsupported series stay local and appear in the report.
 
 ## Graphical flow
 
 1. Download the release for your operating system and verify it using the adjacent `SHA256SUMS` file. Prefer signed builds. A file containing `UNSIGNED-PILOT` in its name is only for a named pilot and may trigger operating-system warnings.
 2. Open `neuro-sync`. On first launch, paste the invite code and confirm the project and institutional authorization policy shown by the app.
 3. Choose **Choose folder…**, select the top-level export folder, confirm that the scans are approved for the displayed project, and choose **Validate and upload**.
-4. Leave the app open or close it normally. Relaunching resumes from the local checkpoint; it does not restart completed transfers. Large or multi-subject folders are split automatically into sequential, independently committed one-subject sessions.
+4. Leave the app open or close it normally. Relaunching resumes from a compatible local checkpoint; it does not restart completed transfers. If a release tightened the privacy rules, choose **Revalidate with current privacy rules**: the same private source is converted again locally and must reproduce the original scan identities before upload. Large or multi-subject folders are split automatically into sequential, independently committed one-subject sessions.
 5. Wait for **Committed**. Save the run report for the study record. It contains pseudonymous IDs, counts, hashes, QC codes, and held/excluded reasons—never patient names or raw DICOM values.
 
 The source folder is read-only. DICOMs are neither modified nor uploaded. Only accepted functional EPI NIfTI/JSON bundles leave the machine. Structural scans, DWI, ASL, fieldmaps, SBRefs, localizers, derived images, and uncertain series stay local.
@@ -71,10 +71,11 @@ A successful run shows:
 - **Network interruption or expired 15-minute part URL:** choose Resume. Checkpointed multipart pieces are reused and the client requests a new checksum-bound URL only for the next missing part. A crash in the instant before an accepted ETag was saved may safely resend that same part number.
 - **Enrollment timed out or the app closed before confirmation:** reopen the client and submit the same invite. The owner-only pending operation is replayed with the same client-bound token, so a lost response does not spend the invite twice. Do not switch invites until the original result is recovered or an administrator revokes it.
 - **The app was closed or the computer restarted:** reopen the same installation and choose Resume.
+- **The app says Privacy update required:** choose **Revalidate with current privacy rules**. The old prepared bytes are never uploaded; the source path stays private, and a changed or missing source fails locally so you can select the folder again.
 - **Resume says the enrollment context changed:** do not bypass it. The prepared run’s site, project, or contribution-policy version no longer matches the current enrollment; review the project policy and prepare a new authorized run.
 - **A series is held:** keep the source folder unchanged and share the report. Scaling Neuro can add a compatibility fixture or classifier rule without receiving PHI.
 - **Consent policy update required:** review and accept the displayed new policy before another upload. Existing committed data is not silently relabeled.
-- **Duplicate bundle:** the archive already contains the same site/project/series content. The client should report the existing committed upload rather than send it again.
+- **Duplicate bundle:** an exact active archive match under the current metadata privacy policy is recorded as **already archived** and is not retransmitted. If the selected folder also contains new EPI series, those continue normally. If two workstations finish the same scan at once, the losing transfer is purged and reconciled automatically. A withdrawn tombstone, stale metadata-policy version, or any mismatch in subject/session/series/protocol identity or uncompressed NIfTI hash stops the run instead of being treated as a duplicate.
 - **Object mismatch:** do not retry by manually changing files. Resume from the client so it can re-verify local hashes.
 
 For a pilot issue, provide the operating system, `neuro-sync` version, run/upload ID, scanner manufacturer/model if permitted, and the report’s stable error/QC codes. Never provide names, MRNs, accession numbers, DICOM UIDs, raw descriptions, source paths, or source files unless a separate approved secure process has been arranged.

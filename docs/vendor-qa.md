@@ -4,7 +4,7 @@ This is an evidence log, not a claim that every DICOM ever emitted by a named ve
 
 ## Public regression fixtures
 
-All results below were produced on macOS arm64 with `neuro-sync 0.1.0` and the bundled `dcm2niix v1.0.20260416`. The converter release archives are hash-pinned by platform in the release workflow.
+The GE/Philips conversion baselines and initial Siemens transport exercise used `neuro-sync 0.1.0`; the accepted Siemens fixture was rerun locally with the stricter `0.1.1` semantic metadata policy. All used the bundled `dcm2niix v1.0.20260416` on macOS arm64. The converter release archives are hash-pinned by platform in the release workflow.
 
 | Vendor fixture | Pinned public source | DICOM files | Native conversion | Client decision | Meaning |
 |---|---|---:|---|---|---|
@@ -12,7 +12,7 @@ All results below were produced on macOS arm64 with `neuro-sync 0.1.0` and the b
 | Philips Magdeburg `201_EPI_asc_CLEAR` | [`neurolabusc/dcm_qa_philips@74efdbc`](https://github.com/neurolabusc/dcm_qa_philips/tree/74efdbc01eb62540fbb702787c3a7a2c0e22f9eb/In/Magdeburg_2014/fmri) | 27 | `64×64×9×3` | held locally | Philips discovery and precise-scaling conversion succeed; three volumes are intentionally below the functional archive floor. |
 | Siemens XA30 `7_func-bold_task-fa_run-1` | [`neurolabusc/dcm_qa_xa30@54a9f42`](https://github.com/neurolabusc/dcm_qa_xa30/tree/54a9f42222e2ebef6f24e01f9c618fe85ff63b2b/In/7_func-bold_task-fa_run-1) | 20 | `64×64×33×20` | accepted | The complete EPI, privacy, signal, geometry, and metadata gates pass. |
 
-The Siemens sidecar retained manufacturer/model/software, field strength, receive coil, sequence/image codes, acquisition and series numbers, patient position, TR/TE, slice timing, phase encoding, echo/readout/dwell timing, multiband and partial-Fourier factors, matrix, voxel/affine/orientation, datatype, volume count, conversion provenance, QC, and the site-scoped protocol group. It contained no source UID, filename/path, person identifier, date/time, institution/station/operator field, protocol or series free text, or private-tag dump. Both the sidecar and NIfTI were validated again after storage.
+Under `0.1.1`, the Siemens sidecar retained canonical `Siemens`, `MAGNETOM Prisma_fit`, `Siemens XA30`, and `HEAD_NECK_64` equipment context plus field strength, standard image codes, acquisition and series numbers, patient position, TR/TE, slice timing, phase encoding, echo/readout/dwell timing, multiband and partial-Fourier factors, matrix, voxel/affine/orientation, datatype, volume count, conversion provenance, QC, and the site-scoped protocol group. The fixture remained accepted at `64×64×33×20`; the emitted sidecar passed the strict public schema. Unknown LO/SH/CS text can no longer cross the boundary merely by matching an ASCII character class. The sidecar contained no source UID, filename/path, person identifier, date/time, institution/station/operator field, protocol or series free text, or private-tag dump.
 
 ## Production transport exercise
 

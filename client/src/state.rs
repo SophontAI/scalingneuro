@@ -12,7 +12,7 @@ use anyhow::{Context, Result};
 use chrono::Utc;
 use rusqlite::{Connection, OptionalExtension, params};
 
-use crate::model::SourceSummary;
+use crate::model::{ExistingArchiveBundle, SourceSummary};
 
 #[derive(Debug, Clone)]
 pub struct StateStore {
@@ -154,6 +154,17 @@ impl StateStore {
                 updated_at TEXT NOT NULL,
                 PRIMARY KEY(run_id, chunk_index)
             );
+            CREATE TABLE IF NOT EXISTS existing_archive_bundles (
+                run_id TEXT NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
+                bundle_id TEXT NOT NULL,
+                series_id TEXT NOT NULL,
+                subject_id TEXT NOT NULL,
+                session_id TEXT NOT NULL,
+                protocol_group_id TEXT NOT NULL,
+                upload_id TEXT NOT NULL,
+                nii_uncompressed_sha256 TEXT NOT NULL,
+                PRIMARY KEY(run_id, bundle_id)
+            );
             CREATE TABLE IF NOT EXISTS uploaded_parts (
                 worker_upload_id TEXT NOT NULL,
                 object_key TEXT NOT NULL,
@@ -196,6 +207,29 @@ impl StateStore {
                 Utc::now().to_rfc3339()
             ],
         )?;
+        Ok(())
+    }
+
+    pub fn supersede_run_for_repreparation(&self, old_id: &str, new_id: &str) -> Result<()> {
+        let now = Utc::now().to_rfc3339();
+        let summary = serde_json::to_string(&SourceSummary::default())?;
+        let mut connection = self.connection()?;
+        let transaction = connection.transaction()?;
+        let inserted = transaction.execute(
+            "INSERT INTO runs (id,source_path,status,dry_run,summary_json,created_at,updated_at) SELECT ?2,source_path,'discovering',dry_run,?3,?4,?4 FROM runs WHERE id=?1 AND status IN ('prepared','uploading','upload_failed')",
+            params![old_id, new_id, summary, now],
+        )?;
+        if inserted != 1 {
+            anyhow::bail!("the requested run is not eligible for privacy repreparation");
+        }
+        let updated = transaction.execute(
+            "UPDATE runs SET status='superseded',error_code='privacy_contract_superseded',updated_at=?3 WHERE id=?1 AND id<>?2 AND status IN ('prepared','uploading','upload_failed')",
+            params![old_id, new_id, now],
+        )?;
+        if updated != 1 {
+            anyhow::bail!("could not supersede the outdated privacy checkpoint");
+        }
+        transaction.commit()?;
         Ok(())
     }
 
@@ -306,6 +340,52 @@ impl StateStore {
         Ok(())
     }
 
+    pub fn record_existing_bundles(
+        &self,
+        run_id: &str,
+        bundles: &[ExistingArchiveBundle],
+    ) -> Result<()> {
+        let mut connection = self.connection()?;
+        let transaction = connection.transaction()?;
+        for bundle in bundles {
+            let inserted = transaction.execute(
+                "INSERT OR IGNORE INTO existing_archive_bundles (run_id,bundle_id,series_id,subject_id,session_id,protocol_group_id,upload_id,nii_uncompressed_sha256) VALUES (?1,?2,?3,?4,?5,?6,?7,?8)",
+                params![
+                    run_id,
+                    bundle.bundle_id,
+                    bundle.series_id,
+                    bundle.subject_id,
+                    bundle.session_id,
+                    bundle.protocol_group_id,
+                    bundle.upload_id,
+                    bundle.nii_uncompressed_sha256,
+                ],
+            )?;
+            if inserted == 0 {
+                let stored = transaction.query_row(
+                    "SELECT bundle_id,series_id,subject_id,session_id,protocol_group_id,upload_id,nii_uncompressed_sha256 FROM existing_archive_bundles WHERE run_id=?1 AND bundle_id=?2",
+                    params![run_id, bundle.bundle_id],
+                    existing_bundle_from_row,
+                )?;
+                if &stored != bundle {
+                    anyhow::bail!("existing archive bundle identity changed during recovery");
+                }
+            }
+        }
+        transaction.commit()?;
+        Ok(())
+    }
+
+    pub fn existing_bundles(&self, run_id: &str) -> Result<Vec<ExistingArchiveBundle>> {
+        let connection = self.connection()?;
+        let mut statement = connection.prepare(
+            "SELECT bundle_id,series_id,subject_id,session_id,protocol_group_id,upload_id,nii_uncompressed_sha256 FROM existing_archive_bundles WHERE run_id=?1 ORDER BY bundle_id",
+        )?;
+        Ok(statement
+            .query_map([run_id], existing_bundle_from_row)?
+            .collect::<rusqlite::Result<Vec<_>>>()?)
+    }
+
     pub fn run(&self, id: &str) -> Result<Option<RunRecord>> {
         let connection = self.connection()?;
         connection
@@ -348,6 +428,16 @@ impl StateStore {
                 .collect::<rusqlite::Result<Vec<_>>>()?
         };
         Ok(mapped)
+    }
+
+    pub fn in_progress_runs(&self) -> Result<Vec<RunRecord>> {
+        let connection = self.connection()?;
+        let mut statement = connection.prepare(
+            "SELECT id,source_path,status,dry_run,summary_json,manifest_path,report_path,worker_upload_id,error_code,created_at,updated_at FROM runs WHERE status IN ('discovering','converting','prepared','uploading') ORDER BY created_at",
+        )?;
+        Ok(statement
+            .query_map([], row_to_run)?
+            .collect::<rusqlite::Result<Vec<_>>>()?)
     }
 
     pub fn interrupted_preparation_runs(&self) -> Result<Vec<RunRecord>> {
@@ -520,6 +610,18 @@ fn row_to_run(row: &rusqlite::Row<'_>) -> rusqlite::Result<RunRecord> {
     })
 }
 
+fn existing_bundle_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ExistingArchiveBundle> {
+    Ok(ExistingArchiveBundle {
+        bundle_id: row.get(0)?,
+        series_id: row.get(1)?,
+        subject_id: row.get(2)?,
+        session_id: row.get(3)?,
+        protocol_group_id: row.get(4)?,
+        upload_id: row.get(5)?,
+        nii_uncompressed_sha256: row.get(6)?,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -540,6 +642,25 @@ mod tests {
                 Path::new("/private/work/run.report.json"),
             )
             .unwrap();
+        let existing_bundle = ExistingArchiveBundle {
+            bundle_id: "a".repeat(24),
+            series_id: "b".repeat(24),
+            subject_id: "c".repeat(24),
+            session_id: "d".repeat(24),
+            protocol_group_id: "e".repeat(24),
+            upload_id: "11111111-1111-4111-8111-111111111111".into(),
+            nii_uncompressed_sha256: "f".repeat(64),
+        };
+        store
+            .record_existing_bundles("run", std::slice::from_ref(&existing_bundle))
+            .unwrap();
+        store
+            .record_existing_bundles("run", std::slice::from_ref(&existing_bundle))
+            .unwrap();
+        assert_eq!(
+            store.existing_bundles("run").unwrap(),
+            vec![existing_bundle]
+        );
         let public =
             serde_json::to_string(&PublicRunStatus::from(&store.run("run").unwrap().unwrap()))
                 .unwrap();
@@ -625,6 +746,40 @@ mod tests {
             reopened.run("run").unwrap().unwrap().source_path,
             "/private/source"
         );
+    }
+
+    #[test]
+    fn privacy_repreparation_supersedes_old_run_and_preserves_private_source() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = StateStore::open(&directory.path().join("state.sqlite3")).unwrap();
+        store
+            .create_run("old-run", Path::new("/private/source"), false)
+            .unwrap();
+        store
+            .update_run(
+                "old-run",
+                "prepared",
+                &SourceSummary {
+                    dicom_files: 12,
+                    accepted: 1,
+                    ..Default::default()
+                },
+                None,
+            )
+            .unwrap();
+        store
+            .supersede_run_for_repreparation("old-run", "new-run")
+            .unwrap();
+        let old = store.run("old-run").unwrap().unwrap();
+        let new = store.run("new-run").unwrap().unwrap();
+        assert_eq!(old.status, "superseded");
+        assert_eq!(
+            old.error_code.as_deref(),
+            Some("privacy_contract_superseded")
+        );
+        assert_eq!(new.status, "discovering");
+        assert_eq!(new.source_path, "/private/source");
+        assert!(store.resumable_runs(None).unwrap().is_empty());
     }
 
     #[cfg(unix)]

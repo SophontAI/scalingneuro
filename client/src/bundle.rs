@@ -22,8 +22,8 @@ use crate::{
     pseudonym::Pseudonymizer,
 };
 
-const METADATA_POLICY_ID: &str = "scaling-neuro-epi-default-deny";
-const METADATA_POLICY_VERSION: &str = "1.0.0";
+pub const METADATA_POLICY_ID: &str = "scaling-neuro-epi-default-deny";
+pub const METADATA_POLICY_VERSION: &str = "1.1.0";
 
 #[derive(Debug, Clone)]
 pub struct AnalyzedImage {
@@ -324,31 +324,41 @@ pub fn create_bundle(request: BundleRequest<'_>) -> Result<ManifestBundle> {
 
 fn build_source_metadata(group: &SeriesGroup, json: &Value) -> SourceMetadata {
     let header = &group.representative;
+    let manufacturer = header
+        .manufacturer
+        .as_deref()
+        .and_then(canonical_manufacturer)
+        .or_else(|| {
+            json_string(json, "Manufacturer")
+                .as_deref()
+                .and_then(canonical_manufacturer)
+        });
+    let vendor = manufacturer.as_deref().and_then(ScannerVendor::from_name);
     let mut software_versions = BTreeSet::new();
     if let Some(value) = header.software_versions.as_deref() {
         for part in value.split(['\\', ',']) {
-            if let Some(value) = safe_equipment_text(part, 96) {
+            if let Some(value) = canonical_software_version(vendor, part) {
                 software_versions.insert(value);
             }
         }
     }
     for value in json_strings(json, "SoftwareVersions") {
-        if let Some(value) = safe_equipment_text(&value, 96) {
+        if let Some(value) = canonical_software_version(vendor, &value) {
             software_versions.insert(value);
         }
     }
     SourceMetadata {
         dicom_count: group.files.len() as u64,
-        manufacturer: header
-            .manufacturer
-            .as_deref()
-            .and_then(|value| safe_equipment_text(value, 96))
-            .or_else(|| json_equipment_text(json, "Manufacturer", 96)),
+        manufacturer,
         model: header
             .model
             .as_deref()
-            .and_then(|value| safe_equipment_text(value, 96))
-            .or_else(|| json_equipment_text(json, "ManufacturersModelName", 96)),
+            .and_then(|value| canonical_scanner_model(vendor, value))
+            .or_else(|| {
+                json_string(json, "ManufacturersModelName")
+                    .as_deref()
+                    .and_then(|value| canonical_scanner_model(vendor, value))
+            }),
         patient_position: header
             .patient_position
             .as_deref()
@@ -359,24 +369,73 @@ fn build_source_metadata(group: &SeriesGroup, json: &Value) -> SourceMetadata {
             .or_else(|| json_float(json, "MagneticFieldStrength"))
             .and_then(|value| number_in_range(value, f64::MIN_POSITIVE, 15.0)),
         receive_coil_name: acquisition_equipment_string(header, "receive_coil_name")
-            .or_else(|| json_equipment_text(json, "ReceiveCoilName", 96)),
+            .as_deref()
+            .and_then(canonical_coil)
+            .or_else(|| {
+                json_string(json, "ReceiveCoilName")
+                    .as_deref()
+                    .and_then(canonical_coil)
+            }),
         transmit_coil_name: acquisition_equipment_string(header, "transmit_coil_name")
-            .or_else(|| json_equipment_text(json, "TransmitCoilName", 96)),
+            .as_deref()
+            .and_then(canonical_coil)
+            .or_else(|| {
+                json_string(json, "TransmitCoilName")
+                    .as_deref()
+                    .and_then(canonical_coil)
+            }),
         sequence_name: header
             .sequence_name
             .as_deref()
-            .and_then(|value| safe_sequence_name(value, 96))
+            .and_then(canonical_sequence_family)
             .or_else(|| {
-                json_string(json, "SequenceName").and_then(|value| safe_sequence_name(&value, 96))
+                json_string(json, "SequenceName")
+                    .as_deref()
+                    .and_then(canonical_sequence_family)
             }),
-        scanning_sequence: safe_code_list(&group.scanning_sequences),
-        sequence_variant: safe_code_list(&group.sequence_variants),
-        scan_options: safe_code_list(&group.scan_options),
+        scanning_sequence: allowlisted_code_list(
+            &group.scanning_sequences,
+            &["SE", "IR", "GR", "EP", "RM"],
+        ),
+        sequence_variant: allowlisted_code_list(
+            &group.sequence_variants,
+            &["SK", "MTC", "SS", "TRSS", "SP", "MP", "OSP", "NONE"],
+        ),
+        scan_options: allowlisted_code_list(
+            &group.scan_options,
+            &["PER", "RG", "CG", "PPG", "FC", "PFF", "PFP", "SP", "FS"],
+        ),
         mr_acquisition_type: header
             .mr_acquisition_type
             .as_deref()
             .and_then(|value| safe_enum(value, &["2D", "3D"])),
-        image_type: safe_code_list(&group.image_types),
+        image_type: allowlisted_code_list(
+            &group.image_types,
+            &[
+                "ORIGINAL",
+                "DERIVED",
+                "PRIMARY",
+                "SECONDARY",
+                "OTHER",
+                "M",
+                "MAGNITUDE",
+                "P",
+                "PHASE",
+                "R",
+                "REAL",
+                "I",
+                "IMAGINARY",
+                "MIXED",
+                "ND",
+                "NORM",
+                "MOSAIC",
+                "DIS2D",
+                "FMRI",
+                "BOLD",
+                "EPI",
+                "NONE",
+            ],
+        ),
         series_number: header.series_number.filter(|value| *value >= 0),
         acquisition_number: header.acquisition_number.filter(|value| *value >= 0),
     }
@@ -453,8 +512,14 @@ fn build_image_metadata(
         imaging_frequency_mhz: json_float(json, "ImagingFrequency")
             .or_else(|| acquisition_float(header, "imaging_frequency_mhz"))
             .filter(|value| *value > 0.0),
-        imaged_nucleus: json_code_text(json, "ImagedNucleus", 16)
-            .or_else(|| acquisition_code_string(header, "imaged_nucleus")),
+        imaged_nucleus: json_string(json, "ImagedNucleus")
+            .as_deref()
+            .and_then(canonical_nucleus)
+            .or_else(|| {
+                acquisition_code_string(header, "imaged_nucleus")
+                    .as_deref()
+                    .and_then(canonical_nucleus)
+            }),
     }
 }
 
@@ -941,12 +1006,384 @@ fn bounded_float_array(
     }
 }
 
-fn json_equipment_text(json: &Value, key: &str, max: usize) -> Option<String> {
-    json_string(json, key).and_then(|value| safe_equipment_text(&value, max))
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ScannerVendor {
+    Siemens,
+    Philips,
+    Ge,
+    Canon,
+    UnitedImaging,
+    Bruker,
 }
 
-fn json_code_text(json: &Value, key: &str, max: usize) -> Option<String> {
-    json_string(json, key).and_then(|value| safe_code_text(&value, max))
+impl ScannerVendor {
+    fn from_name(value: &str) -> Option<Self> {
+        match value {
+            "Siemens" => Some(Self::Siemens),
+            "Philips" => Some(Self::Philips),
+            "GE" => Some(Self::Ge),
+            "Canon/Toshiba" => Some(Self::Canon),
+            "United Imaging" => Some(Self::UnitedImaging),
+            "Bruker" => Some(Self::Bruker),
+            _ => None,
+        }
+    }
+
+    fn name(self) -> &'static str {
+        match self {
+            Self::Siemens => "Siemens",
+            Self::Philips => "Philips",
+            Self::Ge => "GE",
+            Self::Canon => "Canon/Toshiba",
+            Self::UnitedImaging => "United Imaging",
+            Self::Bruker => "Bruker",
+        }
+    }
+}
+
+fn semantic_words(value: &str, max_characters: usize) -> Option<Vec<String>> {
+    if !value.is_ascii() || value.chars().count() > max_characters {
+        return None;
+    }
+    let words = value
+        .split(|character: char| !character.is_ascii_alphanumeric())
+        .filter(|word| !word.is_empty())
+        .map(str::to_ascii_uppercase)
+        .collect::<Vec<_>>();
+    (!words.is_empty()).then_some(words)
+}
+
+fn canonical_manufacturer(value: &str) -> Option<String> {
+    let words = semantic_words(value, 128)?;
+    let has = |candidate: &str| words.iter().any(|word| word == candidate);
+    let vendor = if has("SIEMENS") {
+        ScannerVendor::Siemens
+    } else if has("PHILIPS") {
+        ScannerVendor::Philips
+    } else if has("GE") || (has("GENERAL") && has("ELECTRIC")) {
+        ScannerVendor::Ge
+    } else if has("CANON") || has("TOSHIBA") {
+        ScannerVendor::Canon
+    } else if has("UIH") || (has("UNITED") && has("IMAGING")) {
+        ScannerVendor::UnitedImaging
+    } else if has("BRUKER") {
+        ScannerVendor::Bruker
+    } else {
+        return None;
+    };
+    Some(vendor.name().into())
+}
+
+fn normalized_word_string(value: &str) -> Option<String> {
+    semantic_words(value, 128).map(|words| words.join(" "))
+}
+
+fn model_from_patterns(value: &str, patterns: &[(&str, &str)]) -> Option<String> {
+    let words = normalized_word_string(value)?;
+    let padded = format!(" {words} ");
+    patterns
+        .iter()
+        .find(|(needle, _)| padded.contains(&format!(" {needle} ")))
+        .map(|(_, canonical)| (*canonical).into())
+}
+
+fn canonical_scanner_model(vendor: Option<ScannerVendor>, value: &str) -> Option<String> {
+    match vendor? {
+        ScannerVendor::Siemens => model_from_patterns(
+            value,
+            &[
+                ("PRISMA FIT", "MAGNETOM Prisma_fit"),
+                ("BIOGRAPH MMR", "Biograph mMR"),
+                ("FREE MAX", "MAGNETOM Free.Max"),
+                ("FREE STAR", "MAGNETOM Free.Star"),
+                ("TRIO TIM", "MAGNETOM TrioTim"),
+                ("CIMA X", "MAGNETOM Cima.X"),
+                ("CONNECTOM", "MAGNETOM Connectom"),
+                ("PRISMA", "MAGNETOM Prisma"),
+                ("SKYRA", "MAGNETOM Skyra"),
+                ("TRIOTIM", "MAGNETOM TrioTim"),
+                ("TRIO", "MAGNETOM Trio"),
+                ("VIDA", "MAGNETOM Vida"),
+                ("VERIO", "MAGNETOM Verio"),
+                ("TERRA", "MAGNETOM Terra"),
+                ("SOLA", "MAGNETOM Sola"),
+                ("AERA", "MAGNETOM Aera"),
+                ("AVANTO", "MAGNETOM Avanto"),
+                ("ALLEGRA", "MAGNETOM Allegra"),
+                ("ESPREE", "MAGNETOM Espree"),
+                ("SYMPHONY", "MAGNETOM Symphony"),
+            ],
+        ),
+        ScannerVendor::Philips => model_from_patterns(
+            value,
+            &[
+                ("INGENIA ELITION X", "Ingenia Elition X"),
+                ("INGENIA AMBITION X", "Ingenia Ambition X"),
+                ("INGENIA CX", "Ingenia CX"),
+                ("MR 7700", "MR 7700"),
+                ("INGENIA", "Ingenia"),
+                ("ACHIEVA", "Achieva"),
+                ("INTERA", "Intera"),
+                ("ELITION", "Elition"),
+                ("AMBITION", "Ambition"),
+                ("PANORAMA", "Panorama"),
+            ],
+        ),
+        ScannerVendor::Ge => model_from_patterns(
+            value,
+            &[
+                ("DISCOVERY MR750W", "Discovery MR750w"),
+                ("DISCOVERY MR750", "Discovery MR750"),
+                ("OPTIMA MR450W", "Optima MR450w"),
+                ("SIGNA PREMIER", "SIGNA Premier"),
+                ("SIGNA ARCHITECT", "SIGNA Architect"),
+                ("SIGNA PET MR", "SIGNA PET/MR"),
+                ("SIGNA HDXT", "SIGNA HDxt"),
+                ("SIGNA VOYAGER", "SIGNA Voyager"),
+                ("SIGNA ARTIST", "SIGNA Artist"),
+                ("SIGNA HERO", "SIGNA Hero"),
+                ("GENESIS SIGNA", "Genesis SIGNA"),
+                ("MR750W", "Discovery MR750w"),
+                ("MR750", "Discovery MR750"),
+            ],
+        ),
+        ScannerVendor::Canon => model_from_patterns(
+            value,
+            &[
+                ("VANTAGE GALAN", "Vantage Galan"),
+                ("VANTAGE TITAN", "Vantage Titan"),
+                ("VANTAGE ORIAN", "Vantage Orian"),
+                ("VANTAGE ELAN", "Vantage Elan"),
+                ("EXCELART VANTAGE", "Excelart Vantage"),
+            ],
+        ),
+        ScannerVendor::UnitedImaging => model_from_patterns(
+            value,
+            &[
+                ("UMR JUPITER", "uMR Jupiter"),
+                ("UMR OMEGA", "uMR Omega"),
+                ("UMR 790", "uMR 790"),
+                ("UMR 780", "uMR 780"),
+                ("UMR 770", "uMR 770"),
+                ("UMR 670", "uMR 670"),
+                ("UMR 570", "uMR 570"),
+                ("UMR 560", "uMR 560"),
+            ],
+        ),
+        ScannerVendor::Bruker => model_from_patterns(
+            value,
+            &[
+                ("BIOSPEC", "BioSpec"),
+                ("PHARMASCAN", "PharmaScan"),
+                ("AVANCE", "Avance"),
+                ("ICON", "ICON"),
+            ],
+        ),
+    }
+}
+
+fn normalized_numeric_version(value: &str) -> Option<String> {
+    let candidate = value
+        .trim_matches(|character: char| !character.is_ascii_alphanumeric() && character != '.');
+    let candidate = candidate
+        .strip_prefix(&['R', 'r', 'V', 'v'][..])
+        .unwrap_or(candidate);
+    let parts = candidate.split('.').collect::<Vec<_>>();
+    if !(2..=4).contains(&parts.len()) {
+        return None;
+    }
+    let numbers = parts
+        .iter()
+        .map(|part| {
+            if part.is_empty() || part.len() > 2 || !part.bytes().all(|byte| byte.is_ascii_digit())
+            {
+                return None;
+            }
+            part.parse::<u8>().ok()
+        })
+        .collect::<Option<Vec<_>>>()?;
+    if numbers[0] == 0 || numbers[0] > 99 {
+        return None;
+    }
+    Some(
+        numbers
+            .iter()
+            .map(u8::to_string)
+            .collect::<Vec<_>>()
+            .join("."),
+    )
+}
+
+fn siemens_release_token(value: &str) -> Option<String> {
+    for token in semantic_words(value, 128)? {
+        let (prefix_length, valid_prefix) = if token.len() >= 2 {
+            let prefix = &token[..2];
+            (
+                2,
+                matches!(prefix, "VA" | "VB" | "VC" | "VD" | "VE" | "XA" | "XB"),
+            )
+        } else {
+            (0, false)
+        };
+        let (prefix_length, valid_prefix) = if valid_prefix {
+            (prefix_length, true)
+        } else {
+            (
+                1,
+                token
+                    .as_bytes()
+                    .first()
+                    .is_some_and(|byte| matches!(byte, b'A' | b'B' | b'C' | b'D' | b'E')),
+            )
+        };
+        if !valid_prefix || token.len() < prefix_length + 2 {
+            continue;
+        }
+        let suffix = &token[prefix_length..];
+        let valid_suffix = (suffix.len() == 2 && suffix.bytes().all(|byte| byte.is_ascii_digit()))
+            || (suffix.len() == 3
+                && suffix[..2].bytes().all(|byte| byte.is_ascii_digit())
+                && suffix.as_bytes()[2].is_ascii_uppercase());
+        if valid_suffix {
+            return Some(token);
+        }
+    }
+    None
+}
+
+fn ge_release_token(value: &str) -> Option<String> {
+    for raw in
+        value.split(|character: char| !(character.is_ascii_alphanumeric() || character == '.'))
+    {
+        let token = raw.to_ascii_uppercase();
+        if let Some(suffix) = token.strip_prefix("DV") {
+            let parts = suffix.split('.').collect::<Vec<_>>();
+            if (1..=2).contains(&parts.len())
+                && parts.iter().all(|part| {
+                    !part.is_empty()
+                        && part.len() <= 2
+                        && part.bytes().all(|byte| byte.is_ascii_digit())
+                })
+            {
+                return Some(format!("DV{}", parts.join(".")));
+            }
+        }
+    }
+    None
+}
+
+fn numeric_version_from_text(value: &str) -> Option<String> {
+    value
+        .split(|character: char| !(character.is_ascii_alphanumeric() || character == '.'))
+        .find_map(normalized_numeric_version)
+}
+
+fn canonical_software_version(vendor: Option<ScannerVendor>, value: &str) -> Option<String> {
+    if !value.is_ascii() || value.chars().count() > 128 {
+        return None;
+    }
+    let vendor = vendor?;
+    let version = match vendor {
+        ScannerVendor::Siemens => siemens_release_token(value),
+        ScannerVendor::Ge => ge_release_token(value).or_else(|| numeric_version_from_text(value)),
+        ScannerVendor::Philips
+        | ScannerVendor::Canon
+        | ScannerVendor::UnitedImaging
+        | ScannerVendor::Bruker => numeric_version_from_text(value),
+    }?;
+    Some(format!("{} {version}", vendor.name()))
+}
+
+fn canonical_coil(value: &str) -> Option<String> {
+    if !value.is_ascii() || value.chars().count() > 128 {
+        return None;
+    }
+    let compact = value
+        .chars()
+        .filter(|character| character.is_ascii_alphanumeric())
+        .collect::<String>()
+        .to_ascii_uppercase();
+    let family = if compact.contains("HEADNECK") || compact.contains("HEADANDNECK") {
+        "HEAD_NECK"
+    } else if compact.contains("HEAD") {
+        "HEAD"
+    } else if compact.contains("NECK") {
+        "NECK"
+    } else if compact.contains("BODY") {
+        "BODY"
+    } else if compact.contains("SPINE") {
+        "SPINE"
+    } else if compact.contains("KNEE") {
+        "KNEE"
+    } else if compact.contains("FLEX") {
+        "FLEX"
+    } else if compact.contains("BREAST") {
+        "BREAST"
+    } else if compact.contains("CARDIAC") || compact.contains("HEART") {
+        "CARDIAC"
+    } else if compact.contains("FOOT") {
+        "FOOT"
+    } else if compact.contains("ANKLE") {
+        "ANKLE"
+    } else if compact.contains("SHOULDER") {
+        "SHOULDER"
+    } else if compact.contains("WRIST") {
+        "WRIST"
+    } else {
+        return None;
+    };
+    let channels = value
+        .split(|character: char| !character.is_ascii_digit())
+        .filter(|part| !part.is_empty())
+        .filter_map(|part| part.parse::<u16>().ok())
+        .find(|channels| (1..=256).contains(channels));
+    Some(match channels {
+        Some(channels) => format!("{family}_{channels}"),
+        None => family.into(),
+    })
+}
+
+fn canonical_sequence_family(value: &str) -> Option<String> {
+    if !value.is_ascii() || value.chars().count() > 128 {
+        return None;
+    }
+    let compact = value
+        .chars()
+        .filter(|character| character.is_ascii_alphanumeric())
+        .collect::<String>()
+        .to_ascii_uppercase();
+    if compact.contains("EPFID") {
+        Some("EPFID".into())
+    } else if compact.contains("EP2D") {
+        Some("EP2D".into())
+    } else if compact.contains("BOLD") || compact.contains("FMRI") {
+        Some("BOLD_EPI".into())
+    } else if compact.contains("EPI") {
+        Some("EPI".into())
+    } else {
+        None
+    }
+}
+
+fn canonical_nucleus(value: &str) -> Option<String> {
+    if !value.is_ascii() || value.chars().count() > 32 {
+        return None;
+    }
+    let compact = value
+        .chars()
+        .filter(|character| character.is_ascii_alphanumeric())
+        .collect::<String>()
+        .to_ascii_uppercase();
+    match compact.as_str() {
+        "1H" | "H1" => Some("1H".into()),
+        "13C" | "C13" => Some("13C".into()),
+        "17O" | "O17" => Some("17O".into()),
+        "19F" | "F19" => Some("19F".into()),
+        "23NA" | "NA23" => Some("23Na".into()),
+        "31P" | "P31" => Some("31P".into()),
+        "129XE" | "XE129" => Some("129Xe".into()),
+        _ => None,
+    }
 }
 
 fn safe_equipment_text(value: &str, max_characters: usize) -> Option<String> {
@@ -955,13 +1392,6 @@ fn safe_equipment_text(value: &str, max_characters: usize) -> Option<String> {
 
 fn safe_code_text(value: &str, max_characters: usize) -> Option<String> {
     normalize_restricted_text(value, max_characters, true)
-}
-
-fn safe_sequence_name(value: &str, max_characters: usize) -> Option<String> {
-    // Siemens conventionally prefixes SequenceName with `*`. The marker is
-    // vendor syntax, not scientific content, so normalize it before applying
-    // the strict code-like metadata policy.
-    safe_code_text(value.trim().trim_start_matches('*'), max_characters)
 }
 
 fn normalize_restricted_text(
@@ -1004,6 +1434,16 @@ fn safe_code_list(values: &[String]) -> Vec<String> {
             if output.len() == 32 {
                 break;
             }
+        }
+    }
+    output
+}
+
+fn allowlisted_code_list(values: &[String], allowed: &[&str]) -> Vec<String> {
+    let mut output = Vec::new();
+    for value in values.iter().filter_map(|value| safe_enum(value, allowed)) {
+        if !output.contains(&value) {
+            output.push(value);
         }
     }
     output
@@ -1217,22 +1657,69 @@ mod tests {
     }
 
     #[test]
-    fn metadata_string_normalizer_matches_public_schema_alphabet() {
+    fn semantic_metadata_normalizer_retains_scanner_context_without_raw_text() {
         assert_eq!(
-            safe_equipment_text("syngo MR XA30", 128).as_deref(),
-            Some("syngo MR XA30")
-        );
-        assert!(safe_code_text("syngo MR XA30", 128).is_none());
-        assert!(safe_code_text("John^Patient", 128).is_none());
-        assert!(safe_code_text("*epfid", 128).is_none());
-        assert_eq!(
-            safe_sequence_name("*epfid2d1_80", 128).as_deref(),
-            Some("epfid2d1_80")
+            canonical_manufacturer("SIEMENS Healthineers").as_deref(),
+            Some("Siemens")
         );
         assert_eq!(
-            safe_equipment_text("Head 32", 128).as_deref(),
-            Some("Head 32")
+            canonical_scanner_model(Some(ScannerVendor::Siemens), "MAGNETOM Prisma_fit").as_deref(),
+            Some("MAGNETOM Prisma_fit")
         );
-        assert!(safe_code_text("../unsafe", 128).is_none());
+        assert_eq!(
+            canonical_software_version(Some(ScannerVendor::Siemens), "syngo MR XA30").as_deref(),
+            Some("Siemens XA30")
+        );
+        assert_eq!(
+            canonical_coil("HeadNeck_64").as_deref(),
+            Some("HEAD_NECK_64")
+        );
+        assert_eq!(canonical_coil("SENSE-Head-8").as_deref(), Some("HEAD_8"));
+        assert_eq!(
+            canonical_sequence_family("*epfid2d1_80").as_deref(),
+            Some("EPFID")
+        );
+        assert_eq!(canonical_nucleus("H1").as_deref(), Some("1H"));
+
+        let vendor_cases = [
+            ("Philips Medical Systems", "Philips"),
+            ("GE MEDICAL SYSTEMS", "GE"),
+            ("TOSHIBA", "Canon/Toshiba"),
+            ("United Imaging Healthcare", "United Imaging"),
+            ("Bruker BioSpin", "Bruker"),
+        ];
+        for (raw, canonical) in vendor_cases {
+            assert_eq!(canonical_manufacturer(raw).as_deref(), Some(canonical));
+        }
+        assert_eq!(
+            canonical_scanner_model(Some(ScannerVendor::Philips), "Achieva dStream").as_deref(),
+            Some("Achieva")
+        );
+        assert_eq!(
+            canonical_scanner_model(Some(ScannerVendor::Ge), "DISCOVERY MR750").as_deref(),
+            Some("Discovery MR750")
+        );
+        assert_eq!(
+            canonical_software_version(Some(ScannerVendor::Philips), "Release 5.7.1.0").as_deref(),
+            Some("Philips 5.7.1.0")
+        );
+        assert_eq!(
+            canonical_software_version(Some(ScannerVendor::Ge), "DV26.0_R03_1831.a").as_deref(),
+            Some("GE DV26.0")
+        );
+    }
+
+    #[test]
+    fn semantic_metadata_normalizer_drops_identifier_shaped_free_text() {
+        assert!(canonical_manufacturer("John Doe Lab").is_none());
+        assert!(canonical_scanner_model(Some(ScannerVendor::Siemens), "JOHN_DOE").is_none());
+        assert!(canonical_software_version(Some(ScannerVendor::Siemens), "JOHN_DOE").is_none());
+        assert!(canonical_coil("JOHN_DOE").is_none());
+        assert!(canonical_sequence_family("JOHN_DOE").is_none());
+        assert!(canonical_nucleus("JOHN_DOE").is_none());
+        assert_eq!(
+            allowlisted_code_list(&["EP".into(), "JOHN_DOE".into()], &["SE", "EP"]),
+            vec!["EP"]
+        );
     }
 }

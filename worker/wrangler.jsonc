@@ -5,7 +5,7 @@
   "compatibility_date": "2026-07-12",
   "workers_dev": false,
   "vars": {
-    "SERVICE_VERSION": "0.1.0",
+    "SERVICE_VERSION": "0.1.1",
     "R2_ACCOUNT_ID": "d367d26c39a5adf066cf2612d594f2c9",
     "R2_PARENT_ACCESS_KEY_ID": "81ce2e55db1b944d2d8ef7e6d0fd6268",
     "R2_BUCKET_NAME": "scaling-neuro",

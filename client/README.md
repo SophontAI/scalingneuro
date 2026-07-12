@@ -72,8 +72,10 @@ Typed allowlisted metadata includes, when present and valid:
   echo spacing, readout/dwell time, bandwidth, matrices, multiband/parallel acceleration, partial
   Fourier, echo-train length, averages, imaging frequency, and nucleus.
 
-Every copied string is length-bounded and restricted to the public schema's safe ASCII alphabet;
-every numeric field is finite and range-filtered. Unknown keys, private tags, institution/station
+Raw DICOM text never becomes uploadable merely because its characters look safe. Equipment text
+is reduced to schema-enforced manufacturer/model families, vendor-qualified release tokens,
+canonical coil and sequence families, and known nuclei; DICOM code fields use field-specific
+enumerations. Every numeric field is finite and range-filtered. Unknown keys, private tags, institution/station
 and device identifiers, free-text descriptions/comments, demographics, dates/times, accession
 numbers, and DICOM UIDs are dropped. The bundle records compressed and scrubbed-uncompressed
 SHA-256 hashes plus deterministic converter/client/policy provenance.

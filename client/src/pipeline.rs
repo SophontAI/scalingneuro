@@ -1,8 +1,9 @@
 use std::{
+    collections::HashSet,
     fs::{self, File, OpenOptions},
     io::Write,
     path::{Path, PathBuf},
-    sync::Arc,
+    sync::{Arc, Mutex},
     time::Duration,
 };
 
@@ -21,14 +22,18 @@ use crate::{
         CompleteUploadRequest, CreateUploadResponse, IngestApi, MultipartObject, has_error_code,
         normalize_base_url,
     },
-    bundle::{BundleRequest, analyze_converted, create_bundle},
+    bundle::{
+        BundleRequest, METADATA_POLICY_ID, METADATA_POLICY_VERSION, analyze_converted,
+        create_bundle,
+    },
     classify::{ConversionSignals, classify_header, refine_after_conversion},
     config::{AppPaths, ClientConfig},
     convert::Converter,
     dicom::{Discovery, SeriesGroup, discover},
     model::{
-        Classification, ClassificationDecision, ClassificationEvidence, HeldSeries, LocalManifest,
-        ManifestBundle, ReportBundle, RunReport, SourceSummary,
+        Classification, ClassificationDecision, ClassificationEvidence, ExistingArchiveBundle,
+        HeldSeries, LocalManifest, ManifestBundle, ReportBundle, RunReport, ScanSidecar,
+        SourceSummary,
     },
     pseudonym::Pseudonymizer,
     s3::MultipartUploader,
@@ -57,6 +62,20 @@ pub struct Runtime {
     pub paths: AppPaths,
     pub state: StateStore,
     _instance_lock: Arc<File>,
+    active_runs: Arc<Mutex<HashSet<String>>>,
+}
+
+struct ActiveRunGuard {
+    active_runs: Arc<Mutex<HashSet<String>>>,
+    run_id: String,
+}
+
+impl Drop for ActiveRunGuard {
+    fn drop(&mut self) {
+        if let Ok(mut active_runs) = self.active_runs.lock() {
+            active_runs.remove(&self.run_id);
+        }
+    }
 }
 
 impl Runtime {
@@ -73,7 +92,29 @@ impl Runtime {
             paths,
             state,
             _instance_lock: Arc::new(instance_lock),
+            active_runs: Arc::new(Mutex::new(HashSet::new())),
         })
+    }
+
+    fn claim_active_run(&self, run_id: &str) -> Result<Option<ActiveRunGuard>> {
+        let mut active_runs = self
+            .active_runs
+            .lock()
+            .map_err(|_| anyhow::anyhow!("active upload state is unavailable"))?;
+        if active_runs.contains(run_id) || !active_runs.is_empty() {
+            return Ok(None);
+        }
+        active_runs.insert(run_id.to_owned());
+        Ok(Some(ActiveRunGuard {
+            active_runs: Arc::clone(&self.active_runs),
+            run_id: run_id.to_owned(),
+        }))
+    }
+
+    pub fn is_run_active(&self, run_id: &str) -> bool {
+        self.active_runs
+            .lock()
+            .is_ok_and(|active_runs| active_runs.contains(run_id))
     }
 
     pub async fn enroll(
@@ -139,7 +180,7 @@ impl Runtime {
         };
         let run_id = Uuid::new_v4().to_string();
         self.state.create_run(&run_id, &canonical_source, dry_run)?;
-        self.process_existing_run(&run_id, canonical_source, dry_run, config)
+        self.process_existing_run(&run_id, canonical_source, dry_run, config, None)
             .await?;
         Ok(run_id)
     }
@@ -157,12 +198,16 @@ impl Runtime {
             Err(error) => return Err(error),
         };
         let run_id = Uuid::new_v4().to_string();
+        let active_run = self
+            .claim_active_run(&run_id)?
+            .context("new upload run unexpectedly has an active task")?;
         self.state.create_run(&run_id, &canonical_source, dry_run)?;
         let runtime = self.clone();
         let background_id = run_id.clone();
         tokio::spawn(async move {
+            let _active_run = active_run;
             if let Err(error) = runtime
-                .process_existing_run(&background_id, canonical_source, dry_run, config)
+                .process_existing_run(&background_id, canonical_source, dry_run, config, None)
                 .await
             {
                 tracing::error!(run_id = %background_id, error = %error, "upload run failed");
@@ -171,12 +216,98 @@ impl Runtime {
         Ok(run_id)
     }
 
+    pub fn resume_in_background(&self, run_id: String, summary: SourceSummary) -> Result<bool> {
+        let Some(active_run) = self.claim_active_run(&run_id)? else {
+            return Ok(false);
+        };
+        self.state
+            .update_run(&run_id, "uploading", &summary, None)?;
+        let runtime = self.clone();
+        tokio::spawn(async move {
+            let _active_run = active_run;
+            if let Err(error) = runtime.resume(Some(&run_id)).await {
+                let _ = runtime.state.update_run(
+                    &run_id,
+                    "upload_failed",
+                    &summary,
+                    Some("upload_failed"),
+                );
+                tracing::warn!(run_id, error = %error, "background resume failed");
+            }
+        });
+        Ok(true)
+    }
+
+    pub fn run_requires_privacy_repreparation(&self, run: &RunRecord) -> bool {
+        load_checkpoint_manifest(run)
+            .map(|manifest| !manifest_uses_current_privacy_contract(&manifest))
+            .unwrap_or(true)
+    }
+
+    pub fn reprepare_in_background(&self, old_run_id: &str) -> Result<Option<String>> {
+        let old_run = self
+            .state
+            .resumable_runs(Some(old_run_id))?
+            .into_iter()
+            .next()
+            .context("the requested run is not eligible for privacy repreparation")?;
+        let manifest = load_checkpoint_manifest(&old_run)?;
+        if manifest_uses_current_privacy_contract(&manifest) {
+            bail!("the requested run already uses the current privacy contract");
+        }
+        let config = ClientConfig::load(&self.paths)?;
+        if manifest.site_id != config.site_id || manifest.project_id != config.project_id {
+            bail!("the prepared run belongs to a different enrolled site or project");
+        }
+        if manifest.consent_policy_version != config.consent_policy_version {
+            bail!("the project contribution policy changed; select the source folder again");
+        }
+        let expected_bundle_ids = manifest
+            .bundles
+            .iter()
+            .map(|bundle| bundle.bundle_id.clone())
+            .collect::<HashSet<_>>();
+        if expected_bundle_ids.is_empty() {
+            bail!("the outdated checkpoint has no prepared EPI bundles");
+        }
+        let source = PathBuf::from(&old_run.source_path);
+        if !source.is_absolute() {
+            bail!("the private source checkpoint is invalid");
+        }
+        let run_id = Uuid::new_v4().to_string();
+        let Some(active_run) = self.claim_active_run(&run_id)? else {
+            return Ok(None);
+        };
+        self.state
+            .supersede_run_for_repreparation(old_run_id, &run_id)?;
+        remove_bundle_cache(&self.paths, old_run_id);
+        let runtime = self.clone();
+        let background_id = run_id.clone();
+        tokio::spawn(async move {
+            let _active_run = active_run;
+            if let Err(error) = runtime
+                .process_existing_run(
+                    &background_id,
+                    source,
+                    old_run.dry_run,
+                    config,
+                    Some(expected_bundle_ids),
+                )
+                .await
+            {
+                tracing::error!(run_id = %background_id, error = %error, "privacy repreparation failed");
+            }
+        });
+        Ok(Some(run_id))
+    }
+
     async fn process_existing_run(
         &self,
         run_id: &str,
         source: PathBuf,
         dry_run: bool,
         config: ClientConfig,
+        expected_bundle_ids: Option<HashSet<String>>,
     ) -> Result<()> {
         let state = self.state.clone();
         let paths = self.paths.clone();
@@ -228,6 +359,29 @@ impl Runtime {
                 return Err(error);
             }
         };
+        if let Some(expected_bundle_ids) = expected_bundle_ids {
+            let prepared_bundle_ids = manifest
+                .bundles
+                .iter()
+                .map(|bundle| bundle.bundle_id.clone())
+                .collect::<HashSet<_>>();
+            if prepared_bundle_ids != expected_bundle_ids {
+                report.status = "failed".into();
+                report.completed_at = Some(Utc::now().to_rfc3339());
+                report
+                    .errors
+                    .push("source_changed_since_privacy_checkpoint".into());
+                write_json(&self.paths.reports.join(format!("{run_id}.json")), &report)?;
+                self.state.update_run(
+                    run_id,
+                    "failed",
+                    &manifest.source_summary,
+                    Some("source_changed_since_privacy_checkpoint"),
+                )?;
+                remove_bundle_cache(&self.paths, run_id);
+                bail!("the selected source changed since the outdated privacy checkpoint");
+            }
+        }
         if dry_run || manifest.bundles.is_empty() {
             let status = if dry_run {
                 "dry_run_complete"
@@ -264,9 +418,10 @@ impl Runtime {
             .filter_map(|chunk| chunk.worker_upload_id.clone())
             .collect();
         report.worker_upload_id = report.worker_upload_ids.first().cloned();
+        report.existing_bundles = self.state.existing_bundles(run_id)?;
         report.archive_commit_count = chunks
             .iter()
-            .filter(|chunk| chunk.status == "committed")
+            .filter(|chunk| chunk.status == "committed" && chunk.worker_upload_id.is_some())
             .count() as u64;
         write_json(&self.paths.reports.join(format!("{run_id}.json")), &report)?;
         self.state
@@ -301,7 +456,7 @@ impl Runtime {
             MAX_BYTES_PER_UPLOAD,
         )?;
         for chunk in self.state.run_uploads(run_id)? {
-            if chunk.status == "committed" {
+            if matches!(chunk.status.as_str(), "committed" | "reconciled") {
                 continue;
             }
             let end = chunk.bundle_start + chunk.bundle_count;
@@ -311,21 +466,12 @@ impl Runtime {
                 .context("local upload chunk points outside the prepared manifest")?;
             self.continue_upload_chunk(run_id, &chunk, bundles, &manifest.client_version, &api)
                 .await?;
-            for bundle in bundles {
-                if let Some(directory) = Path::new(&bundle.nifti.local_path).parent() {
-                    if let Err(error) = fs::remove_dir_all(directory) {
-                        if error.kind() != std::io::ErrorKind::NotFound {
-                            tracing::warn!(run_id, "could not remove committed local bundle cache");
-                        }
-                    }
-                }
-            }
         }
         if self
             .state
             .run_uploads(run_id)?
             .iter()
-            .any(|chunk| chunk.status != "committed")
+            .any(|chunk| !matches!(chunk.status.as_str(), "committed" | "reconciled"))
         {
             bail!("not every archive upload chunk committed");
         }
@@ -347,57 +493,87 @@ impl Runtime {
         if bundles.iter().any(|bundle| bundle.subject_id != subject_id) {
             bail!("local upload chunk must contain exactly one pseudonymous subject");
         }
-        let (worker_upload_id, object_prefix, descriptors, committed, revived) =
-            if let Some(upload_id) = chunk.worker_upload_id.as_deref() {
-                match api.status(upload_id).await {
-                    Err(error) if has_error_code(&error, "UPLOAD_NOT_WRITABLE") => {
-                        session_from_created(
-                            api.create_upload(bundles, preparation_client_version)
-                                .await?,
-                            true,
-                        )
-                    }
-                    Err(error) => return Err(error),
-                    Ok(status) if status.status == "committed" => (
-                        upload_id.to_owned(),
-                        status.object_prefix.unwrap_or_default(),
-                        Vec::new(),
+        let plan: Option<UploadSessionPlan> = if let Some(upload_id) =
+            chunk.worker_upload_id.as_deref()
+        {
+            match api.status(upload_id).await {
+                Err(error) if has_error_code(&error, "UPLOAD_NOT_WRITABLE") => {
+                    create_session_reconciling(
+                        &self.state,
+                        run_id,
+                        api,
+                        bundles,
+                        preparation_client_version,
                         true,
+                    )
+                    .await?
+                }
+                Err(error) => return Err(error),
+                Ok(status) if status.status == "committed" => Some((
+                    upload_id.to_owned(),
+                    status.object_prefix.unwrap_or_default(),
+                    Vec::new(),
+                    true,
+                    false,
+                )),
+                Ok(status) if status.status == "expired" => {
+                    create_session_reconciling(
+                        &self.state,
+                        run_id,
+                        api,
+                        bundles,
+                        preparation_client_version,
+                        true,
+                    )
+                    .await?
+                }
+                Ok(status) if status.status == "withdrawn" => {
+                    bail!("archive upload was withdrawn and cannot be resumed");
+                }
+                Ok(_) => Some(match api.refresh_credentials(upload_id).await {
+                    Ok(refreshed) => (
+                        refreshed.upload_id,
+                        refreshed.object_prefix,
+                        refreshed.multipart_objects,
+                        false,
                         false,
                     ),
-                    Ok(status) if status.status == "expired" => session_from_created(
-                        api.create_upload(bundles, preparation_client_version)
-                            .await?,
-                        true,
-                    ),
-                    Ok(status) if status.status == "withdrawn" => {
-                        bail!("archive upload was withdrawn and cannot be resumed");
+                    Err(error) if has_error_code(&error, "UPLOAD_NOT_WRITABLE") => {
+                        let Some(recreated) = create_session_reconciling(
+                            &self.state,
+                            run_id,
+                            api,
+                            bundles,
+                            preparation_client_version,
+                            true,
+                        )
+                        .await?
+                        else {
+                            self.state
+                                .set_chunk_status(run_id, chunk.chunk_index, "reconciled")?;
+                            return Ok(());
+                        };
+                        recreated
                     }
-                    Ok(_) => match api.refresh_credentials(upload_id).await {
-                        Ok(refreshed) => (
-                            refreshed.upload_id,
-                            refreshed.object_prefix,
-                            refreshed.multipart_objects,
-                            false,
-                            false,
-                        ),
-                        Err(error) if has_error_code(&error, "UPLOAD_NOT_WRITABLE") => {
-                            session_from_created(
-                                api.create_upload(bundles, preparation_client_version)
-                                    .await?,
-                                true,
-                            )
-                        }
-                        Err(error) => return Err(error),
-                    },
-                }
-            } else {
-                session_from_created(
-                    api.create_upload(bundles, preparation_client_version)
-                        .await?,
-                    false,
-                )
-            };
+                    Err(error) => return Err(error),
+                }),
+            }
+        } else {
+            create_session_reconciling(
+                &self.state,
+                run_id,
+                api,
+                bundles,
+                preparation_client_version,
+                false,
+            )
+            .await?
+        };
+        let Some((worker_upload_id, object_prefix, descriptors, committed, revived)) = plan else {
+            self.state
+                .set_chunk_status(run_id, chunk.chunk_index, "reconciled")?;
+            return Ok(());
+        };
         self.state
             .set_chunk_worker(run_id, chunk.chunk_index, &worker_upload_id)?;
         if committed {
@@ -415,9 +591,17 @@ impl Runtime {
         if completion_path.is_file() {
             let saved: CompleteUploadRequest =
                 serde_json::from_slice(&fs::read(&completion_path)?)?;
-            let status = api
-                .complete_upload(&worker_upload_id, saved.objects)
-                .await?;
+            let status = match api.complete_upload(&worker_upload_id, saved.objects).await {
+                Ok(status) => status,
+                Err(error)
+                    if reconcile_completion_duplicate(&self.state, run_id, bundles, &error)? =>
+                {
+                    self.state
+                        .set_chunk_status(run_id, chunk.chunk_index, "reconciled")?;
+                    return Ok(());
+                }
+                Err(error) => return Err(error),
+            };
             if status.status == "committed" || status.status == "complete" {
                 self.state
                     .set_chunk_status(run_id, chunk.chunk_index, "committed")?;
@@ -439,9 +623,18 @@ impl Runtime {
         let completed = uploader.upload_all(&objects, &descriptors).await?;
         let request = CompleteUploadRequest { objects: completed };
         write_json(&completion_path, &request)?;
-        let status = api
+        let status = match api
             .complete_upload(&worker_upload_id, request.objects)
-            .await?;
+            .await
+        {
+            Ok(status) => status,
+            Err(error) if reconcile_completion_duplicate(&self.state, run_id, bundles, &error)? => {
+                self.state
+                    .set_chunk_status(run_id, chunk.chunk_index, "reconciled")?;
+                return Ok(());
+            }
+            Err(error) => return Err(error),
+        };
         if status.status != "committed" && status.status != "complete" {
             bail!("ingest API did not commit the completed multipart upload");
         }
@@ -474,13 +667,17 @@ impl Runtime {
                         .collect();
                     let committed = chunks
                         .iter()
-                        .filter(|chunk| chunk.status == "committed")
+                        .filter(|chunk| {
+                            chunk.status == "committed" && chunk.worker_upload_id.is_some()
+                        })
                         .count() as u64;
+                    let existing_bundles = self.state.existing_bundles(&run.id)?;
                     update_report_status(
                         &self.paths,
                         &run.id,
                         "complete",
                         worker_upload_ids,
+                        existing_bundles,
                         committed,
                     )?;
                     remove_bundle_cache(&self.paths, &run.id);
@@ -547,13 +744,24 @@ fn load_or_create_pending_enrollment(
     let invite_sha256 = hex::encode(Sha256::digest(invite.as_bytes()));
     if paths.pending_enrollment.is_file() {
         restrict_private_file(&paths.pending_enrollment)?;
-        let pending: PendingEnrollment = serde_json::from_slice(
+        let mut pending: PendingEnrollment = serde_json::from_slice(
             &fs::read(&paths.pending_enrollment)
                 .context("could not read pending enrollment state")?,
         )
         .context("pending enrollment state is invalid")?;
         if pending.invite_sha256 == invite_sha256 && pending.api_origin == api_origin {
             validate_pending_enrollment(&pending)?;
+            let current_platform = format!("{}-{}", std::env::consts::OS, std::env::consts::ARCH);
+            if pending.client_version != crate::CLIENT_VERSION
+                || pending.platform != current_platform
+            {
+                // Preserve the replay-bound enrollment UUID and device token,
+                // but let an upgraded client recover a response lost under an
+                // older minimum-version contract.
+                pending.client_version = crate::CLIENT_VERSION.into();
+                pending.platform = current_platform;
+                write_private_json_atomic(&paths.pending_enrollment, &pending)?;
+            }
             return Ok(pending);
         }
     }
@@ -646,6 +854,63 @@ fn restrict_private_file(_path: &Path) -> Result<()> {
 }
 
 type UploadSessionPlan = (String, String, Vec<MultipartObject>, bool, bool);
+const MINIMUM_PRIVACY_CLIENT_VERSION: &str = "0.1.1";
+
+fn load_checkpoint_manifest(run: &RunRecord) -> Result<LocalManifest> {
+    let path = run
+        .manifest_path
+        .as_deref()
+        .context("prepared run has no local manifest")?;
+    let manifest: LocalManifest =
+        serde_json::from_slice(&fs::read(path)?).context("prepared run manifest is invalid")?;
+    if manifest.run_id != run.id {
+        bail!("prepared run manifest identity does not match local state");
+    }
+    Ok(manifest)
+}
+
+fn manifest_uses_current_privacy_contract(manifest: &LocalManifest) -> bool {
+    if !privacy_client_version_supported(&manifest.client_version)
+        || manifest.metadata_policy.policy_id != METADATA_POLICY_ID
+        || manifest.metadata_policy.policy_version != METADATA_POLICY_VERSION
+    {
+        return false;
+    }
+    manifest.bundles.iter().all(|bundle| {
+        let Ok(bytes) = fs::read(&bundle.metadata.local_path) else {
+            return false;
+        };
+        let Ok(raw) = serde_json::from_slice::<serde_json::Value>(&bytes) else {
+            return false;
+        };
+        let Ok(sidecar) = serde_json::from_value::<ScanSidecar>(raw.clone()) else {
+            return false;
+        };
+        let Ok(roundtrip) = serde_json::to_value(&sidecar) else {
+            return false;
+        };
+        raw == roundtrip
+            && sidecar.schema_version == crate::SIDECAR_SCHEMA_VERSION
+            && sidecar.bundle_id == bundle.bundle_id
+            && sidecar.series_id == bundle.series_id
+            && sidecar.subject_id == bundle.subject_id
+            && sidecar.session_id == bundle.session_id
+            && sidecar.protocol_group_id == bundle.protocol_group_id
+            && sidecar.metadata_policy.policy_id == METADATA_POLICY_ID
+            && sidecar.metadata_policy.policy_version == METADATA_POLICY_VERSION
+            && sidecar.conversion.client_version == manifest.client_version
+            && privacy_client_version_supported(&sidecar.conversion.client_version)
+    })
+}
+
+fn privacy_client_version_supported(value: &str) -> bool {
+    let Ok(version) = semver::Version::parse(value) else {
+        return false;
+    };
+    let minimum = semver::Version::parse(MINIMUM_PRIVACY_CLIENT_VERSION)
+        .expect("minimum privacy client version must be valid semver");
+    version >= minimum
+}
 
 fn validate_manifest_enrollment(manifest: &LocalManifest, config: &ClientConfig) -> Result<()> {
     if manifest.site_id != config.site_id || manifest.project_id != config.project_id {
@@ -656,8 +921,8 @@ fn validate_manifest_enrollment(manifest: &LocalManifest, config: &ClientConfig)
     {
         bail!("prepared run requires approval under the current contribution policy");
     }
-    if manifest.client_version.trim().is_empty() {
-        bail!("prepared run has no client provenance version");
+    if !manifest_uses_current_privacy_contract(manifest) {
+        bail!("prepared run requires repreparation under the current privacy contract");
     }
     Ok(())
 }
@@ -671,6 +936,103 @@ fn session_from_created(created: CreateUploadResponse, revived: bool) -> UploadS
         committed,
         revived,
     )
+}
+
+async fn create_session_reconciling(
+    state: &StateStore,
+    run_id: &str,
+    api: &IngestApi,
+    bundles: &[ManifestBundle],
+    client_version: &str,
+    revived: bool,
+) -> Result<Option<UploadSessionPlan>> {
+    let mut remaining = bundles.to_vec();
+    for _ in 0..=bundles.len() {
+        match api.create_upload(&remaining, client_version).await {
+            Ok(created) => return Ok(Some(session_from_created(created, revived))),
+            Err(error) => {
+                let Some(existing) = error
+                    .downcast_ref::<crate::api::ApiFailure>()
+                    .and_then(crate::api::ApiFailure::exact_existing_bundles)
+                else {
+                    return Err(error);
+                };
+                let reconciled_ids = validate_existing_bundles(&remaining, existing)?;
+                state.record_existing_bundles(run_id, existing)?;
+                remaining.retain(|bundle| !reconciled_ids.contains(&bundle.bundle_id));
+                if remaining.is_empty() {
+                    return Ok(None);
+                }
+            }
+        }
+    }
+    bail!("ingest API duplicate reconciliation did not converge")
+}
+
+fn reconcile_completion_duplicate(
+    state: &StateStore,
+    run_id: &str,
+    bundles: &[ManifestBundle],
+    error: &anyhow::Error,
+) -> Result<bool> {
+    let Some(existing) = error
+        .downcast_ref::<crate::api::ApiFailure>()
+        .and_then(crate::api::ApiFailure::exact_existing_bundles)
+    else {
+        return Ok(false);
+    };
+    let mut reconciled_ids = validate_existing_bundles(bundles, existing)?;
+    let previously_recorded = state
+        .existing_bundles(run_id)?
+        .into_iter()
+        .filter(|item| {
+            bundles
+                .iter()
+                .any(|bundle| bundle.bundle_id == item.bundle_id)
+        })
+        .collect::<Vec<_>>();
+    if !previously_recorded.is_empty() {
+        reconciled_ids.extend(validate_existing_bundles(bundles, &previously_recorded)?);
+    }
+    if reconciled_ids.len() != bundles.len() {
+        bail!("completion-time duplicate reconciliation omitted a prepared bundle");
+    }
+    state.record_existing_bundles(run_id, existing)?;
+    Ok(true)
+}
+
+fn validate_existing_bundles(
+    requested: &[ManifestBundle],
+    existing: &[ExistingArchiveBundle],
+) -> Result<std::collections::HashSet<String>> {
+    if existing.is_empty() || existing.len() > requested.len() {
+        bail!("ingest API returned an invalid existing-bundle reconciliation");
+    }
+    let mut ids = std::collections::HashSet::with_capacity(existing.len());
+    for item in existing {
+        if !ids.insert(item.bundle_id.clone()) {
+            bail!("ingest API repeated an existing bundle identity");
+        }
+        let requested = requested
+            .iter()
+            .find(|bundle| bundle.bundle_id == item.bundle_id)
+            .context("ingest API reconciled a bundle that was not requested")?;
+        let expected_uncompressed = requested
+            .nifti
+            .uncompressed_sha256
+            .as_deref()
+            .context("prepared NIfTI has no scientific-content hash")?;
+        if item.series_id != requested.series_id
+            || item.subject_id != requested.subject_id
+            || item.session_id != requested.session_id
+            || item.protocol_group_id != requested.protocol_group_id
+            || item.nii_uncompressed_sha256 != expected_uncompressed
+            || Uuid::parse_str(&item.upload_id).is_err()
+        {
+            bail!("existing archive bundle identity does not match the prepared scan");
+        }
+    }
+    Ok(ids)
 }
 
 fn prepare_run(
@@ -856,6 +1218,10 @@ fn prepare_run(
         project_id: config.project_id.clone(),
         consent_policy_version: config.consent_policy_version.clone(),
         client_version: crate::CLIENT_VERSION.into(),
+        metadata_policy: crate::model::MetadataPolicy {
+            policy_id: METADATA_POLICY_ID.into(),
+            policy_version: METADATA_POLICY_VERSION.into(),
+        },
         created_at: Utc::now().to_rfc3339(),
         source_summary: summary.clone(),
         bundles: bundles.clone(),
@@ -877,6 +1243,7 @@ fn prepare_run(
         errors,
         worker_upload_id: None,
         worker_upload_ids: Vec::new(),
+        existing_bundles: Vec::new(),
         archive_commit_count: 0,
     };
     write_json(&manifest_path, &manifest)?;
@@ -913,6 +1280,10 @@ fn finish_unstable_preparation(
         project_id: config.project_id.clone(),
         consent_policy_version: config.consent_policy_version.clone(),
         client_version: crate::CLIENT_VERSION.into(),
+        metadata_policy: crate::model::MetadataPolicy {
+            policy_id: METADATA_POLICY_ID.into(),
+            policy_version: METADATA_POLICY_VERSION.into(),
+        },
         created_at: Utc::now().to_rfc3339(),
         source_summary: summary.clone(),
         bundles: Vec::new(),
@@ -932,6 +1303,7 @@ fn finish_unstable_preparation(
         errors: vec!["source_changed_or_incomplete".into()],
         worker_upload_id: None,
         worker_upload_ids: Vec::new(),
+        existing_bundles: Vec::new(),
         archive_commit_count: 0,
     };
     let manifest_path = paths.reports.join(format!("{run_id}.manifest.json"));
@@ -1011,12 +1383,28 @@ fn register_objects(
     }
     let descriptor_keys: std::collections::HashSet<_> =
         descriptors.iter().map(|item| item.key.as_str()).collect();
+    let existing_bundle_ids: std::collections::HashSet<_> = state
+        .existing_bundles(run_id)?
+        .into_iter()
+        .map(|bundle| bundle.bundle_id)
+        .collect();
+    let mut expected_descriptor_keys = std::collections::HashSet::new();
     for bundle in bundles {
+        if existing_bundle_ids.contains(&bundle.bundle_id) {
+            for object in [&bundle.nifti, &bundle.metadata] {
+                let key = format!("{prefix}{}", object.relative_key);
+                if descriptor_keys.contains(key.as_str()) {
+                    bail!("ingest API allocated an object for an already archived bundle");
+                }
+            }
+            continue;
+        }
         for object in [&bundle.nifti, &bundle.metadata] {
             let key = format!("{prefix}{}", object.relative_key);
             if !descriptor_keys.contains(key.as_str()) {
                 bail!("ingest API multipart plan key does not match the requested archive key");
             }
+            expected_descriptor_keys.insert(key.clone());
             state.add_upload_object(&UploadObjectRecord {
                 run_id: run_id.into(),
                 worker_upload_id: worker_upload_id.into(),
@@ -1029,6 +1417,13 @@ fn register_objects(
                 etag: None,
             })?;
         }
+    }
+    if expected_descriptor_keys.len() != descriptor_keys.len()
+        || !descriptors
+            .iter()
+            .all(|descriptor| expected_descriptor_keys.contains(&descriptor.key))
+    {
+        bail!("ingest API multipart plan contains an unexpected archive key");
     }
     Ok(())
 }
@@ -1137,6 +1532,7 @@ fn update_report_status(
     run_id: &str,
     status: &str,
     worker_upload_ids: Vec<String>,
+    existing_bundles: Vec<ExistingArchiveBundle>,
     archive_commit_count: u64,
 ) -> Result<()> {
     let path = paths.reports.join(format!("{run_id}.json"));
@@ -1145,6 +1541,7 @@ fn update_report_status(
     report.completed_at = Some(Utc::now().to_rfc3339());
     report.worker_upload_id = worker_upload_ids.first().cloned();
     report.worker_upload_ids = worker_upload_ids;
+    report.existing_bundles = existing_bundles;
     report.archive_commit_count = archive_commit_count;
     write_json(&path, &report)
 }
@@ -1159,6 +1556,43 @@ mod tests {
             nifti_path: PathBuf::from("fixture.nii"),
             metadata_path: None,
             metadata,
+        }
+    }
+
+    fn upload_test_bundle(bundle_digit: char, series_digit: char) -> ManifestBundle {
+        let bundle_id = bundle_digit.to_string().repeat(24);
+        ManifestBundle {
+            bundle_id: bundle_id.clone(),
+            series_id: series_digit.to_string().repeat(24),
+            subject_id: "3".repeat(24),
+            session_id: "4".repeat(24),
+            protocol_group_id: "5".repeat(24),
+            nifti: crate::model::ManifestObject {
+                relative_key: format!("{bundle_id}/scan_bold.nii.gz"),
+                local_path: format!("/private/{bundle_id}/scan_bold.nii.gz"),
+                size: 1_024,
+                sha256: "a".repeat(64),
+                uncompressed_sha256: Some("b".repeat(64)),
+            },
+            metadata: crate::model::ManifestObject {
+                relative_key: format!("{bundle_id}/scan_bold.json"),
+                local_path: format!("/private/{bundle_id}/scan_bold.json"),
+                size: 512,
+                sha256: "c".repeat(64),
+                uncompressed_sha256: None,
+            },
+            source_dicom_count: 20,
+            classification: Classification {
+                decision: ClassificationDecision::Accepted,
+                kind: "functional_epi".into(),
+                confidence: 0.99,
+                evidence: Vec::new(),
+            },
+            qc: crate::model::QcResult {
+                passed: true,
+                checks: Vec::new(),
+                warnings: Vec::new(),
+            },
         }
     }
 
@@ -1191,6 +1625,231 @@ mod tests {
         assert!(multi_echo_labels(&duplicate).is_none());
     }
 
+    #[tokio::test]
+    async fn exact_duplicate_is_checkpointed_and_new_subset_is_initialized() {
+        use axum::{Json, Router, http::StatusCode, routing::post};
+
+        let existing_bundle = upload_test_bundle('1', '2');
+        let new_bundle = upload_test_bundle('6', '7');
+        let existing = ExistingArchiveBundle {
+            bundle_id: existing_bundle.bundle_id.clone(),
+            series_id: existing_bundle.series_id.clone(),
+            subject_id: existing_bundle.subject_id.clone(),
+            session_id: existing_bundle.session_id.clone(),
+            protocol_group_id: existing_bundle.protocol_group_id.clone(),
+            upload_id: "11111111-1111-4111-8111-111111111111".into(),
+            nii_uncompressed_sha256: existing_bundle.nifti.uncompressed_sha256.clone().unwrap(),
+        };
+        let existing_for_server = existing.clone();
+        let app = Router::new().route(
+            "/v1/uploads",
+            post(move |Json(body): Json<serde_json::Value>| {
+                let existing = existing_for_server.clone();
+                async move {
+                    let bundles = body["bundles"].as_array().unwrap();
+                    if bundles.iter().any(|bundle| {
+                        bundle["bundle_id"].as_str() == Some(existing.bundle_id.as_str())
+                    }) {
+                        return (
+                            StatusCode::CONFLICT,
+                            Json(serde_json::json!({
+                                "error": {
+                                    "code": "DUPLICATE_BUNDLE",
+                                    "message": "already committed",
+                                    "request_id": "request-duplicate",
+                                    "details": {
+                                        "reason": "active_exact_match",
+                                        "existing_bundles": [existing]
+                                    }
+                                }
+                            })),
+                        );
+                    }
+                    let bundle = &bundles[0];
+                    let prefix = "archive/v1/site/project/22222222-2222-4222-8222-222222222222/";
+                    (
+                        StatusCode::CREATED,
+                        Json(serde_json::json!({
+                            "upload_id": "22222222-2222-4222-8222-222222222222",
+                            "status": "uploading",
+                            "object_prefix": prefix,
+                            "multipart_objects": [
+                                {
+                                    "key": format!("{prefix}{}", bundle["nii"]["relative_key"].as_str().unwrap()),
+                                    "upload_id": "multipart-nii",
+                                    "part_size": 67_108_864
+                                },
+                                {
+                                    "key": format!("{prefix}{}", bundle["metadata"]["relative_key"].as_str().unwrap()),
+                                    "upload_id": "multipart-json",
+                                    "part_size": 67_108_864
+                                }
+                            ]
+                        })),
+                    )
+                }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let config = ClientConfig {
+            api_url: format!("http://{address}"),
+            device_token: "sn_device_test".into(),
+            site_id: "site".into(),
+            project_id: "project".into(),
+            project_name: "Project".into(),
+            consent_policy_version: "policy-1".into(),
+            pseudonym_key_b64: "fixture".into(),
+        };
+        let api = IngestApi::from_config(&config).unwrap();
+        let directory = tempfile::tempdir().unwrap();
+        let state = StateStore::open(&directory.path().join("state.sqlite3")).unwrap();
+        state
+            .create_run("run", Path::new("/private/source"), false)
+            .unwrap();
+
+        let requested = vec![existing_bundle, new_bundle];
+        let plan = create_session_reconciling(&state, "run", &api, &requested, "0.2.0", false)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(plan.0, "22222222-2222-4222-8222-222222222222");
+        assert_eq!(plan.2.len(), 2);
+        assert_eq!(state.existing_bundles("run").unwrap(), vec![existing]);
+        register_objects(&state, "run", &plan.0, &plan.1, &requested, &plan.2).unwrap();
+        let objects = state.upload_objects(&plan.0).unwrap();
+        assert_eq!(objects.len(), 2);
+        assert!(
+            objects
+                .iter()
+                .all(|object| object.key.contains(&"6".repeat(24)))
+        );
+        let existing_only =
+            create_session_reconciling(&state, "run", &api, &requested[..1], "0.2.0", false)
+                .await
+                .unwrap();
+        assert!(existing_only.is_none());
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn completion_race_is_reconciled_without_manual_resume() {
+        use axum::{Json, Router, http::StatusCode, routing::post};
+
+        let prior_bundle = upload_test_bundle('6', '7');
+        let bundle = upload_test_bundle('1', '2');
+        let existing = ExistingArchiveBundle {
+            bundle_id: bundle.bundle_id.clone(),
+            series_id: bundle.series_id.clone(),
+            subject_id: bundle.subject_id.clone(),
+            session_id: bundle.session_id.clone(),
+            protocol_group_id: bundle.protocol_group_id.clone(),
+            upload_id: "11111111-1111-4111-8111-111111111111".into(),
+            nii_uncompressed_sha256: bundle.nifti.uncompressed_sha256.clone().unwrap(),
+        };
+        let app = Router::new().route(
+            "/v1/uploads/{upload_id}/complete",
+            post(move || {
+                let existing = existing.clone();
+                async move {
+                    (
+                        StatusCode::CONFLICT,
+                        Json(serde_json::json!({
+                            "error": {
+                                "code": "DUPLICATE_BUNDLE",
+                                "message": "committed concurrently",
+                                "request_id": "request-race",
+                                "details": {
+                                    "reason": "active_exact_match",
+                                    "existing_bundles": [existing]
+                                }
+                            }
+                        })),
+                    )
+                }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let config = ClientConfig {
+            api_url: format!("http://{address}"),
+            device_token: "sn_device_test".into(),
+            site_id: "site".into(),
+            project_id: "project".into(),
+            project_name: "Project".into(),
+            consent_policy_version: "policy-1".into(),
+            pseudonym_key_b64: "fixture".into(),
+        };
+        let api = IngestApi::from_config(&config).unwrap();
+        let error = api
+            .complete_upload("22222222-2222-4222-8222-222222222222", Vec::new())
+            .await
+            .unwrap_err();
+        let directory = tempfile::tempdir().unwrap();
+        let state = StateStore::open(&directory.path().join("state.sqlite3")).unwrap();
+        state
+            .create_run("run", Path::new("/private/source"), false)
+            .unwrap();
+        state
+            .record_existing_bundles(
+                "run",
+                &[ExistingArchiveBundle {
+                    bundle_id: prior_bundle.bundle_id.clone(),
+                    series_id: prior_bundle.series_id.clone(),
+                    subject_id: prior_bundle.subject_id.clone(),
+                    session_id: prior_bundle.session_id.clone(),
+                    protocol_group_id: prior_bundle.protocol_group_id.clone(),
+                    upload_id: "33333333-3333-4333-8333-333333333333".into(),
+                    nii_uncompressed_sha256: prior_bundle
+                        .nifti
+                        .uncompressed_sha256
+                        .clone()
+                        .unwrap(),
+                }],
+            )
+            .unwrap();
+        assert!(
+            reconcile_completion_duplicate(&state, "run", &[prior_bundle, bundle], &error).unwrap()
+        );
+        assert_eq!(state.existing_bundles("run").unwrap().len(), 2);
+        server.abort();
+    }
+
+    #[test]
+    fn existing_bundle_reconciliation_rejects_identity_mismatch() {
+        let requested = upload_test_bundle('1', '2');
+        let mismatched = ExistingArchiveBundle {
+            bundle_id: requested.bundle_id.clone(),
+            series_id: "f".repeat(24),
+            subject_id: requested.subject_id.clone(),
+            session_id: requested.session_id.clone(),
+            protocol_group_id: requested.protocol_group_id.clone(),
+            upload_id: "11111111-1111-4111-8111-111111111111".into(),
+            nii_uncompressed_sha256: requested.nifti.uncompressed_sha256.clone().unwrap(),
+        };
+        assert!(validate_existing_bundles(&[requested], &[mismatched]).is_err());
+    }
+
+    #[test]
+    fn active_run_claim_prevents_concurrent_resume_and_releases_on_drop() {
+        let directory = tempfile::tempdir().unwrap();
+        let runtime = Runtime::initialize(Some(directory.path())).unwrap();
+        runtime
+            .state
+            .create_run("run", Path::new("/private/source"), false)
+            .unwrap();
+        let active = runtime.claim_active_run("run").unwrap().unwrap();
+        assert!(runtime.is_run_active("run"));
+        assert!(runtime.claim_active_run("run").unwrap().is_none());
+        assert!(runtime.claim_active_run("other-run").unwrap().is_none());
+        assert_eq!(runtime.state.in_progress_runs().unwrap().len(), 1);
+        drop(active);
+        assert!(!runtime.is_run_active("run"));
+        assert!(runtime.claim_active_run("run").unwrap().is_some());
+    }
+
     #[cfg(unix)]
     #[test]
     fn runtime_lock_and_database_are_owner_only() {
@@ -1208,7 +1867,7 @@ mod tests {
     }
 
     #[test]
-    fn resume_requires_the_original_enrollment_and_policy() {
+    fn resume_requires_current_privacy_and_original_enrollment() {
         let config = ClientConfig {
             api_url: crate::DEFAULT_API_URL.into(),
             device_token: "sn_device_fixture".into(),
@@ -1224,17 +1883,85 @@ mod tests {
             site_id: "site-a".into(),
             project_id: "project-a".into(),
             consent_policy_version: "policy-2".into(),
-            client_version: "0.0.9".into(),
+            client_version: crate::CLIENT_VERSION.into(),
+            metadata_policy: crate::model::MetadataPolicy {
+                policy_id: METADATA_POLICY_ID.into(),
+                policy_version: METADATA_POLICY_VERSION.into(),
+            },
             created_at: "2026-07-12T00:00:00Z".into(),
             source_summary: SourceSummary::default(),
             bundles: Vec::new(),
         };
         assert!(validate_manifest_enrollment(&manifest, &config).is_ok());
+        manifest.client_version = "0.1.0".into();
+        assert!(validate_manifest_enrollment(&manifest, &config).is_err());
+        manifest.client_version = crate::CLIENT_VERSION.into();
+        manifest.metadata_policy.policy_version = "1.0.0".into();
+        assert!(validate_manifest_enrollment(&manifest, &config).is_err());
+        manifest.metadata_policy.policy_version = METADATA_POLICY_VERSION.into();
         manifest.project_id = "project-b".into();
         assert!(validate_manifest_enrollment(&manifest, &config).is_err());
         manifest.project_id = "project-a".into();
         manifest.consent_policy_version = "policy-1".into();
         assert!(validate_manifest_enrollment(&manifest, &config).is_err());
+    }
+
+    #[test]
+    fn privacy_checkpoint_rejects_old_or_tampered_sidecars_but_allows_future_patch_clients() {
+        let directory = tempfile::tempdir().unwrap();
+        let sidecar_path = directory.path().join("scan.json");
+        let mut bundle = upload_test_bundle('1', '2');
+        bundle.metadata.local_path = sidecar_path.to_string_lossy().into_owned();
+        let mut sidecar: ScanSidecar = serde_json::from_str(include_str!(
+            "../../schemas/examples/scan-sidecar-v1.example.json"
+        ))
+        .unwrap();
+        sidecar.bundle_id = bundle.bundle_id.clone();
+        sidecar.series_id = bundle.series_id.clone();
+        sidecar.subject_id = bundle.subject_id.clone();
+        sidecar.session_id = bundle.session_id.clone();
+        sidecar.protocol_group_id = bundle.protocol_group_id.clone();
+        sidecar.conversion.client_version = crate::CLIENT_VERSION.into();
+        fs::write(&sidecar_path, serde_json::to_vec(&sidecar).unwrap()).unwrap();
+        let mut manifest = LocalManifest {
+            schema_version: MANIFEST_SCHEMA_VERSION.into(),
+            run_id: "run".into(),
+            site_id: "site".into(),
+            project_id: "project".into(),
+            consent_policy_version: "policy".into(),
+            client_version: crate::CLIENT_VERSION.into(),
+            metadata_policy: crate::model::MetadataPolicy {
+                policy_id: METADATA_POLICY_ID.into(),
+                policy_version: METADATA_POLICY_VERSION.into(),
+            },
+            created_at: "2026-07-12T00:00:00Z".into(),
+            source_summary: SourceSummary::default(),
+            bundles: vec![bundle],
+        };
+        assert!(manifest_uses_current_privacy_contract(&manifest));
+
+        let mut tampered = serde_json::to_value(&sidecar).unwrap();
+        tampered
+            .as_object_mut()
+            .unwrap()
+            .insert("patient_name".into(), serde_json::json!("private"));
+        fs::write(&sidecar_path, serde_json::to_vec(&tampered).unwrap()).unwrap();
+        assert!(!manifest_uses_current_privacy_contract(&manifest));
+
+        sidecar.metadata_policy.policy_version = "1.0.0".into();
+        fs::write(&sidecar_path, serde_json::to_vec(&sidecar).unwrap()).unwrap();
+        assert!(!manifest_uses_current_privacy_contract(&manifest));
+
+        sidecar.metadata_policy.policy_version = METADATA_POLICY_VERSION.into();
+        sidecar.conversion.client_version = "0.1.0".into();
+        manifest.client_version = "0.1.0".into();
+        fs::write(&sidecar_path, serde_json::to_vec(&sidecar).unwrap()).unwrap();
+        assert!(!manifest_uses_current_privacy_contract(&manifest));
+
+        sidecar.conversion.client_version = "0.1.2".into();
+        manifest.client_version = "0.1.2".into();
+        fs::write(&sidecar_path, serde_json::to_vec(&sidecar).unwrap()).unwrap();
+        assert!(manifest_uses_current_privacy_contract(&manifest));
     }
 
     #[test]
@@ -1254,6 +1981,20 @@ mod tests {
         assert_eq!(first.device_token, second.device_token);
         assert_eq!(second.device_name, "Fixture workstation");
         assert_eq!(second.api_origin, origin);
+        let mut old_pending = second.clone();
+        old_pending.client_version = "0.1.0".into();
+        old_pending.platform = "old-platform".into();
+        write_private_json_atomic(&paths.pending_enrollment, &old_pending).unwrap();
+        let upgraded =
+            load_or_create_pending_enrollment(&paths, invite, origin, "Ignored name".into())
+                .unwrap();
+        assert_eq!(upgraded.enrollment_id, first.enrollment_id);
+        assert_eq!(upgraded.device_token, first.device_token);
+        assert_eq!(upgraded.client_version, crate::CLIENT_VERSION);
+        assert_eq!(
+            upgraded.platform,
+            format!("{}-{}", std::env::consts::OS, std::env::consts::ARCH)
+        );
         let saved = fs::read_to_string(&paths.pending_enrollment).unwrap();
         assert!(!saved.contains(invite));
         #[cfg(unix)]

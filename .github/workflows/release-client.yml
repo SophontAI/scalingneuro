@@ -33,6 +33,8 @@ env:
   DCM2NIIX_LINUX_SHA256: e88b40f6ebbcf9f47ebfdd7bb5f0127297cb7e8b06266a91a4642b5814031bd0
   DCM2NIIX_MACOS_SHA256: 51e909fca34db8198d8a917cb85a00e135841d32a3c51f1154ec8d5b874de852
   DCM2NIIX_WINDOWS_SHA256: 969bca4fc41d5f82658acef9d0ed9cbfbd4114ec8e8668906910241fcbb2c048
+  LINUX_BUILD_IMAGE: quay.io/pypa/manylinux_2_28_x86_64@sha256:b04887b645dde99b9e955aeae3ff4da414992d0bd88259f046295b56361c5614
+  LINUX_GLIBC_MINIMUM: "2.28"
 
 jobs:
   metadata:
@@ -149,17 +151,33 @@ jobs:
     name: Linux x86_64 package
     needs: [metadata, verify]
     runs-on: ubuntu-latest
+    container:
+      image: quay.io/pypa/manylinux_2_28_x86_64@sha256:b04887b645dde99b9e955aeae3ff4da414992d0bd88259f046295b56361c5614
+    defaults:
+      run:
+        shell: bash
     steps:
       - name: Check out source
         uses: actions/checkout@v6
+
+      - name: Install Linux build and archive dependencies
+        run: |
+          set -euo pipefail
+          dnf install --assumeyes \
+            binutils \
+            curl \
+            gzip \
+            jq \
+            pkgconf-pkg-config \
+            tar \
+            unzip \
+            wayland-devel \
+            zstd
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: 1.85.0
-
-      - name: Install Linux folder-picker build dependencies
-        run: sudo apt-get update && sudo apt-get install --yes libwayland-dev pkg-config
 
       - name: Cache Rust build
         uses: Swatinem/rust-cache@v2
@@ -198,12 +216,82 @@ jobs:
             --arg converter_sha256 "$DCM2NIIX_LINUX_SHA256" \
             --arg git_commit "$GITHUB_SHA" \
             --arg platform "linux-x86_64" \
-            '{client_version:$client_version,converter:{name:"dcm2niix",version:$converter_version,source_archive_sha256:$converter_sha256},git_commit:$git_commit,platform:$platform,signed:false}' \
+            --arg build_image "$LINUX_BUILD_IMAGE" \
+            --arg glibc_minimum "$LINUX_GLIBC_MINIMUM" \
+            '{client_version:$client_version,converter:{name:"dcm2niix",version:$converter_version,source_archive_sha256:$converter_sha256},git_commit:$git_commit,platform:$platform,runtime:{libc:"glibc",minimum_supported_version:$glibc_minimum,build_image:$build_image},signed:false}' \
             > "$stage_dir/RELEASE.json"
 
           echo "PACKAGE_NAME=$package_name" >> "$GITHUB_ENV"
           echo "STAGE_DIR=$stage_dir" >> "$GITHUB_ENV"
           echo "ASSET_DIR=$RUNNER_TEMP/release-assets" >> "$GITHUB_ENV"
+
+      - name: Enforce Linux runtime compatibility
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          assert_glibc_floor() {
+            local binary=$1
+            local versions max_version
+            versions=$(readelf --version-info "$binary" \
+              | grep --only-matching --extended-regexp 'GLIBC_[0-9]+(\.[0-9]+)+' \
+              | sort --version-sort --unique || true)
+            if [[ -z "$versions" ]]; then
+              echo "Could not determine imported glibc symbol versions for $binary" >&2
+              exit 1
+            fi
+            max_version=$(printf '%s\n' "$versions" | tail --lines=1)
+            if [[ $(printf '%s\n%s\n' "GLIBC_${LINUX_GLIBC_MINIMUM}" "$max_version" \
+              | sort --version-sort | tail --lines=1) != "GLIBC_${LINUX_GLIBC_MINIMUM}" ]]; then
+              echo "$binary imports $max_version, newer than the supported GLIBC_${LINUX_GLIBC_MINIMUM} floor" >&2
+              printf '%s\n' "$versions" >&2
+              exit 1
+            fi
+            echo "$binary maximum imported glibc symbol: $max_version"
+          }
+
+          test "$(uname --machine)" = x86_64
+          client_header=$(readelf --file-header "$STAGE_DIR/neuro-sync")
+          converter_header=$(readelf --file-header "$STAGE_DIR/libexec/dcm2niix")
+          client_dynamic=$(readelf --dynamic "$STAGE_DIR/neuro-sync")
+          client_features=$(cargo tree --locked --manifest-path client/Cargo.toml \
+            --target x86_64-unknown-linux-gnu --edges features)
+          grep --quiet 'Machine:.*Advanced Micro Devices X86-64' <<< "$client_header"
+          grep --quiet 'Machine:.*Advanced Micro Devices X86-64' <<< "$converter_header"
+          grep --quiet 'Shared library: \[libwayland-client.so.0\]' <<< "$client_dynamic"
+          grep --fixed-strings --quiet 'rfd feature "xdg-portal"' <<< "$client_features"
+          grep --fixed-strings --quiet 'rfd feature "tokio"' <<< "$client_features"
+          assert_glibc_floor "$STAGE_DIR/neuro-sync"
+          assert_glibc_floor "$STAGE_DIR/libexec/dcm2niix"
+
+          "$STAGE_DIR/neuro-sync" --version
+          set +e
+          converter_version=$("$STAGE_DIR/libexec/dcm2niix" --version 2>&1)
+          converter_status=$?
+          set -e
+          if (( converter_status != 0 && converter_status != 3 )); then
+            echo "dcm2niix --version exited with unexpected status $converter_status" >&2
+            printf '%s\n' "$converter_version" >&2
+            exit 1
+          fi
+          converter_tokens=$(grep --only-matching --extended-regexp \
+            'v[0-9]+\.[0-9]+\.[0-9]+' <<< "$converter_version" | sort --unique || true)
+          if [[ "$converter_tokens" != "$DCM2NIIX_VERSION" ]]; then
+            echo "dcm2niix did not report exactly the pinned version $DCM2NIIX_VERSION" >&2
+            printf '%s\n' "$converter_version" >&2
+            exit 1
+          fi
+          client_dependencies=$(ldd "$STAGE_DIR/neuro-sync")
+          converter_dependencies=$(ldd "$STAGE_DIR/libexec/dcm2niix")
+          printf '%s\n%s\n' "$client_dependencies" "$converter_dependencies" >&2
+          if grep --quiet 'not found' <<< "$client_dependencies"; then
+            echo "neuro-sync has an unresolved Linux runtime dependency" >&2
+            exit 1
+          fi
+          if grep --quiet 'not found' <<< "$converter_dependencies"; then
+            echo "dcm2niix has an unresolved Linux runtime dependency" >&2
+            exit 1
+          fi
 
       - name: Install Syft
         uses: anchore/sbom-action/download-syft@v0

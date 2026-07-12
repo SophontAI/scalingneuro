@@ -14,12 +14,11 @@ import { fetchHandler } from "../src/index";
 import { cleanupAbandoned } from "../src/service";
 
 const ADMIN_TOKEN = "test-admin-token-with-sufficient-entropy";
+const CLIENT_VERSION = scanSidecarExample.conversion.client_version;
 const archiveAjv = new Ajv2020({ strict: true, validateFormats: false });
 archiveAjv.addSchema(commonSchema);
 const validateArchiveManifest = archiveAjv.compile(archiveManifestSchema);
-const validateEnrollmentResponse = archiveAjv.compile(
-  enrollmentResponseSchema,
-);
+const validateEnrollmentResponse = archiveAjv.compile(enrollmentResponseSchema);
 
 async function functionalNiftiFixture(): Promise<{
   compressed: Uint8Array<ArrayBuffer>;
@@ -61,7 +60,9 @@ async function functionalNiftiFixture(): Promise<{
   const body = new Response(uncompressed).body;
   if (!body) throw new Error("fixture stream unavailable");
   const compressed = new Uint8Array(
-    await new Response(body.pipeThrough(new CompressionStream("gzip"))).arrayBuffer(),
+    await new Response(
+      body.pipeThrough(new CompressionStream("gzip")),
+    ).arrayBuffer(),
   );
   return {
     compressed,
@@ -140,7 +141,7 @@ function enrollmentRequest(
     enrollment_id: crypto.randomUUID(),
     device_token: freshDeviceToken(),
     device_name: deviceName,
-    client_version: "0.1.0",
+    client_version: CLIENT_VERSION,
     platform: "linux-x64",
   };
 }
@@ -167,6 +168,22 @@ describe("ingestion control plane", () => {
     });
 
     const invite = await createInvite();
+    const staleEnrollmentRequest = enrollmentRequest(
+      invite.invite_code as string,
+    );
+    staleEnrollmentRequest.client_version = "0.1.0";
+    const staleEnrollment = await call(
+      "POST",
+      "/v1/enroll",
+      staleEnrollmentRequest,
+    );
+    expect(staleEnrollment.status).toBe(426);
+    expect(await staleEnrollment.json()).toMatchObject({
+      error: {
+        code: "CLIENT_UPDATE_REQUIRED",
+        details: { minimum_client_version: CLIENT_VERSION },
+      },
+    });
     const enrollment = await enrollDevice(invite.invite_code as string);
     expect(
       validateEnrollmentResponse(enrollment),
@@ -220,21 +237,30 @@ describe("ingestion control plane", () => {
       },
     };
 
-    const allocation = await call(
+    const staleAllocation = await call(
       "POST",
       "/v1/uploads",
       { bundles: [bundle], client_version: "0.1.0" },
       deviceToken,
     );
+    expect(staleAllocation.status).toBe(426);
+    expect(await staleAllocation.json()).toMatchObject({
+      error: {
+        code: "CLIENT_UPDATE_REQUIRED",
+        details: { minimum_client_version: CLIENT_VERSION },
+      },
+    });
+
+    const allocation = await call(
+      "POST",
+      "/v1/uploads",
+      { bundles: [bundle], client_version: CLIENT_VERSION },
+      deviceToken,
+    );
     expect(allocation.status).toBe(201);
     const allocated = await allocation.json<Record<string, unknown>>();
     expect(Object.keys(allocated).sort()).toEqual(
-      [
-        "multipart_objects",
-        "object_prefix",
-        "status",
-        "upload_id",
-      ].sort(),
+      ["multipart_objects", "object_prefix", "status", "upload_id"].sort(),
     );
     const uploadId = allocated.upload_id as string;
     const prefix = allocated.object_prefix as string;
@@ -255,6 +281,38 @@ describe("ingestion control plane", () => {
       (object) => object.key === metadataKey,
     )!;
     expect(niiMultipart.part_size).toBe(64 * 1024 * 1024);
+
+    // Allocate the same scientific bundle from another enrolled workstation
+    // before either upload commits. The later completion must converge on the
+    // winner and purge its now-redundant R2 prefix without manual recovery.
+    const raceInvite = await createInvite();
+    const raceDevice = await enrollDevice(raceInvite.invite_code as string);
+    const raceToken = raceDevice.device_token as string;
+    const raceAllocationResponse = await call(
+      "POST",
+      "/v1/uploads",
+      { bundles: [bundle], client_version: CLIENT_VERSION },
+      raceToken,
+    );
+    expect(raceAllocationResponse.status).toBe(201);
+    const raceAllocation =
+      await raceAllocationResponse.json<Record<string, unknown>>();
+    const raceUploadId = raceAllocation.upload_id as string;
+    const racePrefix = raceAllocation.object_prefix as string;
+    const raceMultipartObjects = raceAllocation.multipart_objects as Array<{
+      key: string;
+      upload_id: string;
+      part_size: number;
+    }>;
+    const raceNiiKey = `${racePrefix}${bundle.nii.relative_key}`;
+    const raceMetadataKey = `${racePrefix}${bundle.metadata.relative_key}`;
+    const raceNiiMultipart = raceMultipartObjects.find(
+      (object) => object.key === raceNiiKey,
+    )!;
+    const raceMetadataMultipart = raceMultipartObjects.find(
+      (object) => object.key === raceMetadataKey,
+    )!;
+
     const oversizedPart = await call(
       "POST",
       `/v1/uploads/${uploadId}/parts`,
@@ -287,9 +345,7 @@ describe("ingestion control plane", () => {
     const signedUrl = new URL(signed.url);
     expect(signedUrl.hostname).toBe("test-account.r2.cloudflarestorage.com");
     expect(signedUrl.searchParams.get("partNumber")).toBe("1");
-    expect(signedUrl.searchParams.get("uploadId")).toBe(
-      niiMultipart.upload_id,
-    );
+    expect(signedUrl.searchParams.get("uploadId")).toBe(niiMultipart.upload_id);
     expect(signed.headers).toEqual({
       "content-length": String(niiBytes.byteLength),
       "x-amz-content-sha256": await sha256Hex(niiBytes),
@@ -341,9 +397,7 @@ describe("ingestion control plane", () => {
     expect(await badComplete.json()).toMatchObject({
       error: { code: "OBJECT_MISMATCH" },
     });
-    const headSpy = vi
-      .spyOn(env.ARCHIVE, "head")
-      .mockResolvedValue(null);
+    const headSpy = vi.spyOn(env.ARCHIVE, "head").mockResolvedValue(null);
     const temporarilyInvisible = await (async () => {
       try {
         return await call(
@@ -409,6 +463,65 @@ describe("ingestion control plane", () => {
       ].sort(),
     );
 
+    const raceNiiPart = await env.ARCHIVE.resumeMultipartUpload(
+      raceNiiKey,
+      raceNiiMultipart.upload_id,
+    ).uploadPart(1, niiBytes);
+    const raceMetadataPart = await env.ARCHIVE.resumeMultipartUpload(
+      raceMetadataKey,
+      raceMetadataMultipart.upload_id,
+    ).uploadPart(1, metadataBytes);
+    const racedCompletion = await call(
+      "POST",
+      `/v1/uploads/${raceUploadId}/complete`,
+      {
+        objects: [
+          {
+            key: raceNiiKey,
+            size: bundle.nii.size,
+            sha256: bundle.nii.sha256,
+            parts: [
+              {
+                part_number: raceNiiPart.partNumber,
+                etag: raceNiiPart.etag,
+              },
+            ],
+          },
+          {
+            key: raceMetadataKey,
+            size: bundle.metadata.size,
+            sha256: bundle.metadata.sha256,
+            parts: [
+              {
+                part_number: raceMetadataPart.partNumber,
+                etag: raceMetadataPart.etag,
+              },
+            ],
+          },
+        ],
+      },
+      raceToken,
+    );
+    expect(racedCompletion.status).toBe(409);
+    expect(await racedCompletion.json()).toMatchObject({
+      error: {
+        code: "DUPLICATE_BUNDLE",
+        details: {
+          reason: "active_exact_match",
+          existing_bundles: [
+            { bundle_id: bundle.bundle_id, upload_id: uploadId },
+          ],
+        },
+      },
+    });
+    expect(
+      await env.DB.prepare("SELECT status FROM uploads WHERE id = ?1")
+        .bind(raceUploadId)
+        .first<string>("status"),
+    ).toBe("expired");
+    expect(await env.ARCHIVE.head(raceNiiKey)).toBeNull();
+    expect(await env.ARCHIVE.head(raceMetadataKey)).toBeNull();
+
     const manifestInfo = committed.manifest as { key: string; sha256: string };
     const manifestObject = await env.ARCHIVE.get(manifestInfo.key);
     expect(manifestObject).not.toBeNull();
@@ -423,9 +536,10 @@ describe("ingestion control plane", () => {
       schema_version: "scaling-neuro.archive-manifest.v1",
       upload_id: uploadId,
     });
-    expect(validateArchiveManifest(manifest), archiveAjv.errorsText(validateArchiveManifest.errors)).toBe(
-      true,
-    );
+    expect(
+      validateArchiveManifest(manifest),
+      archiveAjv.errorsText(validateArchiveManifest.errors),
+    ).toBe(true);
     expect(Object.keys(manifest).sort()).toEqual(
       [
         "archive_prefix",
@@ -461,7 +575,7 @@ describe("ingestion control plane", () => {
     const replay = await call(
       "POST",
       "/v1/uploads",
-      { bundles: [bundle], client_version: "0.1.0" },
+      { bundles: [bundle], client_version: CLIENT_VERSION },
       deviceToken,
     );
     expect(replay.status).toBe(200);
@@ -469,6 +583,171 @@ describe("ingestion control plane", () => {
       upload_id: uploadId,
       status: "committed",
     });
+
+    const duplicateInvite = await createInvite();
+    const duplicateDevice = await enrollDevice(
+      duplicateInvite.invite_code as string,
+    );
+    const duplicateToken = duplicateDevice.device_token as string;
+    const duplicateResponse = await call(
+      "POST",
+      "/v1/uploads",
+      { bundles: [bundle], client_version: "0.2.0" },
+      duplicateToken,
+    );
+    expect(duplicateResponse.status).toBe(409);
+    expect(await duplicateResponse.json()).toMatchObject({
+      error: {
+        code: "DUPLICATE_BUNDLE",
+        details: {
+          reason: "active_exact_match",
+          existing_bundles: [
+            {
+              bundle_id: bundle.bundle_id,
+              series_id: bundle.series_id,
+              subject_id: bundle.subject_id,
+              session_id: bundle.session_id,
+              protocol_group_id: bundle.protocol_group_id,
+              upload_id: uploadId,
+              nii_uncompressed_sha256: bundle.nii.uncompressed_sha256,
+            },
+          ],
+        },
+      },
+    });
+
+    const newBundle = structuredClone(bundle);
+    newBundle.bundle_id = "6".repeat(24);
+    newBundle.series_id = "7".repeat(24);
+    newBundle.protocol_group_id = "8".repeat(24);
+    newBundle.nii.relative_key = `${newBundle.bundle_id}/new_bold.nii.gz`;
+    newBundle.metadata.relative_key = `${newBundle.bundle_id}/new_bold.json`;
+    const mixedResponse = await call(
+      "POST",
+      "/v1/uploads",
+      { bundles: [bundle, newBundle], client_version: "0.2.0" },
+      duplicateToken,
+    );
+    expect(mixedResponse.status).toBe(409);
+    expect(await mixedResponse.json()).toMatchObject({
+      error: {
+        code: "DUPLICATE_BUNDLE",
+        details: {
+          reason: "active_exact_match",
+          existing_bundles: [{ bundle_id: bundle.bundle_id }],
+        },
+      },
+    });
+    const newOnlyResponse = await call(
+      "POST",
+      "/v1/uploads",
+      { bundles: [newBundle], client_version: "0.2.0" },
+      duplicateToken,
+    );
+    expect(newOnlyResponse.status).toBe(201);
+    const newOnly = await newOnlyResponse.json<Record<string, unknown>>();
+    expect(newOnly).toMatchObject({
+      status: "uploading",
+    });
+
+    const conflictingBundle = structuredClone(bundle);
+    conflictingBundle.nii.uncompressed_sha256 = "f".repeat(64);
+    const conflictingResponse = await call(
+      "POST",
+      "/v1/uploads",
+      { bundles: [conflictingBundle], client_version: "0.2.0" },
+      duplicateToken,
+    );
+    expect(conflictingResponse.status).toBe(409);
+    expect(await conflictingResponse.json()).toMatchObject({
+      error: {
+        code: "DUPLICATE_BUNDLE",
+        details: {
+          reason: "identity_conflict",
+          bundle_id: bundle.bundle_id,
+        },
+      },
+    });
+
+    await env.DB.prepare(
+      "UPDATE catalog_series SET metadata_policy_version = '1.0.0' WHERE upload_id = ?1",
+    )
+      .bind(uploadId)
+      .run();
+    const stalePolicyResponse = await call(
+      "POST",
+      "/v1/uploads",
+      { bundles: [bundle], client_version: CLIENT_VERSION },
+      duplicateToken,
+    );
+    expect(stalePolicyResponse.status).toBe(409);
+    expect(await stalePolicyResponse.json()).toMatchObject({
+      error: {
+        code: "DUPLICATE_BUNDLE",
+        details: {
+          reason: "privacy_contract_stale",
+          bundle_id: bundle.bundle_id,
+        },
+      },
+    });
+    await env.DB.prepare(
+      "UPDATE catalog_series SET metadata_policy_version = '1.1.0' WHERE upload_id = ?1",
+    )
+      .bind(uploadId)
+      .run();
+
+    const oldActiveUploadId = newOnly.upload_id as string;
+    const oldActivePrefix = newOnly.object_prefix as string;
+    await env.DB.prepare(
+      "UPDATE uploads SET client_version = '0.1.0' WHERE id = ?1",
+    )
+      .bind(oldActiveUploadId)
+      .run();
+    const replacementBundle = structuredClone(newBundle);
+    replacementBundle.bundle_id = "9".repeat(24);
+    replacementBundle.series_id = "a".repeat(24);
+    replacementBundle.protocol_group_id = "b".repeat(24);
+    replacementBundle.nii.relative_key = `${replacementBundle.bundle_id}/replacement_bold.nii.gz`;
+    replacementBundle.metadata.relative_key = `${replacementBundle.bundle_id}/replacement_bold.json`;
+    const replacementAllocation = await call(
+      "POST",
+      "/v1/uploads",
+      { bundles: [replacementBundle], client_version: CLIENT_VERSION },
+      duplicateToken,
+    );
+    expect(replacementAllocation.status).toBe(201);
+    expect(await replacementAllocation.json()).toMatchObject({
+      status: "uploading",
+    });
+    expect(
+      await env.DB.prepare("SELECT status FROM uploads WHERE id = ?1")
+        .bind(oldActiveUploadId)
+        .first<string>("status"),
+    ).toBe("expired");
+    expect(
+      await env.DB.prepare(
+        "SELECT purged_at IS NOT NULL FROM uploads WHERE id = ?1",
+      )
+        .bind(oldActiveUploadId)
+        .first<number>("purged_at IS NOT NULL"),
+    ).toBe(1);
+    expect(
+      await env.DB.prepare(
+        "SELECT request_hash LIKE '%:privacy:' || id AS retired FROM uploads WHERE id = ?1",
+      )
+        .bind(oldActiveUploadId)
+        .first<number>("retired"),
+    ).toBe(1);
+    expect(
+      (await env.ARCHIVE.list({ prefix: oldActivePrefix })).objects,
+    ).toHaveLength(0);
+    expect(
+      await env.DB.prepare(
+        "SELECT COUNT(*) AS count FROM audit_events WHERE upload_id = ?1 AND detail_code = 'client_privacy_contract_superseded'",
+      )
+        .bind(oldActiveUploadId)
+        .first<number>("count"),
+    ).toBe(1);
 
     const tokenRow = await env.DB.prepare(
       "SELECT token_hash FROM devices WHERE id = ?1",
@@ -491,6 +770,13 @@ describe("ingestion control plane", () => {
         .bind(uploadId)
         .first<string>("protocol_group_id"),
     ).toBe(bundle.protocol_group_id);
+    expect(
+      await env.DB.prepare(
+        "SELECT metadata_policy_version FROM catalog_series WHERE upload_id = ?1",
+      )
+        .bind(uploadId)
+        .first<string>("metadata_policy_version"),
+    ).toBe("1.1.0");
 
     const withdrawal = await call(
       "POST",
@@ -507,6 +793,23 @@ describe("ingestion control plane", () => {
     expect(await env.ARCHIVE.head(metadataKey)).toBeNull();
     expect(await env.ARCHIVE.head(manifestInfo.key)).toBeNull();
 
+    const sameDeviceTombstonedReplay = await call(
+      "POST",
+      "/v1/uploads",
+      { bundles: [bundle], client_version: CLIENT_VERSION },
+      deviceToken,
+    );
+    expect(sameDeviceTombstonedReplay.status).toBe(409);
+    expect(await sameDeviceTombstonedReplay.json()).toMatchObject({
+      error: {
+        code: "DUPLICATE_BUNDLE",
+        details: {
+          reason: "withdrawn_tombstone",
+          bundle_id: bundle.bundle_id,
+        },
+      },
+    });
+
     const replacementInvite = await createInvite();
     const replacement = await enrollDevice(
       replacementInvite.invite_code as string,
@@ -514,12 +817,18 @@ describe("ingestion control plane", () => {
     const tombstonedReplay = await call(
       "POST",
       "/v1/uploads",
-      { bundles: [bundle], client_version: "0.1.0" },
+      { bundles: [bundle], client_version: CLIENT_VERSION },
       replacement.device_token as string,
     );
     expect(tombstonedReplay.status).toBe(409);
     expect(await tombstonedReplay.json()).toMatchObject({
-      error: { code: "DUPLICATE_BUNDLE" },
+      error: {
+        code: "DUPLICATE_BUNDLE",
+        details: {
+          reason: "withdrawn_tombstone",
+          bundle_id: bundle.bundle_id,
+        },
+      },
     });
   });
 
@@ -629,10 +938,7 @@ describe("ingestion control plane", () => {
     const enrollment = await call(
       "POST",
       "/v1/enroll",
-      enrollmentRequest(
-        invite.invite_code as string,
-        "revoked-invite-device",
-      ),
+      enrollmentRequest(invite.invite_code as string, "revoked-invite-device"),
     );
     expect(enrollment.status).toBe(401);
     expect(await enrollment.json()).toMatchObject({
@@ -665,7 +971,7 @@ describe("ingestion control plane", () => {
     const allocation = await call(
       "POST",
       "/v1/uploads",
-      { bundles: [bundle], client_version: "0.1.0" },
+      { bundles: [bundle], client_version: CLIENT_VERSION },
       deviceToken,
     );
     expect(allocation.status).toBe(201);

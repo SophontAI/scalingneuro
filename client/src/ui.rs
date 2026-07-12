@@ -26,28 +26,34 @@ pub async fn serve(runtime: Runtime) -> anyhow::Result<()> {
     let mut token_bytes = [0_u8; 24];
     rand::rng().fill_bytes(&mut token_bytes);
     let token = hex::encode(token_bytes);
-    let html = Arc::new(INDEX_HTML.replace("__TOKEN__", &token));
+    let html = Arc::new(INDEX_HTML.to_owned());
     let state = UiState {
         runtime,
-        token,
+        token: token.clone(),
         html,
     };
     let app = Router::new()
         .route("/", get(index))
         .route("/api/config", get(config))
+        .route("/api/resumable", get(resumable))
         .route("/api/pick-folder", post(pick_folder))
         .route("/api/enroll", post(enroll))
         .route("/api/upload", post(upload))
         .route("/api/status/{run_id}", get(status))
         .route("/api/report/{run_id}", get(report))
         .route("/api/resume/{run_id}", post(resume))
+        .route("/api/reprepare/{run_id}", post(reprepare))
         .layer(middleware::from_fn(require_loopback_host))
         .layer(RequestBodyLimitLayer::new(32 * 1024))
         .layer(CatchPanicLayer::new())
         .with_state(state);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
     let address = listener.local_addr()?;
-    let url = format!("http://{address}");
+    // Keep the bearer token in the URL fragment: fragments are not sent in
+    // HTTP requests, and the page removes it from browser history immediately.
+    // A local process that discovers the loopback port can fetch the shell but
+    // cannot invoke any file-selection or upload API.
+    let url = format!("http://{address}/#{token}");
     println!("Scaling Neuro is ready at {url}");
     if webbrowser::open(&url).is_err() {
         println!("Open that address in a browser to continue.");
@@ -100,6 +106,49 @@ async fn config(
             "api_url": DEFAULT_API_URL,
         }))),
     }
+}
+
+async fn resumable(
+    State(state): State<UiState>,
+    headers: HeaderMap,
+) -> UiResult<Json<serde_json::Value>> {
+    authorize(&state, &headers)?;
+    let mut runs = state
+        .runtime
+        .state
+        .in_progress_runs()
+        .map_err(UiError::internal)?
+        .into_iter()
+        .filter(|run| state.runtime.is_run_active(&run.id))
+        .collect::<Vec<_>>();
+    let active_ids = runs
+        .iter()
+        .map(|run| run.id.clone())
+        .collect::<std::collections::HashSet<_>>();
+    let resumable = state
+        .runtime
+        .state
+        .resumable_runs(None)
+        .map_err(UiError::internal)?;
+    runs.extend(
+        resumable
+            .into_iter()
+            .filter(|run| !active_ids.contains(&run.id)),
+    );
+    let active = runs
+        .first()
+        .is_some_and(|run| state.runtime.is_run_active(&run.id));
+    let requires_reprepare = !active
+        && runs
+            .first()
+            .is_some_and(|run| state.runtime.run_requires_privacy_repreparation(run));
+    let next_run = runs.first().map(PublicRunStatus::from);
+    Ok(Json(json!({
+        "next_run": next_run,
+        "pending_count": runs.len(),
+        "active": active,
+        "requires_reprepare": requires_reprepare,
+    })))
 }
 
 async fn pick_folder(
@@ -266,6 +315,7 @@ async fn report(
         "source_summary": report.source_summary,
         "bytes_prepared": bytes,
         "bundle_count": report.bundles.len(),
+        "existing_bundle_count": report.existing_bundles.len(),
         "archive_commit_count": report.archive_commit_count,
         "held_series": report.held_series,
         "errors": report.errors,
@@ -279,14 +329,42 @@ async fn resume(
     Path(run_id): Path<String>,
 ) -> UiResult<Json<serde_json::Value>> {
     authorize(&state, &headers)?;
-    let runtime = state.runtime.clone();
-    let background_id = run_id.clone();
-    tokio::spawn(async move {
-        if let Err(error) = runtime.resume(Some(&background_id)).await {
-            tracing::warn!(run_id = %background_id, error = %error, "background resume failed");
-        }
-    });
+    let run = state
+        .runtime
+        .state
+        .resumable_runs(Some(&run_id))
+        .map_err(UiError::internal)?
+        .into_iter()
+        .next()
+        .ok_or_else(|| UiError::bad_request("run_not_resumable"))?;
+    if state.runtime.run_requires_privacy_repreparation(&run) {
+        return Err(UiError::bad_request("run_requires_privacy_repreparation"));
+    }
+    let started = state
+        .runtime
+        .resume_in_background(run_id.clone(), run.summary)
+        .map_err(UiError::internal)?;
+    if !started {
+        return Err(UiError::bad_request("run_already_active"));
+    }
     Ok(Json(json!({ "resuming": run_id })))
+}
+
+async fn reprepare(
+    State(state): State<UiState>,
+    headers: HeaderMap,
+    Path(run_id): Path<String>,
+) -> UiResult<Json<serde_json::Value>> {
+    authorize(&state, &headers)?;
+    let replacement = state
+        .runtime
+        .reprepare_in_background(&run_id)
+        .map_err(UiError::internal)?
+        .ok_or_else(|| UiError::bad_request("another_run_is_active"))?;
+    Ok(Json(json!({
+        "superseded_run_id": run_id,
+        "run_id": replacement,
+    })))
 }
 
 fn authorize(state: &UiState, headers: &HeaderMap) -> UiResult<()> {
@@ -330,28 +408,29 @@ impl IntoResponse for UiError {
 
 const INDEX_HTML: &str = r#"<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<meta name="neuro-sync-token" content="__TOKEN__"><title>Scaling Neuro · neuro-sync</title>
+<title>Scaling Neuro · neuro-sync</title>
 <link rel="icon" href="data:image/svg+xml,&lt;svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'&gt;&lt;text y='.9em' font-size='90'&gt;🧠&lt;/text&gt;&lt;/svg&gt;">
 <style>
 :root{color-scheme:light;--ink:#18233f;--muted:#65708a;--paper:#f6f5f9;--card:#fff;--line:#dcddea;--violet:#6656a5;--sage:#4f7d70;--coral:#c56f63}*{box-sizing:border-box}body{margin:0;background:var(--paper);color:var(--ink);font:15px/1.5 ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}.shell{max-width:820px;margin:0 auto;padding:48px 24px 80px}header{display:flex;justify-content:space-between;align-items:center;margin-bottom:28px}.brand{font:600 20px Georgia,serif;letter-spacing:.02em}.pill{font-size:12px;padding:5px 10px;border:1px solid var(--line);border-radius:99px;color:var(--muted);background:#fff}.card{background:var(--card);border:1px solid var(--line);border-radius:18px;padding:24px;margin:16px 0;box-shadow:0 12px 40px rgba(24,35,63,.05)}h1{font:500 36px/1.1 Georgia,serif;margin:0 0 10px}h2{font-size:16px;margin:0 0 14px}p{color:var(--muted);margin:6px 0 16px}.project{display:grid;grid-template-columns:1fr auto;gap:12px;padding:13px 15px;border-radius:10px;background:#f2f1f7}.project strong,.project small{display:block}.project small{color:var(--muted)}button{appearance:none;border:0;border-radius:10px;padding:12px 17px;font-weight:650;cursor:pointer;background:var(--violet);color:#fff}button.secondary{background:#edf0f6;color:var(--ink)}button:disabled{opacity:.45;cursor:not-allowed}.folder{display:flex;align-items:center;gap:12px}.folder-path{flex:1;padding:11px 13px;background:#f7f7fa;border:1px solid var(--line);border-radius:9px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:var(--muted)}label.confirm{display:flex;gap:10px;margin:18px 0;color:var(--ink)}input[type=checkbox]{width:18px;height:18px;accent-color:var(--violet)}input[type=text],input[type=password]{width:100%;padding:12px;border:1px solid var(--line);border-radius:9px;margin:5px 0 10px}.actions{display:flex;gap:10px}.hidden{display:none!important}.progress{height:8px;background:#ececf2;border-radius:9px;overflow:hidden;margin:18px 0}.progress i{display:block;height:100%;width:20%;background:linear-gradient(90deg,var(--violet),#897bc4);animation:pulse 1.5s infinite alternate}@keyframes pulse{to{transform:translateX(300%)}}.metrics{display:grid;grid-template-columns:repeat(4,1fr);gap:9px}.metric{padding:12px;background:#f7f7fa;border-radius:9px}.metric b{display:block;font-size:21px}.metric span{font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.06em}.ok{color:var(--sage)}.held{color:var(--coral)}.fine{font-size:12px;color:var(--muted);margin-top:18px}@media(max-width:600px){.shell{padding:28px 15px}.folder{align-items:stretch;flex-direction:column}.metrics{grid-template-columns:repeat(2,1fr)}h1{font-size:30px}}
 </style></head><body><main class="shell"><header><div class="brand">Scaling Neuro</div><div class="pill">private local client</div></header>
 <section><h1>Share a completed EPI session.</h1><p>Choose one DICOM folder. neuro-sync identifies functional EPI, converts in native space, preserves approved acquisition metadata, and holds everything uncertain on this machine.</p></section>
-<section class="card hidden" id="enroll"><h2>Enroll this workstation</h2><p>Use the one-time invite supplied by your project administrator. The invite grants institutionally pre-authorized project access; it does not collect participant consent.</p><input id="invite" type="password" autocomplete="off" placeholder="One-time invite code"><button id="enrollBtn">Enroll</button></section>
+<section class="card hidden" id="enroll"><h2>Enroll this workstation</h2><p>Use the one-time invite supplied by your project administrator. The invite grants institutionally pre-authorized project access; it does not collect participant consent.</p><form id="enrollForm"><input id="invite" type="password" autocomplete="off" placeholder="One-time invite code"><button id="enrollBtn" type="submit">Enroll</button></form></section>
 <section class="card" id="projectCard"><h2>Contribution destination</h2><div class="project"><div><strong id="project">Loading…</strong><small id="policy"></small></div><span class="pill" id="enrollState">checking</span></div></section>
 <section class="card" id="chooseCard"><h2>1 · Choose the DICOM folder</h2><div class="folder"><div class="folder-path" id="folderPath">No folder selected</div><button class="secondary" id="pickBtn">Choose folder…</button></div><label class="confirm"><input type="checkbox" id="approval"><span>I attest that these scans are approved for contribution under the project policy shown above.</span></label><div class="actions"><button id="uploadBtn" disabled>Validate and upload</button><button class="secondary" id="dryBtn" disabled>Local dry run</button></div><div class="fine">This attestation does not collect or substitute for participant consent. Source DICOMs are never modified or uploaded. Structural, diffusion, ASL, field-map, localizer, derived, and ambiguous series stay local.</div></section>
 <section class="card hidden" id="progressCard"><h2 id="stage">Preparing…</h2><div class="progress" id="progress"><i></i></div><div class="metrics"><div class="metric"><b id="dicoms">0</b><span>DICOM files</span></div><div class="metric"><b class="ok" id="accepted">0</b><span>accepted</span></div><div class="metric"><b class="held" id="held">0</b><span>held</span></div><div class="metric"><b id="excluded">0</b><span>excluded</span></div></div><p id="result"></p><button class="secondary hidden" id="resumeBtn">Resume upload</button></section>
 </main><script>
-const token=document.querySelector('meta[name=neuro-sync-token]').content;let folder=null,runId=null,pollTimer=null;
+const fragmentToken=location.hash.slice(1),tokenPattern=/^[a-f0-9]{48}$/;if(tokenPattern.test(fragmentToken))sessionStorage.setItem('neuro-sync-token',fragmentToken);const token=tokenPattern.test(fragmentToken)?fragmentToken:(sessionStorage.getItem('neuro-sync-token')||''),validToken=tokenPattern.test(token);history.replaceState(null,'',location.pathname);let folder=null,runId=null,pollTimer=null,resumeMode='resume';
 async function api(path,options={}){options.headers={...(options.headers||{}),'x-neuro-sync-token':token};if(options.body)options.headers['content-type']='application/json';const r=await fetch(path,options);const j=await r.json().catch(()=>({}));if(!r.ok)throw new Error(j?.error?.code||'operation_failed');return j}
 const $=id=>document.getElementById(id);function err(e){$('result').textContent='Could not continue: '+e.message.replaceAll('_',' ')}
-async function load(){try{const c=await api('/api/config');$('enroll').classList.toggle('hidden',c.enrolled);$('chooseCard').classList.toggle('hidden',!c.enrolled);$('projectCard').classList.toggle('hidden',!c.enrolled);if(c.enrolled){$('project').textContent=c.project_name;$('policy').textContent='Project '+c.project_id+' · contribution policy '+c.consent_policy_version;$('enrollState').textContent='enrolled'}}catch(e){err(e)}}
-$('enrollBtn').onclick=async()=>{try{await api('/api/enroll',{method:'POST',body:JSON.stringify({invite:$('invite').value})});await load()}catch(e){alert(e.message.replaceAll('_',' '))}};
+async function load(){if(!validToken){$('project').textContent='Open neuro-sync from the desktop app';$('enrollState').textContent='locked';$('chooseCard').classList.add('hidden');return}try{const c=await api('/api/config');$('enroll').classList.toggle('hidden',c.enrolled);$('chooseCard').classList.toggle('hidden',!c.enrolled);$('projectCard').classList.toggle('hidden',!c.enrolled);if(c.enrolled){$('project').textContent=c.project_name;$('policy').textContent='Project '+c.project_id+' · contribution policy '+c.consent_policy_version;$('enrollState').textContent='enrolled';await discoverResumable()}}catch(e){err(e)}}
+async function discoverResumable(){const pending=await api('/api/resumable');const s=pending.next_run;if(!s)return false;runId=s.id;folder=null;resumeMode=pending.requires_reprepare?'reprepare':'resume';$('folderPath').textContent=pending.active?'An upload is already running':pending.requires_reprepare?'The original private DICOM folder will be revalidated locally':'Resume the interrupted upload before choosing another folder';$('progressCard').classList.remove('hidden');$('pickBtn').disabled=true;$('approval').disabled=true;$('uploadBtn').disabled=true;$('dryBtn').disabled=true;$('dicoms').textContent=s.summary.dicom_files;$('accepted').textContent=s.summary.accepted;$('held').textContent=s.summary.held;$('excluded').textContent=s.summary.excluded;if(pending.active){$('progress').classList.remove('hidden');$('resumeBtn').classList.add('hidden');$('stage').textContent=labels[s.status]||s.status;$('result').textContent='This upload is still running in the local client.';poll()}else{$('progress').classList.add('hidden');$('resumeBtn').classList.remove('hidden');if(pending.requires_reprepare){$('resumeBtn').textContent='Revalidate with current privacy rules';$('stage').textContent='Privacy update required';$('result').textContent='This checkpoint was prepared by an older privacy contract. Revalidate the same private source locally before anything is uploaded.'}else{$('resumeBtn').textContent='Resume upload';$('stage').textContent='Interrupted upload ready to resume';const more=pending.pending_count>1?` ${pending.pending_count} interrupted uploads are queued and will be offered in order.`:'';$('result').textContent='Your prepared files and completed parts are checkpointed locally. Resume to continue without reconverting.'+more}}return true}
+$('enrollForm').onsubmit=async event=>{event.preventDefault();try{await api('/api/enroll',{method:'POST',body:JSON.stringify({invite:$('invite').value})});await load()}catch(e){alert(e.message.replaceAll('_',' '))}};
 $('pickBtn').onclick=async()=>{try{const r=await api('/api/pick-folder',{method:'POST'});folder=r.path;$('folderPath').textContent=folder;buttons()}catch(e){if(e.message!=='folder_selection_cancelled')err(e)}};$('approval').onchange=buttons;function buttons(){const ready=!!folder&&$('approval').checked;$('uploadBtn').disabled=!ready;$('dryBtn').disabled=!ready}
 async function start(dry){$('uploadBtn').disabled=true;$('dryBtn').disabled=true;$('pickBtn').disabled=true;$('approval').disabled=true;try{$('progressCard').classList.remove('hidden');$('result').textContent='';const r=await api('/api/upload',{method:'POST',body:JSON.stringify({path:folder,dry_run:dry,approval_confirmed:$('approval').checked})});runId=r.run_id;poll()}catch(e){$('pickBtn').disabled=false;$('approval').disabled=false;buttons();err(e)}}$('uploadBtn').onclick=()=>start(false);$('dryBtn').onclick=()=>start(true);
 const labels={discovering:'Reading DICOM headers…',converting:'Converting and checking EPI series…',prepared:'Preparing secure multipart upload…',uploading:'Uploading approved bundles…',upload_failed:'Upload paused',complete:'Upload complete',dry_run_complete:'Local dry run complete',complete_no_eligible_series:'No eligible EPI series found',failed:'Local validation stopped'};
 function resetChooser(){folder=null;$('folderPath').textContent='No folder selected';$('approval').checked=false;$('approval').disabled=false;$('pickBtn').disabled=false;buttons()}
-async function poll(){try{const s=await api('/api/status/'+runId);$('stage').textContent=labels[s.status]||s.status;$('dicoms').textContent=s.summary.dicom_files;$('accepted').textContent=s.summary.accepted;$('held').textContent=s.summary.held;$('excluded').textContent=s.summary.excluded;const terminal=['complete','dry_run_complete','complete_no_eligible_series','failed','upload_failed'].includes(s.status);if(terminal){$('progress').classList.add('hidden');if(s.status==='upload_failed'){$('resumeBtn').classList.remove('hidden');$('result').textContent='Your prepared files are safe locally. Resume transfers only missing parts.'}else if(s.status==='failed'){$('result').textContent='Local preparation stopped. Nothing was uploaded.';resetChooser()}else{const r=await api('/api/report/'+runId);const commits=r.archive_commit_count?` · ${r.bundle_count} bundles · ${r.archive_commit_count} archive commits`:'';$('result').textContent=`${r.source_summary.accepted} EPI series prepared${commits} · ${formatBytes(r.bytes_prepared)} · ${r.status.replaceAll('_',' ')}`;resetChooser()}}else{pollTimer=setTimeout(poll,1500)}}catch(e){err(e)}}
-$('resumeBtn').onclick=async()=>{try{$('resumeBtn').classList.add('hidden');$('progress').classList.remove('hidden');await api('/api/resume/'+runId,{method:'POST'});poll()}catch(e){err(e)}};function formatBytes(n){if(!n)return '0 B';const u=['B','KB','MB','GB','TB'];const i=Math.min(Math.floor(Math.log(n)/Math.log(1024)),4);return (n/1024**i).toFixed(i?1:0)+' '+u[i]}load();
+async function poll(){try{const s=await api('/api/status/'+runId);$('stage').textContent=labels[s.status]||s.status;$('dicoms').textContent=s.summary.dicom_files;$('accepted').textContent=s.summary.accepted;$('held').textContent=s.summary.held;$('excluded').textContent=s.summary.excluded;const terminal=['complete','dry_run_complete','complete_no_eligible_series','failed','upload_failed'].includes(s.status);if(terminal){$('progress').classList.add('hidden');if(s.status==='upload_failed'){$('resumeBtn').classList.remove('hidden');$('result').textContent='Your prepared files are safe locally. Resume transfers only missing parts.'}else if(s.status==='failed'){$('result').textContent='Local preparation stopped. Nothing was uploaded.';resetChooser()}else{const r=await api('/api/report/'+runId);const commits=r.archive_commit_count?` · ${r.archive_commit_count} new archive commits`:'';const existing=r.existing_bundle_count?` · ${r.existing_bundle_count} already archived`:'';$('result').textContent=`${r.source_summary.accepted} EPI series prepared${commits}${existing} · ${formatBytes(r.bytes_prepared)} · ${r.status.replaceAll('_',' ')}`;$('resumeBtn').classList.add('hidden');resetChooser();await discoverResumable()}}else{pollTimer=setTimeout(poll,1500)}}catch(e){err(e)}}
+$('resumeBtn').onclick=async()=>{try{$('resumeBtn').classList.add('hidden');$('progress').classList.remove('hidden');$('result').textContent=resumeMode==='reprepare'?'Revalidating the original source locally with current privacy rules…':'Resuming from the local checkpoint…';const r=await api('/api/'+resumeMode+'/'+runId,{method:'POST'});if(resumeMode==='reprepare'){runId=r.run_id;resumeMode='resume'}poll()}catch(e){$('progress').classList.add('hidden');$('resumeBtn').classList.remove('hidden');err(e)}};function formatBytes(n){if(!n)return '0 B';const u=['B','KB','MB','GB','TB'];const i=Math.min(Math.floor(Math.log(n)/Math.log(1024)),4);return (n/1024**i).toFixed(i?1:0)+' '+u[i]}load();
 </script></body></html>"#;
 
 #[cfg(test)]
@@ -361,8 +440,70 @@ mod tests {
     #[test]
     fn ui_uses_native_picker_endpoint_and_has_no_file_input() {
         assert!(INDEX_HTML.contains("/api/pick-folder"));
+        assert!(INDEX_HTML.contains("/api/resumable"));
+        assert!(INDEX_HTML.contains("Revalidate with current privacy rules"));
+        assert!(INDEX_HTML.contains("runId=r.run_id;resumeMode='resume'"));
+        assert!(INDEX_HTML.contains("location.hash.slice(1)"));
+        assert!(INDEX_HTML.contains("sessionStorage.setItem('neuro-sync-token'"));
+        assert!(INDEX_HTML.contains("sessionStorage.getItem('neuro-sync-token'"));
+        assert!(INDEX_HTML.contains("history.replaceState"));
+        assert!(!INDEX_HTML.contains("__TOKEN__"));
+        assert!(!INDEX_HTML.contains("neuro-sync-token\" content"));
+        assert!(INDEX_HTML.contains("Interrupted upload ready to resume"));
         assert!(!INDEX_HTML.contains("type=\"file\""));
         assert!(INDEX_HTML.contains("approval_confirmed"));
+    }
+
+    #[tokio::test]
+    async fn resumable_endpoint_returns_only_public_checkpoint_state() {
+        let directory = tempfile::tempdir().expect("temporary state directory");
+        let runtime = Runtime::initialize(Some(directory.path())).expect("runtime");
+        runtime
+            .state
+            .create_run(
+                "11111111-1111-4111-8111-111111111111",
+                std::path::Path::new("/private/patient-folder"),
+                false,
+            )
+            .expect("run state");
+        runtime
+            .state
+            .update_run(
+                "11111111-1111-4111-8111-111111111111",
+                "prepared",
+                &crate::model::SourceSummary {
+                    dicom_files: 20,
+                    accepted: 1,
+                    ..Default::default()
+                },
+                None,
+            )
+            .expect("prepared state");
+
+        let state = UiState {
+            runtime,
+            token: "test-token".into(),
+            html: Arc::new(String::new()),
+        };
+        let mut headers = HeaderMap::new();
+        headers.insert("x-neuro-sync-token", "test-token".parse().expect("header"));
+        let Json(value) = resumable(State(state), headers)
+            .await
+            .ok()
+            .expect("resumable response");
+        assert_eq!(value["pending_count"], 1);
+        assert_eq!(value["active"], false);
+        assert_eq!(value["requires_reprepare"], true);
+        assert_eq!(
+            value["next_run"]["id"],
+            "11111111-1111-4111-8111-111111111111"
+        );
+        assert_eq!(value["next_run"]["summary"]["accepted"], 1);
+        let serialized = serde_json::to_string(&value).expect("response JSON");
+        assert!(!serialized.contains("patient-folder"));
+        assert!(!serialized.contains("source_path"));
+        assert!(!serialized.contains("manifest_path"));
+        assert!(!serialized.contains("report_path"));
     }
 
     #[test]

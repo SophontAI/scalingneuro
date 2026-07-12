@@ -147,7 +147,7 @@ pub struct BundleFiles {
     pub nifti: FileDigest,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct MetadataPolicy {
     pub policy_id: String,
     pub policy_version: String,
@@ -211,6 +211,8 @@ pub struct LocalManifest {
     #[serde(default)]
     pub consent_policy_version: String,
     pub client_version: String,
+    #[serde(default)]
+    pub metadata_policy: MetadataPolicy,
     pub created_at: String,
     pub source_summary: SourceSummary,
     pub bundles: Vec<ManifestBundle>,
@@ -291,6 +293,17 @@ impl From<&ManifestBundle> for ReportBundle {
     }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ExistingArchiveBundle {
+    pub bundle_id: String,
+    pub series_id: String,
+    pub subject_id: String,
+    pub session_id: String,
+    pub protocol_group_id: String,
+    pub upload_id: String,
+    pub nii_uncompressed_sha256: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RunReport {
     pub run_id: String,
@@ -312,6 +325,8 @@ pub struct RunReport {
     pub worker_upload_id: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub worker_upload_ids: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub existing_bundles: Vec<ExistingArchiveBundle>,
     #[serde(default)]
     pub archive_commit_count: u64,
 }
@@ -392,6 +407,7 @@ mod tests {
             errors: Vec::new(),
             worker_upload_id: None,
             worker_upload_ids: Vec::new(),
+            existing_bundles: Vec::new(),
             archive_commit_count: 1,
         };
         let serialized = serde_json::to_string(&report).unwrap();

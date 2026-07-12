@@ -7,6 +7,7 @@
   "required": [
     "schema_version",
     "policy_id",
+    "policy_version",
     "scope",
     "default_action",
     "allowed_fields",
@@ -23,6 +24,9 @@
     },
     "policy_id": {
       "const": "scaling-neuro-epi-default-deny"
+    },
+    "policy_version": {
+      "const": "1.1.0"
     },
     "scope": {
       "const": "dicom-to-acquisition-space-nifti-sidecar"
@@ -131,8 +135,13 @@
         },
         "transform": {
           "enum": [
-            "normalize_safe_ascii_128",
-            "normalize_safe_ascii_list_128",
+            "canonicalize_manufacturer",
+            "canonicalize_scanner_model",
+            "canonicalize_software_version",
+            "canonicalize_sequence_family",
+            "canonicalize_coil",
+            "canonicalize_nucleus",
+            "allowlist_dicom_codes",
             "normalize_code",
             "normalize_code_list",
             "normalize_number",

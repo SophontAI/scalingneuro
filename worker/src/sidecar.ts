@@ -19,7 +19,14 @@ export interface SidecarExpectation {
 
 export interface ValidatedSidecar {
   image: SidecarImageFacts;
+  metadata_policy: {
+    policy_id: string;
+    policy_version: string;
+  };
 }
+
+export const ACTIVE_METADATA_POLICY_ID = "scaling-neuro-epi-default-deny";
+export const ACTIVE_METADATA_POLICY_VERSION = "1.1.0";
 
 const ajv = new Ajv2020({
   allErrors: true,
@@ -60,6 +67,7 @@ export function validateSidecarBytes(
     session_id: string;
     protocol_group_id: string;
     conversion: { client_version: string };
+    metadata_policy: { policy_id: string; policy_version: string };
     image: SidecarImageFacts;
     files: {
       nifti: {
@@ -82,10 +90,18 @@ export function validateSidecarBytes(
     sidecar.files.nifti.filename !== filename ||
     sidecar.files.nifti.size_bytes !== expected.nii_size ||
     sidecar.files.nifti.sha256 !== expected.nii_sha256 ||
-    sidecar.files.nifti.uncompressed_sha256 !==
-      expected.nii_uncompressed_sha256
+    sidecar.files.nifti.uncompressed_sha256 !== expected.nii_uncompressed_sha256
   ) {
     mismatch("Metadata object does not match its allocated scan bundle");
   }
-  return { image: sidecar.image };
+  if (
+    sidecar.metadata_policy.policy_id !== ACTIVE_METADATA_POLICY_ID ||
+    sidecar.metadata_policy.policy_version !== ACTIVE_METADATA_POLICY_VERSION
+  ) {
+    mismatch("Metadata object does not use the active privacy contract");
+  }
+  return {
+    image: sidecar.image,
+    metadata_policy: sidecar.metadata_policy,
+  };
 }

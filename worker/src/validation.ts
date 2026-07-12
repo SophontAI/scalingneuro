@@ -5,6 +5,8 @@ const UUID =
   /^[a-f0-9]{8}-[a-f0-9]{4}-[1-8][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/u;
 const SLUG = /^[a-z0-9][a-z0-9-]{0,62}$/u;
 const VERSION = /^[A-Za-z0-9][A-Za-z0-9.+_-]{0,63}$/u;
+const CLIENT_VERSION =
+  /^(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)(?:-[A-Za-z0-9.-]+)?(?:\+[A-Za-z0-9.-]+)?$/u;
 const SHA256 = /^[a-f0-9]{64}$/u;
 const ETAG = /^[A-Za-z0-9+/=_:.-]{1,256}$/u;
 const PLATFORM = /^[A-Za-z0-9][A-Za-z0-9._-]{0,31}$/u;
@@ -262,7 +264,7 @@ export function parseEnrollRequest(value: unknown): EnrollRequest {
     device_name: humanLabel(input.device_name, "device_name", 96),
     client_version: text(input.client_version, "client_version", {
       max: 64,
-      pattern: VERSION,
+      pattern: CLIENT_VERSION,
     }),
     platform: text(input.platform, "platform", { max: 32, pattern: PLATFORM }),
   };
@@ -363,7 +365,7 @@ export function parseCreateUploadRequest(value: unknown): CreateUploadRequest {
     bundles,
     client_version: text(input.client_version, "client_version", {
       max: 64,
-      pattern: VERSION,
+      pattern: CLIENT_VERSION,
     }),
   };
 }

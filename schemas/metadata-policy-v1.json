@@ -2,6 +2,7 @@
   "$schema": "https://scalingneuro.com/schemas/metadata-policy-v1.schema.json",
   "schema_version": "1.0.0",
   "policy_id": "scaling-neuro-epi-default-deny",
+  "policy_version": "1.1.0",
   "scope": "dicom-to-acquisition-space-nifti-sidecar",
   "default_action": "drop",
   "allowed_fields": [
@@ -9,21 +10,21 @@
       "output_path": "/source/manufacturer",
       "sources": [{ "kind": "dicom_standard", "selector": "Manufacturer", "dicom_tag": "0008,0070" }],
       "value_type": "string",
-      "transform": "normalize_safe_ascii_128",
+      "transform": "canonicalize_manufacturer",
       "purpose": "acquisition_context"
     },
     {
       "output_path": "/source/model",
       "sources": [{ "kind": "dicom_standard", "selector": "ManufacturerModelName", "dicom_tag": "0008,1090" }],
       "value_type": "string",
-      "transform": "normalize_safe_ascii_128",
+      "transform": "canonicalize_scanner_model",
       "purpose": "acquisition_context"
     },
     {
       "output_path": "/source/software_versions",
       "sources": [{ "kind": "dicom_standard", "selector": "SoftwareVersions", "dicom_tag": "0018,1020" }],
       "value_type": "string_list",
-      "transform": "normalize_safe_ascii_list_128",
+      "transform": "canonicalize_software_version",
       "purpose": "acquisition_context"
     },
     {
@@ -37,42 +38,42 @@
       "output_path": "/source/sequence_name",
       "sources": [{ "kind": "dicom_standard", "selector": "SequenceName", "dicom_tag": "0018,0024" }],
       "value_type": "string",
-      "transform": "normalize_safe_ascii_128",
+      "transform": "canonicalize_sequence_family",
       "purpose": "acquisition_context"
     },
     {
       "output_path": "/source/scanning_sequence",
       "sources": [{ "kind": "dicom_standard", "selector": "ScanningSequence", "dicom_tag": "0018,0020" }],
       "value_type": "code_list",
-      "transform": "normalize_code_list",
+      "transform": "allowlist_dicom_codes",
       "purpose": "acquisition_context"
     },
     {
       "output_path": "/source/sequence_variant",
       "sources": [{ "kind": "dicom_standard", "selector": "SequenceVariant", "dicom_tag": "0018,0021" }],
       "value_type": "code_list",
-      "transform": "normalize_code_list",
+      "transform": "allowlist_dicom_codes",
       "purpose": "acquisition_context"
     },
     {
       "output_path": "/source/scan_options",
       "sources": [{ "kind": "dicom_standard", "selector": "ScanOptions", "dicom_tag": "0018,0022" }],
       "value_type": "code_list",
-      "transform": "normalize_code_list",
+      "transform": "allowlist_dicom_codes",
       "purpose": "acquisition_context"
     },
     {
       "output_path": "/source/mr_acquisition_type",
       "sources": [{ "kind": "dicom_standard", "selector": "MRAcquisitionType", "dicom_tag": "0018,0023" }],
       "value_type": "code",
-      "transform": "normalize_code",
+      "transform": "allowlist_dicom_codes",
       "purpose": "acquisition_context"
     },
     {
       "output_path": "/source/image_type",
       "sources": [{ "kind": "dicom_standard", "selector": "ImageType", "dicom_tag": "0008,0008" }],
       "value_type": "code_list",
-      "transform": "normalize_code_list",
+      "transform": "allowlist_dicom_codes",
       "purpose": "acquisition_context"
     },
     {
@@ -93,21 +94,21 @@
       "output_path": "/source/receive_coil_name",
       "sources": [{ "kind": "dicom_standard", "selector": "ReceiveCoilName", "dicom_tag": "0018,1250" }],
       "value_type": "string",
-      "transform": "normalize_safe_ascii_128",
+      "transform": "canonicalize_coil",
       "purpose": "acquisition_context"
     },
     {
       "output_path": "/source/transmit_coil_name",
       "sources": [{ "kind": "dicom_standard", "selector": "TransmitCoilName", "dicom_tag": "0018,1251" }],
       "value_type": "string",
-      "transform": "normalize_safe_ascii_128",
+      "transform": "canonicalize_coil",
       "purpose": "acquisition_context"
     },
     {
       "output_path": "/source/patient_position",
       "sources": [{ "kind": "dicom_standard", "selector": "PatientPosition", "dicom_tag": "0018,5100" }],
       "value_type": "code",
-      "transform": "normalize_code",
+      "transform": "allowlist_dicom_codes",
       "purpose": "conversion_fidelity"
     },
     {
@@ -297,7 +298,7 @@
       "output_path": "/image/imaged_nucleus",
       "sources": [{ "kind": "dicom_standard", "selector": "ImagedNucleus", "dicom_tag": "0018,0085" }],
       "value_type": "string",
-      "transform": "normalize_safe_ascii_128",
+      "transform": "canonicalize_nucleus",
       "purpose": "acquisition_context"
     },
     {

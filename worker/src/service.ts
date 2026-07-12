@@ -25,7 +25,12 @@ import {
   presignUploadPart as signR2UploadPart,
   uploadTtl,
 } from "./r2";
-import { validateSidecarBytes, type ValidatedSidecar } from "./sidecar";
+import {
+  ACTIVE_METADATA_POLICY_ID,
+  ACTIVE_METADATA_POLICY_VERSION,
+  validateSidecarBytes,
+  type ValidatedSidecar,
+} from "./sidecar";
 import type {
   AdminInviteRequest,
   BundleDescriptor,
@@ -34,6 +39,51 @@ import type {
   EnrollRequest,
   SignPartRequest,
 } from "./validation";
+
+const MINIMUM_CLIENT_VERSION = "0.1.1";
+
+function semanticVersion(
+  value: string,
+): { core: readonly [number, number, number]; prerelease: boolean } | null {
+  const match =
+    /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-([A-Za-z0-9.-]+))?(?:\+[A-Za-z0-9.-]+)?$/u.exec(
+      value,
+    );
+  if (!match) return null;
+  const parts = match.slice(1, 4).map(Number);
+  if (parts.some((part) => !Number.isSafeInteger(part))) return null;
+  return {
+    core: parts as unknown as readonly [number, number, number],
+    prerelease: match[4] !== undefined,
+  };
+}
+
+export function clientVersionIsSupported(value: string): boolean {
+  const current = semanticVersion(value);
+  const minimum = semanticVersion(MINIMUM_CLIENT_VERSION);
+  const firstDifference =
+    current === null || minimum === null
+      ? -2
+      : current.core.findIndex((part, index) => part !== minimum.core[index]);
+  return (
+    current !== null &&
+    minimum !== null &&
+    ((firstDifference === -1 && (!current.prerelease || minimum.prerelease)) ||
+      (firstDifference >= 0 &&
+        current.core[firstDifference]! > minimum.core[firstDifference]!))
+  );
+}
+
+function requireSupportedClientVersion(value: string): void {
+  if (!clientVersionIsSupported(value)) {
+    throw new AppError(
+      "CLIENT_UPDATE_REQUIRED",
+      426,
+      "This client is older than the active privacy contract; install the current pilot release",
+      { minimum_client_version: MINIMUM_CLIENT_VERSION },
+    );
+  }
+}
 
 interface InviteRow {
   id: string;
@@ -119,6 +169,15 @@ interface BundleRow {
 interface CatalogRow {
   bundle_id: string;
   upload_id: string;
+  series_id: string;
+  subject_id: string;
+  session_id: string;
+  protocol_group_id: string;
+  bundle_hash: string;
+  nii_uncompressed_sha256: string;
+  metadata_policy_id: string | null;
+  metadata_policy_version: string | null;
+  withdrawn_at: number | null;
 }
 
 interface UploadObjectRow {
@@ -440,41 +499,106 @@ function uploadStatusResponse(upload: UploadRow): Record<string, unknown> {
   return response;
 }
 
-async function activeDuplicates(
+async function catalogBundles(
   env: Env,
   device: DeviceContext,
   bundles: ReadonlyArray<{ descriptor: BundleDescriptor; hash: string }>,
 ): Promise<CatalogRow[]> {
+  return catalogRowsByBundleId(
+    env,
+    device.site_id,
+    device.project_id,
+    bundles.map((item) => item.descriptor.bundle_id),
+  );
+}
+
+async function catalogRowsByBundleId(
+  env: Env,
+  siteId: string,
+  projectId: string,
+  requestedBundleIds: readonly string[],
+): Promise<CatalogRow[]> {
   const rows: CatalogRow[] = [];
-  for (let start = 0; start < bundles.length; start += 40) {
-    const bundleIds = [
-      ...new Set(
-        bundles
-          .slice(start, start + 40)
-          .map((item) => item.descriptor.bundle_id),
-      ),
-    ];
+  const uniqueBundleIds = [...new Set(requestedBundleIds)];
+  for (let start = 0; start < uniqueBundleIds.length; start += 40) {
+    const bundleIds = [...uniqueBundleIds.slice(start, start + 40)];
     const placeholders = bundleIds
       .map((_, index) => `?${index + 3}`)
       .join(", ");
     const result = await env.DB.prepare(
-      `SELECT bundle_id, upload_id
+      `SELECT bundle_id, upload_id, series_id, subject_id, session_id,
+              protocol_group_id, bundle_hash, nii_uncompressed_sha256,
+              metadata_policy_id, metadata_policy_version,
+              withdrawn_at
        FROM catalog_series
        WHERE site_id = ?1
          AND project_id = ?2
          AND bundle_id IN (${placeholders})`,
     )
-      .bind(device.site_id, device.project_id, ...bundleIds)
+      .bind(siteId, projectId, ...bundleIds)
       .all<CatalogRow>();
     rows.push(...result.results);
   }
   return rows;
 }
 
+function existingBundleDetails(row: CatalogRow): Record<string, string> {
+  return {
+    bundle_id: row.bundle_id,
+    series_id: row.series_id,
+    subject_id: row.subject_id,
+    session_id: row.session_id,
+    protocol_group_id: row.protocol_group_id,
+    upload_id: row.upload_id,
+    nii_uncompressed_sha256: row.nii_uncompressed_sha256,
+  };
+}
+
+function catalogIdentityMatches(
+  row: CatalogRow,
+  descriptor: BundleDescriptor,
+  hash: string,
+): boolean {
+  return (
+    row.bundle_id === descriptor.bundle_id &&
+    row.series_id === descriptor.series_id &&
+    row.subject_id === descriptor.subject_id &&
+    row.session_id === descriptor.session_id &&
+    row.protocol_group_id === descriptor.protocol_group_id &&
+    row.bundle_hash === hash &&
+    row.nii_uncompressed_sha256 === descriptor.nii.uncompressed_sha256
+  );
+}
+
+function catalogPrivacyContractMatches(row: CatalogRow): boolean {
+  return (
+    row.metadata_policy_id === ACTIVE_METADATA_POLICY_ID &&
+    row.metadata_policy_version === ACTIVE_METADATA_POLICY_VERSION
+  );
+}
+
+function catalogRowMatchesCommittedBundle(
+  row: CatalogRow,
+  bundle: BundleRow,
+): boolean {
+  return (
+    row.bundle_id === bundle.bundle_id &&
+    row.series_id === bundle.series_id &&
+    row.subject_id === bundle.subject_id &&
+    row.session_id === bundle.session_id &&
+    row.protocol_group_id === bundle.protocol_group_id &&
+    row.bundle_hash === bundle.bundle_hash &&
+    row.nii_uncompressed_sha256 === bundle.nii_uncompressed_sha256 &&
+    catalogPrivacyContractMatches(row) &&
+    row.withdrawn_at === null
+  );
+}
+
 async function createCredentialsResponse(
   env: Env,
   upload: UploadRow,
 ): Promise<Record<string, unknown>> {
+  requireSupportedClientVersion(upload.client_version);
   if (upload.status === "committed") {
     return {
       upload_id: upload.id,
@@ -532,11 +656,7 @@ async function createCredentialsResponse(
         "Upload is no longer writable",
       );
     }
-    throw new AppError(
-      "CONFLICT",
-      409,
-      "Upload is busy; retry shortly",
-    );
+    throw new AppError("CONFLICT", 409, "Upload is busy; retry shortly");
   }
 
   let multipartObjects: UploadObjectRow[];
@@ -645,10 +765,98 @@ async function retireExpiredUploadAttempt(
   }
 }
 
+async function retireUnsupportedActiveUpload(
+  env: Env,
+  device: DeviceContext,
+): Promise<void> {
+  const upload = await env.DB.prepare(
+    `SELECT * FROM uploads
+     WHERE device_id = ?1 AND status IN ('created', 'uploading')
+     LIMIT 1`,
+  )
+    .bind(device.id)
+    .first<UploadRow>();
+  if (!upload || clientVersionIsSupported(upload.client_version)) return;
+
+  const timestamp = nowSeconds();
+  const token = crypto.randomUUID();
+  const claimed = await env.DB.prepare(
+    `UPDATE uploads
+     SET operation_token = ?1, operation_kind = 'purge',
+         operation_expires_at = ?2, updated_at = ?3
+     WHERE id = ?4 AND device_id = ?5
+       AND status IN ('created', 'uploading')
+       AND (operation_token IS NULL OR operation_expires_at <= ?3)
+     RETURNING *`,
+  )
+    .bind(
+      token,
+      timestamp + INITIALIZE_LEASE_SECONDS,
+      timestamp,
+      upload.id,
+      device.id,
+    )
+    .first<UploadRow>();
+  if (!claimed) {
+    throw new AppError(
+      "CONFLICT",
+      409,
+      "The outdated upload is busy; retry privacy cleanup shortly",
+      { upload_id: upload.id },
+    );
+  }
+
+  try {
+    await abortMultipartUploads(env, upload.id);
+    await deletePrefix(env, upload.archive_prefix);
+    await deleteObject(env, archiveManifestKey(upload));
+  } catch {
+    await releaseUploadOperation(env, upload.id, token);
+    throw new AppError(
+      "STORAGE_UNAVAILABLE",
+      502,
+      "The outdated upload must be purged before a replacement can start",
+      { upload_id: upload.id },
+    );
+  }
+
+  const retiredAt = nowSeconds();
+  const retired = await env.DB.prepare(
+    `UPDATE uploads
+     SET status = 'expired', request_hash = request_hash || ':privacy:' || id,
+         purged_at = ?1, updated_at = ?1,
+         operation_token = NULL, operation_kind = NULL,
+         operation_expires_at = NULL
+     WHERE id = ?2 AND device_id = ?3
+       AND status IN ('created', 'uploading') AND operation_token = ?4`,
+  )
+    .bind(retiredAt, upload.id, device.id, token)
+    .run();
+  if ((retired.meta.changes ?? 0) !== 1) {
+    throw new AppError(
+      "CONFLICT",
+      409,
+      "The outdated upload changed state during privacy cleanup",
+      { upload_id: upload.id },
+    );
+  }
+  await auditStatement(env, "upload.expired", {
+    siteId: upload.site_id,
+    projectId: upload.project_id,
+    deviceId: upload.device_id,
+    uploadId: upload.id,
+    subjectType: "upload",
+    subjectId: upload.id,
+    detailCode: "client_privacy_contract_superseded",
+    createdAt: retiredAt,
+  }).run();
+}
+
 export async function enroll(
   env: Env,
   input: EnrollRequest,
 ): Promise<Record<string, unknown>> {
+  requireSupportedClientVersion(input.client_version);
   const inviteHash = await sha256Hex(input.invite_code);
   const deviceTokenHash = await sha256Hex(input.device_token);
 
@@ -818,6 +1026,7 @@ export async function createUpload(
   input: CreateUploadRequest,
 ): Promise<{ body: Record<string, unknown>; created: boolean }> {
   const device = await authenticateDevice(request, env);
+  requireSupportedClientVersion(input.client_version);
   const bundlesWithHashes = await Promise.all(
     input.bundles.map(async (descriptor) => ({
       descriptor,
@@ -862,7 +1071,11 @@ export async function createUpload(
   )
     .bind(device.id, requestHash)
     .first<UploadRow>();
-  if (existing && existing.status !== "expired") {
+  if (
+    existing &&
+    existing.status !== "expired" &&
+    existing.status !== "withdrawn"
+  ) {
     return {
       body: await createCredentialsResponse(env, existing),
       created: false,
@@ -871,6 +1084,80 @@ export async function createUpload(
   if (existing?.status === "expired") {
     await retireExpiredUploadAttempt(env, existing);
   }
+
+  // Reconcile stable catalog identity before the one-active-upload check. This
+  // ordering makes a lost response recoverable when an earlier reconciliation
+  // already created an upload for only the new subset: the client can remove
+  // the same committed bundles again, then replay that exact subset request.
+  const catalogRows = await catalogBundles(env, device, bundlesWithHashes);
+  const catalogByBundleId = new Map(
+    catalogRows.map((row) => [row.bundle_id, row]),
+  );
+  const committedMatches: CatalogRow[] = [];
+  for (const { descriptor, hash } of bundlesWithHashes) {
+    const row = catalogByBundleId.get(descriptor.bundle_id);
+    if (!row) continue;
+    if (row.withdrawn_at !== null) {
+      throw new AppError(
+        "DUPLICATE_BUNDLE",
+        409,
+        "Series bundle has been withdrawn and remains tombstoned",
+        {
+          reason: "withdrawn_tombstone",
+          bundle_id: descriptor.bundle_id,
+          series_id: descriptor.series_id,
+        },
+      );
+    }
+    if (!catalogIdentityMatches(row, descriptor, hash)) {
+      throw new AppError(
+        "DUPLICATE_BUNDLE",
+        409,
+        "Bundle identifier conflicts with existing archive identity",
+        {
+          reason: "identity_conflict",
+          bundle_id: descriptor.bundle_id,
+          series_id: descriptor.series_id,
+        },
+      );
+    }
+    if (!catalogPrivacyContractMatches(row)) {
+      throw new AppError(
+        "DUPLICATE_BUNDLE",
+        409,
+        "Bundle exists under an older metadata privacy contract",
+        {
+          reason: "privacy_contract_stale",
+          bundle_id: descriptor.bundle_id,
+          series_id: descriptor.series_id,
+        },
+      );
+    }
+    committedMatches.push(row);
+  }
+  if (committedMatches.length > 0) {
+    committedMatches.sort((left, right) =>
+      left.bundle_id < right.bundle_id
+        ? -1
+        : left.bundle_id > right.bundle_id
+          ? 1
+          : 0,
+    );
+    throw new AppError(
+      "DUPLICATE_BUNDLE",
+      409,
+      "One or more series bundles are already committed",
+      {
+        reason: "active_exact_match",
+        existing_bundles: committedMatches.map(existingBundleDetails),
+      },
+    );
+  }
+
+  // A privacy-contract release may strand a prepared upload created by an
+  // older client. Keep its active slot until every staged object is purged,
+  // then let the current client allocate a clean replacement.
+  await retireUnsupportedActiveUpload(env, device);
 
   const timestamp = nowSeconds();
   await env.DB.prepare(
@@ -895,22 +1182,6 @@ export async function createUpload(
       409,
       "This device already has an active upload; resume it before starting another",
       { upload_id: activeUpload.id },
-    );
-  }
-
-  const duplicates = await activeDuplicates(env, device, bundlesWithHashes);
-  const exactDuplicate = bundlesWithHashes.find(({ descriptor }) =>
-    duplicates.some((row) => row.bundle_id === descriptor.bundle_id),
-  );
-  if (exactDuplicate) {
-    throw new AppError(
-      "DUPLICATE_BUNDLE",
-      409,
-      "Series bundle is already cataloged or withdrawn",
-      {
-        bundle_id: exactDuplicate.descriptor.bundle_id,
-        series_id: exactDuplicate.descriptor.series_id,
-      },
     );
   }
 
@@ -1046,6 +1317,7 @@ export async function createUploadPartUrl(
 ): Promise<Record<string, unknown>> {
   const device = await authenticateDevice(request, env);
   const upload = await getUploadForDevice(env, uploadId, device.id);
+  requireSupportedClientVersion(upload.client_version);
   const timestamp = nowSeconds();
   if (
     upload.status === "committed" ||
@@ -1107,13 +1379,15 @@ export async function createUploadPartUrl(
       "Part size does not match the allocated object",
     );
   }
-  return { ...(await signR2UploadPart(env, {
-    key: object.object_key,
-    uploadId: object.r2_multipart_id,
-    partNumber: input.part_number,
-    size: input.size,
-    sha256: input.sha256,
-  })) };
+  return {
+    ...(await signR2UploadPart(env, {
+      key: object.object_key,
+      uploadId: object.r2_multipart_id,
+      partNumber: input.part_number,
+      size: input.size,
+      sha256: input.sha256,
+    })),
+  };
 }
 
 export async function getUploadStatus(
@@ -1362,10 +1636,7 @@ async function verifyObjects(
             try {
               [storedSha256, nifti] = await Promise.all([
                 sha256StreamHex(compressedBody),
-                inspectGzipNifti(
-                  niftiBody,
-                  bundle.nii_uncompressed_sha256,
-                ),
+                inspectGzipNifti(niftiBody, bundle.nii_uncompressed_sha256),
               ]);
             } catch {
               throw new StoredObjectValidationError(
@@ -1404,7 +1675,10 @@ async function verifyObjects(
                 nii_uncompressed_sha256: bundle.nii_uncompressed_sha256,
               });
             } catch (error) {
-              if (error instanceof AppError && error.code === "OBJECT_MISMATCH") {
+              if (
+                error instanceof AppError &&
+                error.code === "OBJECT_MISMATCH"
+              ) {
                 throw new StoredObjectValidationError(error.message, {
                   key: item.key,
                 });
@@ -1434,14 +1708,19 @@ async function verifyObjects(
   );
   for (const bundle of bundles) {
     const nifti = sorted.find(
-      (object) => object.bundle_id === bundle.bundle_id && object.kind === "nii",
+      (object) =>
+        object.bundle_id === bundle.bundle_id && object.kind === "nii",
     )?.nifti;
     const sidecar = sorted.find(
       (object) =>
         object.bundle_id === bundle.bundle_id && object.kind === "metadata",
     )?.sidecar;
     if (!nifti || !sidecar) {
-      throw new AppError("INTERNAL", 500, "Verified bundle facts are incomplete");
+      throw new AppError(
+        "INTERNAL",
+        500,
+        "Verified bundle facts are incomplete",
+      );
     }
     try {
       assertNiftiMatchesSidecar(nifti, sidecar.image);
@@ -1511,6 +1790,72 @@ async function rejectStoredUpload(
   }
 }
 
+async function purgeConcurrentDuplicateUpload(
+  env: Env,
+  upload: UploadRow,
+  operationToken: string,
+): Promise<void> {
+  const timestamp = nowSeconds();
+  const expired = await env.DB.prepare(
+    `UPDATE uploads
+     SET status = 'expired', updated_at = ?1,
+         operation_kind = 'purge', operation_expires_at = ?2
+     WHERE id = ?3 AND status IN ('created', 'uploading')
+       AND operation_token = ?4`,
+  )
+    .bind(
+      timestamp,
+      timestamp + INITIALIZE_LEASE_SECONDS,
+      upload.id,
+      operationToken,
+    )
+    .run();
+  if ((expired.meta.changes ?? 0) !== 1) {
+    throw new AppError(
+      "CONFLICT",
+      409,
+      "Concurrent duplicate cleanup lost its upload lease",
+    );
+  }
+
+  try {
+    await abortMultipartUploads(env, upload.id);
+    await deletePrefix(env, upload.archive_prefix);
+    await deleteObject(env, archiveManifestKey(upload));
+    const purgedAt = nowSeconds();
+    const purged = await env.DB.prepare(
+      `UPDATE uploads
+       SET request_hash = request_hash || ':duplicate:' || id,
+           purged_at = ?1, updated_at = ?1,
+           operation_token = NULL, operation_kind = NULL,
+           operation_expires_at = NULL
+       WHERE id = ?2 AND status = 'expired' AND operation_token = ?3`,
+    )
+      .bind(purgedAt, upload.id, operationToken)
+      .run();
+    if ((purged.meta.changes ?? 0) !== 1) {
+      throw new Error("duplicate purge lease changed");
+    }
+    await auditStatement(env, "upload.expired", {
+      siteId: upload.site_id,
+      projectId: upload.project_id,
+      deviceId: upload.device_id,
+      uploadId: upload.id,
+      subjectType: "upload",
+      subjectId: upload.id,
+      detailCode: "concurrent_duplicate_reconciled",
+      createdAt: purgedAt,
+    }).run();
+  } catch (error) {
+    throw new AppError(
+      "STORAGE_UNAVAILABLE",
+      502,
+      "Concurrent duplicate cleanup must finish before reconciliation",
+      { upload_id: upload.id },
+    );
+  }
+}
+
 export async function completeUpload(
   request: Request,
   env: Env,
@@ -1519,6 +1864,7 @@ export async function completeUpload(
 ): Promise<Record<string, unknown>> {
   const device = await authenticateDevice(request, env);
   const initialUpload = await getUploadForDevice(env, uploadId, device.id);
+  requireSupportedClientVersion(initialUpload.client_version);
   if (initialUpload.status === "committed")
     return uploadStatusResponse(initialUpload);
   if (
@@ -1559,7 +1905,7 @@ export async function completeUpload(
 
   try {
     const bundleResult = await env.DB.prepare(
-    "SELECT * FROM upload_bundles WHERE upload_id = ?1 ORDER BY bundle_id",
+      "SELECT * FROM upload_bundles WHERE upload_id = ?1 ORDER BY bundle_id",
     )
       .bind(upload.id)
       .all<BundleRow>();
@@ -1575,125 +1921,125 @@ export async function completeUpload(
       expectedObjects(upload, bundles),
       input,
     );
-  let committedAt = nowSeconds();
-  const manifestKey = archiveManifestKey(upload);
-  const manifest = {
-    schema_version: "scaling-neuro.archive-manifest.v1",
-    upload_id: upload.id,
-    site_id: upload.site_id,
-    project_id: upload.project_id,
-    consent_policy_version: upload.consent_policy_version,
-    archive_prefix: upload.archive_prefix,
-    client_version: upload.client_version,
-    created_at: iso(upload.created_at),
-    committed_at: iso(committedAt),
-    bundles: bundles.map((bundle) => {
-      const nii = verified.find(
-        (object) =>
-          object.bundle_id === bundle.bundle_id && object.kind === "nii",
-      );
-      const metadata = verified.find(
-        (object) =>
-          object.bundle_id === bundle.bundle_id && object.kind === "metadata",
-      );
-      if (!nii || !metadata)
-        throw new AppError(
-          "INTERNAL",
-          500,
-          "Verified object index is incomplete",
+    let committedAt = nowSeconds();
+    const manifestKey = archiveManifestKey(upload);
+    const manifest = {
+      schema_version: "scaling-neuro.archive-manifest.v1",
+      upload_id: upload.id,
+      site_id: upload.site_id,
+      project_id: upload.project_id,
+      consent_policy_version: upload.consent_policy_version,
+      archive_prefix: upload.archive_prefix,
+      client_version: upload.client_version,
+      created_at: iso(upload.created_at),
+      committed_at: iso(committedAt),
+      bundles: bundles.map((bundle) => {
+        const nii = verified.find(
+          (object) =>
+            object.bundle_id === bundle.bundle_id && object.kind === "nii",
         );
-      return {
-        bundle_id: bundle.bundle_id,
-        series_id: bundle.series_id,
-        subject_id: bundle.subject_id,
-        session_id: bundle.session_id,
-        protocol_group_id: bundle.protocol_group_id,
-        bundle_hash: bundle.bundle_hash,
-        nii: {
-          key: nii.key,
-          size: nii.size,
-          sha256: nii.sha256,
-          uncompressed_sha256: bundle.nii_uncompressed_sha256,
-          etag: nii.etag,
+        const metadata = verified.find(
+          (object) =>
+            object.bundle_id === bundle.bundle_id && object.kind === "metadata",
+        );
+        if (!nii || !metadata)
+          throw new AppError(
+            "INTERNAL",
+            500,
+            "Verified object index is incomplete",
+          );
+        return {
+          bundle_id: bundle.bundle_id,
+          series_id: bundle.series_id,
+          subject_id: bundle.subject_id,
+          session_id: bundle.session_id,
+          protocol_group_id: bundle.protocol_group_id,
+          bundle_hash: bundle.bundle_hash,
+          nii: {
+            key: nii.key,
+            size: nii.size,
+            sha256: nii.sha256,
+            uncompressed_sha256: bundle.nii_uncompressed_sha256,
+            etag: nii.etag,
+          },
+          metadata: {
+            key: metadata.key,
+            size: metadata.size,
+            sha256: metadata.sha256,
+            etag: metadata.etag,
+          },
+        };
+      }),
+      control_plane: { service_version: env.SERVICE_VERSION },
+    };
+    const manifestJson = canonicalJson(manifest);
+    const manifestPayload = `${manifestJson}\n`;
+    let manifestSha256 = await sha256Hex(manifestPayload);
+    try {
+      const stored = await env.ARCHIVE.put(
+        manifestKey,
+        utf8Bytes(manifestPayload),
+        {
+          onlyIf: { etagDoesNotMatch: "*" },
+          httpMetadata: { contentType: "application/json; charset=utf-8" },
+          customMetadata: { upload_id: upload.id, sha256: manifestSha256 },
         },
-        metadata: {
-          key: metadata.key,
-          size: metadata.size,
-          sha256: metadata.sha256,
-          etag: metadata.etag,
-        },
-      };
-    }),
-    control_plane: { service_version: env.SERVICE_VERSION },
-  };
-  const manifestJson = canonicalJson(manifest);
-  const manifestPayload = `${manifestJson}\n`;
-  let manifestSha256 = await sha256Hex(manifestPayload);
-  try {
-    const stored = await env.ARCHIVE.put(
-      manifestKey,
-      utf8Bytes(manifestPayload),
-      {
-        onlyIf: { etagDoesNotMatch: "*" },
-        httpMetadata: { contentType: "application/json; charset=utf-8" },
-        customMetadata: { upload_id: upload.id, sha256: manifestSha256 },
-      },
-    );
-    if (!stored) {
-      const existing = await env.ARCHIVE.get(manifestKey);
-      if (!existing) throw new Error("conditional manifest disappeared");
-      const existingBytes = await existing.arrayBuffer();
-      const existingManifest = JSON.parse(utf8String(existingBytes)) as Record<
-        string,
-        unknown
-      >;
-      if (
-        existingManifest.schema_version !==
-          "scaling-neuro.archive-manifest.v1" ||
-        existingManifest.upload_id !== upload.id ||
-        existingManifest.site_id !== upload.site_id ||
-        existingManifest.project_id !== upload.project_id ||
-        existingManifest.archive_prefix !== upload.archive_prefix ||
-        !Array.isArray(existingManifest.bundles) ||
-        existingManifest.bundles.length !== bundles.length ||
-        typeof existingManifest.committed_at !== "string"
-      ) {
-        throw new Error("existing manifest does not match upload");
+      );
+      if (!stored) {
+        const existing = await env.ARCHIVE.get(manifestKey);
+        if (!existing) throw new Error("conditional manifest disappeared");
+        const existingBytes = await existing.arrayBuffer();
+        const existingManifest = JSON.parse(
+          utf8String(existingBytes),
+        ) as Record<string, unknown>;
+        if (
+          existingManifest.schema_version !==
+            "scaling-neuro.archive-manifest.v1" ||
+          existingManifest.upload_id !== upload.id ||
+          existingManifest.site_id !== upload.site_id ||
+          existingManifest.project_id !== upload.project_id ||
+          existingManifest.archive_prefix !== upload.archive_prefix ||
+          !Array.isArray(existingManifest.bundles) ||
+          existingManifest.bundles.length !== bundles.length ||
+          typeof existingManifest.committed_at !== "string"
+        ) {
+          throw new Error("existing manifest does not match upload");
+        }
+        const parsedCommittedAt =
+          Date.parse(existingManifest.committed_at) / 1000;
+        if (
+          !Number.isInteger(parsedCommittedAt) ||
+          parsedCommittedAt < upload.created_at
+        ) {
+          throw new Error("existing manifest timestamp is invalid");
+        }
+        committedAt = parsedCommittedAt;
+        manifestSha256 = await sha256Hex(new Uint8Array(existingBytes));
+        if (
+          existing.customMetadata?.upload_id !== upload.id ||
+          existing.customMetadata?.sha256 !== manifestSha256
+        ) {
+          throw new Error("existing manifest metadata is invalid");
+        }
       }
-      const parsedCommittedAt =
-        Date.parse(existingManifest.committed_at) / 1000;
-      if (
-        !Number.isInteger(parsedCommittedAt) ||
-        parsedCommittedAt < upload.created_at
-      ) {
-        throw new Error("existing manifest timestamp is invalid");
-      }
-      committedAt = parsedCommittedAt;
-      manifestSha256 = await sha256Hex(new Uint8Array(existingBytes));
-      if (
-        existing.customMetadata?.upload_id !== upload.id ||
-        existing.customMetadata?.sha256 !== manifestSha256
-      ) {
-        throw new Error("existing manifest metadata is invalid");
-      }
+    } catch {
+      throw new AppError(
+        "STORAGE_UNAVAILABLE",
+        502,
+        "Unable to write archive manifest",
+      );
     }
-  } catch {
-    throw new AppError(
-      "STORAGE_UNAVAILABLE",
-      502,
-      "Unable to write archive manifest",
-    );
-  }
 
-  try {
-    await env.DB.batch([
-      env.DB.prepare(
-        `INSERT INTO catalog_series
+    try {
+      await env.DB.batch([
+        env.DB.prepare(
+          `INSERT INTO catalog_series
            (id, upload_id, bundle_id, site_id, project_id, series_id, subject_id,
             session_id, protocol_group_id, bundle_hash,
             nii_object_key, nii_size, nii_sha256,
             nii_uncompressed_sha256,
-            metadata_object_key, metadata_size, metadata_sha256, committed_at)
+            metadata_object_key, metadata_size, metadata_sha256,
+            metadata_policy_id, metadata_policy_version, committed_at)
          SELECT lower(hex(randomblob(16))),
                 ub.upload_id,
                 ub.bundle_id,
@@ -1711,6 +2057,8 @@ export async function completeUpload(
                 u.archive_prefix || ub.metadata_relative_key,
                 ub.metadata_size,
                 ub.metadata_sha256,
+                ?4,
+                ?5,
                 ?1
          FROM upload_bundles ub
          JOIN uploads u ON u.id = ub.upload_id
@@ -1723,9 +2071,15 @@ export async function completeUpload(
            AND p.active = 1
            AND p.consent_policy_version = u.consent_policy_version
            AND d.accepted_consent_policy_version = p.consent_policy_version`,
-      ).bind(committedAt, upload.id, operation.token),
-      env.DB.prepare(
-        `UPDATE uploads
+        ).bind(
+          committedAt,
+          upload.id,
+          operation.token,
+          ACTIVE_METADATA_POLICY_ID,
+          ACTIVE_METADATA_POLICY_VERSION,
+        ),
+        env.DB.prepare(
+          `UPDATE uploads
          SET status = 'committed', updated_at = ?1, committed_at = ?1,
              manifest_object_key = ?2, manifest_sha256 = ?3,
              operation_token = NULL, operation_kind = NULL,
@@ -1742,15 +2096,15 @@ export async function completeUpload(
                AND projects.consent_policy_version = uploads.consent_policy_version
                AND devices.accepted_consent_policy_version = projects.consent_policy_version
            )`,
-      ).bind(
-        committedAt,
-        manifestKey,
-        manifestSha256,
-        upload.id,
-        operation.token,
-      ),
-      env.DB.prepare(
-        `INSERT INTO audit_events
+        ).bind(
+          committedAt,
+          manifestKey,
+          manifestSha256,
+          upload.id,
+          operation.token,
+        ),
+        env.DB.prepare(
+          `INSERT INTO audit_events
            (id, event_type, site_id, project_id, device_id, upload_id,
             subject_type, subject_id, detail_code, created_at)
          SELECT ?1, 'upload.committed', ?2, ?3, ?4, ?5, 'upload', ?5, NULL, ?6
@@ -1758,43 +2112,73 @@ export async function completeUpload(
            SELECT 1 FROM uploads
            WHERE id = ?5 AND status = 'committed' AND committed_at = ?6
          )`,
-      ).bind(
-        crypto.randomUUID(),
+        ).bind(
+          crypto.randomUUID(),
+          upload.site_id,
+          upload.project_id,
+          upload.device_id,
+          upload.id,
+          committedAt,
+        ),
+      ]);
+    } catch {
+      const raced = await getUploadForDevice(env, upload.id, device.id);
+      if (raced.status === "committed") return uploadStatusResponse(raced);
+      const winners = await catalogRowsByBundleId(
+        env,
         upload.site_id,
         upload.project_id,
-        upload.device_id,
-        upload.id,
-        committedAt,
-      ),
-    ]);
-  } catch {
-    const raced = await getUploadForDevice(env, upload.id, device.id);
-    if (raced.status === "committed") return uploadStatusResponse(raced);
-    try {
-      await env.ARCHIVE.delete(manifestKey);
-    } catch {
-      // Scheduled cleanup removes this uncommitted manifest if deletion is temporarily unavailable.
+        bundles.map((bundle) => bundle.bundle_id),
+      );
+      const winnerById = new Map(
+        winners.map((winner) => [winner.bundle_id, winner]),
+      );
+      const exactWinners = bundles.every((bundle) => {
+        const winner = winnerById.get(bundle.bundle_id);
+        return winner && catalogRowMatchesCommittedBundle(winner, bundle);
+      });
+      if (exactWinners && winners.length === bundles.length) {
+        await purgeConcurrentDuplicateUpload(env, upload, operation.token);
+        throw new AppError(
+          "DUPLICATE_BUNDLE",
+          409,
+          "Equivalent series bundles were committed concurrently",
+          {
+            reason: "active_exact_match",
+            existing_bundles: winners
+              .sort((left, right) =>
+                left.bundle_id.localeCompare(right.bundle_id),
+              )
+              .map(existingBundleDetails),
+          },
+        );
+      }
+      try {
+        await env.ARCHIVE.delete(manifestKey);
+      } catch {
+        // Scheduled cleanup removes this uncommitted manifest if deletion is temporarily unavailable.
+      }
+      throw new AppError(
+        "DUPLICATE_BUNDLE",
+        409,
+        "A conflicting series bundle was committed concurrently",
+        { reason: "identity_conflict" },
+      );
     }
-    throw new AppError(
-      "DUPLICATE_BUNDLE",
-      409,
-      "A series bundle was committed concurrently",
-    );
-  }
 
-  const committed = await getUploadForDevice(env, upload.id, device.id);
-  if (committed.status !== "committed") {
-    try {
-      await env.ARCHIVE.delete(manifestKey);
-    } catch {
-      // Scheduled cleanup is the fallback.
+    const committed = await getUploadForDevice(env, upload.id, device.id);
+    if (committed.status !== "committed") {
+      try {
+        await env.ARCHIVE.delete(manifestKey);
+      } catch {
+        // Scheduled cleanup is the fallback.
+      }
+      throw new AppError(
+        "UPLOAD_NOT_WRITABLE",
+        409,
+        "Upload changed state during completion",
+      );
     }
-    throw new AppError(
-      "UPLOAD_NOT_WRITABLE",
-      409,
-      "Upload changed state during completion",
-    );
-  }
     return uploadStatusResponse(committed);
   } catch (error) {
     if (error instanceof StoredObjectValidationError) {
@@ -2043,8 +2427,7 @@ export async function withdrawUpload(
            operation_expires_at = NULL
        WHERE id = ?2 AND status != 'withdrawn'
          AND (operation_token IS NULL OR operation_expires_at <= ?1)`,
-    )
-      .bind(timestamp, upload.id),
+    ).bind(timestamp, upload.id),
     env.DB.prepare(
       `UPDATE catalog_series
        SET withdrawn_at = (
@@ -2069,9 +2452,7 @@ export async function withdrawUpload(
          )`,
     ).bind(crypto.randomUUID(), upload.id),
   ]);
-  upload = (await env.DB.prepare(
-    "SELECT * FROM uploads WHERE id = ?1 LIMIT 1",
-  )
+  upload = (await env.DB.prepare("SELECT * FROM uploads WHERE id = ?1 LIMIT 1")
     .bind(upload.id)
     .first<UploadRow>()) as UploadRow;
   if (upload.status !== "withdrawn") {

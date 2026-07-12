@@ -8,11 +8,11 @@
   "modality": "bold",
   "source": {
     "dicom_count": 14400,
-    "manufacturer": "SIEMENS",
+    "manufacturer": "Siemens",
     "model": "MAGNETOM Prisma_fit",
-    "software_versions": ["syngo MR XA30"],
+    "software_versions": ["Siemens XA30"],
     "magnetic_field_strength": 3,
-    "sequence_name": "epfid2d1",
+    "sequence_name": "EPFID",
     "scanning_sequence": ["EP"],
     "sequence_variant": ["SK"],
     "scan_options": ["FS", "PFP"],
@@ -20,7 +20,7 @@
     "image_type": ["ORIGINAL", "PRIMARY", "M", "ND", "NORM", "MOSAIC"],
     "series_number": 12,
     "acquisition_number": 1,
-    "receive_coil_name": "HeadNeck_64",
+    "receive_coil_name": "HEAD_NECK_64",
     "patient_position": "HFS"
   },
   "image": {
@@ -64,7 +64,7 @@
     }
   },
   "conversion": {
-    "client_version": "0.1.0",
+    "client_version": "0.1.1",
     "converter": "dcm2niix",
     "converter_version": "v1.0.20260416",
     "arguments": [
@@ -98,6 +98,6 @@
   },
   "metadata_policy": {
     "policy_id": "scaling-neuro-epi-default-deny",
-    "policy_version": "1.0.0"
+    "policy_version": "1.1.0"
   }
 }
