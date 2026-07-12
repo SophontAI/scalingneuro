@@ -1,0 +1,4 @@
+/target/
+/.test-state/
+*.sqlite3-shm
+*.sqlite3-wal

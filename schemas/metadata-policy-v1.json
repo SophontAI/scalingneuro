@@ -1,0 +1,443 @@
+{
+  "$schema": "https://scalingneuro.com/schemas/metadata-policy-v1.schema.json",
+  "schema_version": "1.0.0",
+  "policy_id": "scaling-neuro-epi-default-deny",
+  "scope": "dicom-to-acquisition-space-nifti-sidecar",
+  "default_action": "drop",
+  "allowed_fields": [
+    {
+      "output_path": "/source/manufacturer",
+      "sources": [{ "kind": "dicom_standard", "selector": "Manufacturer", "dicom_tag": "0008,0070" }],
+      "value_type": "string",
+      "transform": "normalize_safe_ascii_128",
+      "purpose": "acquisition_context"
+    },
+    {
+      "output_path": "/source/model",
+      "sources": [{ "kind": "dicom_standard", "selector": "ManufacturerModelName", "dicom_tag": "0008,1090" }],
+      "value_type": "string",
+      "transform": "normalize_safe_ascii_128",
+      "purpose": "acquisition_context"
+    },
+    {
+      "output_path": "/source/software_versions",
+      "sources": [{ "kind": "dicom_standard", "selector": "SoftwareVersions", "dicom_tag": "0018,1020" }],
+      "value_type": "string_list",
+      "transform": "normalize_safe_ascii_list_128",
+      "purpose": "acquisition_context"
+    },
+    {
+      "output_path": "/source/magnetic_field_strength",
+      "sources": [{ "kind": "dicom_standard", "selector": "MagneticFieldStrength", "dicom_tag": "0018,0087" }],
+      "value_type": "number",
+      "transform": "normalize_number",
+      "purpose": "acquisition_context"
+    },
+    {
+      "output_path": "/source/sequence_name",
+      "sources": [{ "kind": "dicom_standard", "selector": "SequenceName", "dicom_tag": "0018,0024" }],
+      "value_type": "string",
+      "transform": "normalize_safe_ascii_128",
+      "purpose": "acquisition_context"
+    },
+    {
+      "output_path": "/source/scanning_sequence",
+      "sources": [{ "kind": "dicom_standard", "selector": "ScanningSequence", "dicom_tag": "0018,0020" }],
+      "value_type": "code_list",
+      "transform": "normalize_code_list",
+      "purpose": "acquisition_context"
+    },
+    {
+      "output_path": "/source/sequence_variant",
+      "sources": [{ "kind": "dicom_standard", "selector": "SequenceVariant", "dicom_tag": "0018,0021" }],
+      "value_type": "code_list",
+      "transform": "normalize_code_list",
+      "purpose": "acquisition_context"
+    },
+    {
+      "output_path": "/source/scan_options",
+      "sources": [{ "kind": "dicom_standard", "selector": "ScanOptions", "dicom_tag": "0018,0022" }],
+      "value_type": "code_list",
+      "transform": "normalize_code_list",
+      "purpose": "acquisition_context"
+    },
+    {
+      "output_path": "/source/mr_acquisition_type",
+      "sources": [{ "kind": "dicom_standard", "selector": "MRAcquisitionType", "dicom_tag": "0018,0023" }],
+      "value_type": "code",
+      "transform": "normalize_code",
+      "purpose": "acquisition_context"
+    },
+    {
+      "output_path": "/source/image_type",
+      "sources": [{ "kind": "dicom_standard", "selector": "ImageType", "dicom_tag": "0008,0008" }],
+      "value_type": "code_list",
+      "transform": "normalize_code_list",
+      "purpose": "acquisition_context"
+    },
+    {
+      "output_path": "/source/series_number",
+      "sources": [{ "kind": "dicom_standard", "selector": "SeriesNumber", "dicom_tag": "0020,0011" }],
+      "value_type": "integer",
+      "transform": "normalize_number",
+      "purpose": "grouping"
+    },
+    {
+      "output_path": "/source/acquisition_number",
+      "sources": [{ "kind": "dicom_standard", "selector": "AcquisitionNumber", "dicom_tag": "0020,0012" }],
+      "value_type": "integer",
+      "transform": "normalize_number",
+      "purpose": "grouping"
+    },
+    {
+      "output_path": "/source/receive_coil_name",
+      "sources": [{ "kind": "dicom_standard", "selector": "ReceiveCoilName", "dicom_tag": "0018,1250" }],
+      "value_type": "string",
+      "transform": "normalize_safe_ascii_128",
+      "purpose": "acquisition_context"
+    },
+    {
+      "output_path": "/source/transmit_coil_name",
+      "sources": [{ "kind": "dicom_standard", "selector": "TransmitCoilName", "dicom_tag": "0018,1251" }],
+      "value_type": "string",
+      "transform": "normalize_safe_ascii_128",
+      "purpose": "acquisition_context"
+    },
+    {
+      "output_path": "/source/patient_position",
+      "sources": [{ "kind": "dicom_standard", "selector": "PatientPosition", "dicom_tag": "0018,5100" }],
+      "value_type": "code",
+      "transform": "normalize_code",
+      "purpose": "conversion_fidelity"
+    },
+    {
+      "output_path": "/image/dimensions",
+      "sources": [
+        { "kind": "nifti_header", "selector": "dim" },
+        { "kind": "dicom_standard", "selector": "Rows", "dicom_tag": "0028,0010" },
+        { "kind": "dicom_standard", "selector": "Columns", "dicom_tag": "0028,0011" }
+      ],
+      "value_type": "integer_list",
+      "transform": "nifti_header_normalization",
+      "purpose": "conversion_fidelity"
+    },
+    {
+      "output_path": "/image/voxel_size_mm",
+      "sources": [
+        { "kind": "nifti_header", "selector": "pixdim" },
+        { "kind": "dicom_standard", "selector": "PixelSpacing", "dicom_tag": "0028,0030" }
+      ],
+      "value_type": "number_list",
+      "transform": "nifti_header_normalization",
+      "purpose": "conversion_fidelity"
+    },
+    {
+      "output_path": "/image/datatype",
+      "sources": [{ "kind": "nifti_header", "selector": "datatype" }],
+      "value_type": "code",
+      "transform": "nifti_header_normalization",
+      "purpose": "conversion_fidelity"
+    },
+    {
+      "output_path": "/image/bits_per_voxel",
+      "sources": [
+        { "kind": "nifti_header", "selector": "bitpix" },
+        { "kind": "dicom_standard", "selector": "BitsAllocated", "dicom_tag": "0028,0100" }
+      ],
+      "value_type": "integer",
+      "transform": "nifti_header_normalization",
+      "purpose": "conversion_fidelity"
+    },
+    {
+      "output_path": "/image/affine",
+      "sources": [{ "kind": "nifti_header", "selector": "sform_or_qform" }],
+      "value_type": "matrix",
+      "transform": "nifti_header_normalization",
+      "purpose": "conversion_fidelity"
+    },
+    {
+      "output_path": "/image/orientation",
+      "sources": [{ "kind": "nifti_header", "selector": "axis_codes" }],
+      "value_type": "code",
+      "transform": "nifti_header_normalization",
+      "purpose": "conversion_fidelity"
+    },
+    {
+      "output_path": "/image/volume_count",
+      "sources": [{ "kind": "nifti_header", "selector": "dim_4" }],
+      "value_type": "integer",
+      "transform": "nifti_header_normalization",
+      "purpose": "qc"
+    },
+    {
+      "output_path": "/image/tr_seconds",
+      "sources": [
+        { "kind": "dcm2niix_anonymized", "selector": "RepetitionTime" },
+        { "kind": "dicom_standard", "selector": "RepetitionTime", "dicom_tag": "0018,0080" }
+      ],
+      "value_type": "number",
+      "transform": "milliseconds_to_seconds",
+      "purpose": "acquisition_context"
+    },
+    {
+      "output_path": "/image/te_seconds",
+      "sources": [
+        { "kind": "dcm2niix_anonymized", "selector": "EchoTime" },
+        { "kind": "dicom_standard", "selector": "EchoTime", "dicom_tag": "0018,0081" }
+      ],
+      "value_type": "number",
+      "transform": "milliseconds_to_seconds",
+      "purpose": "acquisition_context"
+    },
+    {
+      "output_path": "/image/inversion_time_seconds",
+      "sources": [{ "kind": "dcm2niix_anonymized", "selector": "InversionTime" }],
+      "value_type": "number",
+      "transform": "converter_normalization",
+      "purpose": "acquisition_context"
+    },
+    {
+      "output_path": "/image/flip_angle_degrees",
+      "sources": [{ "kind": "dicom_standard", "selector": "FlipAngle", "dicom_tag": "0018,1314" }],
+      "value_type": "number",
+      "transform": "normalize_number",
+      "purpose": "acquisition_context"
+    },
+    {
+      "output_path": "/image/echo_number",
+      "sources": [{ "kind": "dicom_standard", "selector": "EchoNumbers", "dicom_tag": "0018,0086" }],
+      "value_type": "integer",
+      "transform": "normalize_number",
+      "purpose": "acquisition_context"
+    },
+    {
+      "output_path": "/image/slice_timing_seconds",
+      "sources": [{ "kind": "dcm2niix_anonymized", "selector": "SliceTiming" }],
+      "value_type": "number_list",
+      "transform": "converter_normalization",
+      "purpose": "acquisition_context"
+    },
+    {
+      "output_path": "/image/phase_encoding_direction",
+      "sources": [
+        { "kind": "dcm2niix_anonymized", "selector": "PhaseEncodingDirection" },
+        { "kind": "dicom_standard", "selector": "InPlanePhaseEncodingDirection", "dicom_tag": "0018,1312" }
+      ],
+      "value_type": "code",
+      "transform": "converter_normalization",
+      "purpose": "acquisition_context"
+    },
+    {
+      "output_path": "/image/effective_echo_spacing_seconds",
+      "sources": [{ "kind": "dcm2niix_anonymized", "selector": "EffectiveEchoSpacing" }],
+      "value_type": "number",
+      "transform": "converter_normalization",
+      "purpose": "acquisition_context"
+    },
+    {
+      "output_path": "/image/total_readout_time_seconds",
+      "sources": [{ "kind": "dcm2niix_anonymized", "selector": "TotalReadoutTime" }],
+      "value_type": "number",
+      "transform": "converter_normalization",
+      "purpose": "acquisition_context"
+    },
+    {
+      "output_path": "/image/dwell_time_seconds",
+      "sources": [{ "kind": "dcm2niix_anonymized", "selector": "DwellTime" }],
+      "value_type": "number",
+      "transform": "converter_normalization",
+      "purpose": "acquisition_context"
+    },
+    {
+      "output_path": "/image/multiband_acceleration_factor",
+      "sources": [{ "kind": "dcm2niix_anonymized", "selector": "MultibandAccelerationFactor" }],
+      "value_type": "number",
+      "transform": "converter_normalization",
+      "purpose": "acquisition_context"
+    },
+    {
+      "output_path": "/image/parallel_reduction_factor_in_plane",
+      "sources": [
+        { "kind": "dcm2niix_anonymized", "selector": "ParallelReductionFactorInPlane" },
+        { "kind": "dicom_standard", "selector": "ParallelReductionFactorInPlane", "dicom_tag": "0018,9069" }
+      ],
+      "value_type": "number",
+      "transform": "converter_normalization",
+      "purpose": "acquisition_context"
+    },
+    {
+      "output_path": "/image/partial_fourier",
+      "sources": [{ "kind": "dcm2niix_anonymized", "selector": "PartialFourier" }],
+      "value_type": "number",
+      "transform": "converter_normalization",
+      "purpose": "acquisition_context"
+    },
+    {
+      "output_path": "/image/echo_train_length",
+      "sources": [{ "kind": "dicom_standard", "selector": "EchoTrainLength", "dicom_tag": "0018,0091" }],
+      "value_type": "integer",
+      "transform": "normalize_number",
+      "purpose": "acquisition_context"
+    },
+    {
+      "output_path": "/image/number_of_averages",
+      "sources": [{ "kind": "dicom_standard", "selector": "NumberOfAverages", "dicom_tag": "0018,0083" }],
+      "value_type": "number",
+      "transform": "normalize_number",
+      "purpose": "acquisition_context"
+    },
+    {
+      "output_path": "/image/imaging_frequency_mhz",
+      "sources": [{ "kind": "dicom_standard", "selector": "ImagingFrequency", "dicom_tag": "0018,0084" }],
+      "value_type": "number",
+      "transform": "normalize_number",
+      "purpose": "acquisition_context"
+    },
+    {
+      "output_path": "/image/imaged_nucleus",
+      "sources": [{ "kind": "dicom_standard", "selector": "ImagedNucleus", "dicom_tag": "0018,0085" }],
+      "value_type": "string",
+      "transform": "normalize_safe_ascii_128",
+      "purpose": "acquisition_context"
+    },
+    {
+      "output_path": "/image/slice_thickness_mm",
+      "sources": [{ "kind": "dicom_standard", "selector": "SliceThickness", "dicom_tag": "0018,0050" }],
+      "value_type": "number",
+      "transform": "normalize_number",
+      "purpose": "conversion_fidelity"
+    },
+    {
+      "output_path": "/image/spacing_between_slices_mm",
+      "sources": [{ "kind": "dicom_standard", "selector": "SpacingBetweenSlices", "dicom_tag": "0018,0088" }],
+      "value_type": "number",
+      "transform": "normalize_number",
+      "purpose": "conversion_fidelity"
+    },
+    {
+      "output_path": "/image/pixel_bandwidth_hz",
+      "sources": [{ "kind": "dicom_standard", "selector": "PixelBandwidth", "dicom_tag": "0018,0095" }],
+      "value_type": "number",
+      "transform": "normalize_number",
+      "purpose": "acquisition_context"
+    },
+    {
+      "output_path": "/image/acquisition_matrix",
+      "sources": [{ "kind": "dicom_standard", "selector": "AcquisitionMatrix", "dicom_tag": "0018,1310" }],
+      "value_type": "integer_list",
+      "transform": "normalize_number_list",
+      "purpose": "conversion_fidelity"
+    },
+    {
+      "output_path": "/image/recon_matrix",
+      "sources": [{ "kind": "derived", "selector": "nifti_spatial_dimensions" }],
+      "value_type": "integer_list",
+      "transform": "nifti_header_normalization",
+      "purpose": "conversion_fidelity"
+    }
+  ],
+  "local_only_inputs": [
+    {
+      "source": { "kind": "dicom_standard", "selector": "PatientID", "dicom_tag": "0010,0020" },
+      "use": "pseudonymize",
+      "transform": "site_hmac_sha256_v1",
+      "upload": false
+    },
+    {
+      "source": { "kind": "dicom_standard", "selector": "IssuerOfPatientID", "dicom_tag": "0010,0021" },
+      "use": "pseudonymize",
+      "transform": "site_hmac_sha256_v1",
+      "upload": false
+    },
+    {
+      "source": { "kind": "dicom_standard", "selector": "StudyInstanceUID", "dicom_tag": "0020,000D" },
+      "use": "pseudonymize",
+      "transform": "site_hmac_sha256_v1",
+      "upload": false
+    },
+    {
+      "source": { "kind": "dicom_standard", "selector": "SeriesInstanceUID", "dicom_tag": "0020,000E" },
+      "use": "group",
+      "transform": "site_hmac_sha256_v1",
+      "upload": false
+    },
+    {
+      "source": { "kind": "dicom_standard", "selector": "ProtocolName", "dicom_tag": "0018,1030" },
+      "use": "group",
+      "transform": "site_hmac_sha256_v1",
+      "upload": false
+    },
+    {
+      "source": { "kind": "dicom_standard", "selector": "SeriesDescription", "dicom_tag": "0008,103E" },
+      "use": "classify",
+      "transform": "safe_evidence_code",
+      "upload": false
+    },
+    {
+      "source": { "kind": "dicom_standard", "selector": "Modality", "dicom_tag": "0008,0060" },
+      "use": "classify",
+      "transform": "safe_evidence_code",
+      "upload": false
+    },
+    {
+      "source": { "kind": "dicom_standard", "selector": "SOPClassUID", "dicom_tag": "0008,0016" },
+      "use": "classify",
+      "transform": "safe_evidence_code",
+      "upload": false
+    },
+    {
+      "source": { "kind": "dicom_standard", "selector": "BurnedInAnnotation", "dicom_tag": "0028,0301" },
+      "use": "exclude",
+      "transform": "safe_evidence_code",
+      "upload": false
+    }
+  ],
+  "forbidden_categories": [
+    {
+      "category": "direct_patient_identifiers",
+      "matches": ["DICOM group 0010", "PatientName", "PatientBirthDate", "PatientAddress", "MedicalRecordLocator"],
+      "action": "drop"
+    },
+    {
+      "category": "source_dates_and_times",
+      "matches": ["DICOM VR DA", "DICOM VR DT", "DICOM VR TM", "AcquisitionDateTime", "StudyDate", "SeriesDate"],
+      "action": "drop"
+    },
+    {
+      "category": "raw_uids",
+      "matches": ["DICOM VR UI", "StudyInstanceUID", "SeriesInstanceUID", "SOPInstanceUID", "FrameOfReferenceUID"],
+      "action": "drop"
+    },
+    {
+      "category": "site_and_device_identifiers",
+      "matches": ["InstitutionName", "InstitutionAddress", "InstitutionalDepartmentName", "StationName", "DeviceSerialNumber", "OperatorsName"],
+      "action": "drop"
+    },
+    {
+      "category": "free_text",
+      "matches": ["StudyDescription", "SeriesDescription", "ProtocolName", "ImageComments", "RequestingPhysician", "PerformedProcedureStepDescription"],
+      "action": "drop"
+    },
+    {
+      "category": "private_or_unknown_tags",
+      "matches": ["private DICOM groups", "unknown DICOM tags", "unknown dcm2niix sidecar keys"],
+      "action": "drop"
+    },
+    {
+      "category": "burned_in_annotation",
+      "matches": ["BurnedInAnnotation=YES", "secondary-capture or derived image semantics"],
+      "action": "reject_series"
+    }
+  ],
+  "invariants": [
+    "default_deny_every_unlisted_field",
+    "never_upload_source_paths",
+    "never_upload_raw_dicom_uids",
+    "never_upload_raw_free_text",
+    "never_upload_converter_sidecar_wholesale",
+    "never_upload_classification_observed_values",
+    "pseudonyms_are_site_scoped_hmacs",
+    "accepted_bundles_pass_privacy_and_qc",
+    "source_dicoms_remain_local_and_unmodified"
+  ]
+}

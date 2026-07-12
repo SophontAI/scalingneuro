@@ -153,11 +153,11 @@ const toast = (msg) => {
 
 /* ---------- copy / download ---------- */
 $('#copyBtn')?.addEventListener('click', async () => {
-  const cmd = 'bash neuro-sync-preview.sh --deface auto ./new_session_dicoms';
-  try { await navigator.clipboard.writeText(cmd); toast('Preview command copied'); }
+  const cmd = './neuro-sync upload ./new_session_dicoms';
+  try { await navigator.clipboard.writeText(cmd); toast('CLI command copied'); }
   catch { toast('Copy failed — command shown in the terminal'); }
 });
-$('#dlBtn')?.addEventListener('click', () => toast('Safe preview script downloaded'));
+$('#dlBtn')?.addEventListener('click', () => toast('Opening pilot downloads'));
 
 /* ==========================================================================
    Scan browser + 3D viewer
@@ -166,38 +166,27 @@ $('#dlBtn')?.addEventListener('click', () => toast('Safe preview script download
 const LOCAL_NIFTI_ENABLED = ['localhost', '127.0.0.1'].includes(window.location.hostname);
 
 const SCANS = [
-  { pid: 'sub-1001', site: 'Local example', scanner: 'real NIfTI-1', field: 'LOCAL', ses: 'ses-01',
-    mod: 'anat', title: 'T1w structural', res: '1.0mm', tr: '—', te: '—', vols: '1 vol', size: '9.7 MB',
-    realNifti: true, source: 'sub-1001_T1w.nii.gz' },
   { pid: 'sub-a3f9', site: 'Princeton (PNI)', scanner: 'Siemens Prisma', field: '3T', ses: 'ses-01',
     mod: 'bold', title: 'task-rest BOLD', res: '2.0mm', tr: '1.5s', te: '30ms', vols: '480 vol', size: '1.2 GB', seed: 11 },
   { pid: 'sub-a3f9', site: 'Princeton (PNI)', scanner: 'Siemens Prisma', field: '3T', ses: 'ses-01',
     mod: 'bold', title: 'task-movie BOLD', res: '1.6mm', tr: '1.0s', te: '28ms', vols: '610 vol', size: '2.1 GB', seed: 12, hires: true },
-  { pid: 'sub-a3f9', site: 'Princeton (PNI)', scanner: 'Siemens Prisma', field: '3T', ses: 'ses-01',
-    mod: 'anat', title: 'T1w MPRAGE', res: '0.8mm', tr: '2.3s', te: '2.9ms', vols: '1 vol', size: '18 MB', seed: 13, safe: 'defaced' },
   { pid: 'sub-a3f9', site: 'Princeton (PNI)', scanner: 'Siemens Prisma', field: '3T', ses: 'ses-02',
     mod: 'bold', title: 'task-rest BOLD', res: '2.0mm', tr: '1.5s', te: '30ms', vols: '480 vol', size: '1.2 GB', seed: 14 },
 
   { pid: 'sub-b7c2', site: 'McGill', scanner: 'Siemens Terra', field: '7T', ses: 'ses-01',
     mod: 'bold', title: 'movie-watching BOLD', res: '1.2mm', tr: '0.8s', te: '22ms', vols: '900 vol', size: '4.6 GB', seed: 21, hires: true },
-  { pid: 'sub-b7c2', site: 'McGill', scanner: 'Siemens Terra', field: '7T', ses: 'ses-01',
-    mod: 'dwi', title: 'diffusion dir98', res: '1.5mm', tr: '3.2s', te: '89ms', vols: '99 vol', size: '740 MB', seed: 22 },
-
   { pid: 'sub-c1e8', site: 'ENIGMA site 042', scanner: 'GE SIGNA', field: '3T', ses: 'ses-01',
     mod: 'bold', title: 'resting-state BOLD', res: '2.4mm', tr: '2.0s', te: '35ms', vols: '300 vol', size: '820 MB', seed: 31 },
-  { pid: 'sub-c1e8', site: 'ENIGMA site 042', scanner: 'GE SIGNA', field: '3T', ses: 'ses-01',
-    mod: 'anat', title: 'T1w BRAVO', res: '1.0mm', tr: '2.4s', te: '3.1ms', vols: '1 vol', size: '14 MB', seed: 32, safe: 'defaced' },
+
+  { pid: 'sub-e4b6', site: 'Pilot site 018', scanner: 'Philips Achieva', field: '3T', ses: 'ses-01',
+    mod: 'bold', title: 'naturalistic BOLD', res: '2.5mm', tr: '2.0s', te: '30ms', vols: '360 vol', size: '960 MB', seed: 35 },
 
   { pid: 'sub-d5a1', site: 'Princeton (PNI)', scanner: 'Siemens Prisma', field: '3T', ses: 'ses-01',
     mod: 'bold', title: 'naturalistic BOLD', res: '1.8mm', tr: '1.2s', te: '30ms', vols: '720 vol', size: '2.8 GB', seed: 41 },
-  { pid: 'sub-d5a1', site: 'Princeton (PNI)', scanner: 'Siemens Prisma', field: '3T', ses: 'ses-01',
-    mod: 'dwi', title: 'diffusion dir64', res: '2.0mm', tr: '4.1s', te: '95ms', vols: '65 vol', size: '410 MB', seed: 42 },
 ].filter((scan) => !scan.realNifti || LOCAL_NIFTI_ENABLED);
 
 const MOD_META = {
   bold: { label: 'EPI', dir: 'func', chip: 'mchip-bold', seq: 'BOLD EPI' },
-  dwi:  { label: 'DWI', dir: 'dwi',  chip: 'mchip-dwi', seq: 'DIFFUSION' },
-  anat: { label: 'T1w', dir: 'anat', chip: 'mchip', seq: 'T1w MPRAGE' },
 };
 const fileName = (s) => {
   if (s.realNifti) return s.source;
@@ -232,11 +221,7 @@ function renderList() {
       const m = MOD_META[s.mod];
       const hires = s.hires ? '<span class="mchip mchip-hi">↑ hi-res</span>' : '';
       const safe = s.safe ? `<span class="mchip mchip-sage">${s.safe}</span>` : '';
-      const policy = s.realNifti
-        ? '<span class="mchip mchip-real">real NIfTI</span><span class="mchip sc-policy">local example</span>'
-        : s.mod === 'anat'
-        ? '<span class="mchip mchip-sage">privacy-cleared concept</span>'
-        : '<span class="mchip mchip-sage">share path</span>';
+      const policy = '<span class="mchip mchip-sage">bundle preview</span>';
       card.type = 'button';
       card.setAttribute('aria-label', `${s.pid}, ${s.ses}, ${s.title}, ${s.res}, ${s.size}`);
       card.setAttribute('aria-pressed', 'false');
@@ -644,20 +629,15 @@ async function selectScan(scan, card, userInitiated = false) {
 
   const path = scan.realNifti
     ? `local://${scan.source}`
-    : `s3://scaling-neuro-concept/${scan.pid}/${scan.ses}/${fileName(scan)}`;
+    : `s3://scaling-neuro/archive/v1/<private>/${scan.pid}/${scan.ses}/${fileName(scan)}`;
   const steps = scan.realNifti ? [
     `↪ reading local example ${scan.source} …`,
     `decompressing ${scan.size} NIfTI-1 volume in this browser`,
-  ] : scan.mod === 'anat' ? [
-    `↪ simulating pull of a privacy-cleared structural scan …`,
-    `local face processing + privacy QC passed`,
-    `rendering synthetic ${scan.res} structural preview`,
-    `no live scan is read or transferred`,
   ] : [
-    `↪ simulating pull from Cloudflare R2 via its S3-compatible API …`,
-    `GET ${scan.pid}/${scan.ses}/  (${scan.field} · ${scan.scanner})`,
-    `synthetic payload ${scan.size} · ${scan.vols} · ${scan.res}`,
-    `reconstructing ${N}³ concept grid …`,
+    `↪ rendering a synthetic archive preview …`,
+    `${scan.field} · ${scan.scanner} · ${scan.vols} · ${scan.res}`,
+    `private R2 objects are never fetched by this public page`,
+    `reconstructing ${N}³ preview grid …`,
   ];
   const ok = await ensureThree();
   if (token !== loadToken) return;
@@ -709,8 +689,8 @@ async function selectScan(scan, card, userInitiated = false) {
   const m = MOD_META[scan.mod];
   viewerMode.textContent = scan.realNifti ? 'Instant View · real local NIfTI' : 'Instant View · synthetic';
   stage.setAttribute('aria-label', `Interactive 3D preview of ${scan.pid}, ${scan.title}`);
-  archiveRoot.innerHTML = scan.realNifti ? 'local://examples/ <b>real file</b>' : 'R2 / S3 API <b>concept</b>';
-  archiveState.textContent = scan.realNifti ? 'same-origin' : 'planned';
+  archiveRoot.innerHTML = scan.realNifti ? 'local://examples/ <b>real file</b>' : 'R2 / S3 archive <b>live</b>';
+  archiveState.textContent = scan.realNifti ? 'same-origin' : 'private';
   viewerMeta.hidden = false;
   if (scan.realNifti) {
     const meta = volume._meta;
@@ -724,7 +704,7 @@ async function selectScan(scan, card, userInitiated = false) {
       `RES: ${scan.res} ISO<br/>` +
       `SEQ: ${m.seq}<br/>` +
       `FIELD: ${scan.field} · TR ${scan.tr}<br/>` +
-      `STATE: ${scan.mod === 'anat' ? 'LOCAL_ONLY_CONCEPT' : 'SYNTHETIC_PULL'}${scan.safe ? ' · DEFACED' : ''}`;
+      `STATE: SYNTHETIC_PUBLIC_PREVIEW · PRIVATE_ARCHIVE`;
   }
   if (userInitiated && window.matchMedia('(max-width: 760px)').matches) {
     stage.closest('.vault-right')?.scrollIntoView({ behavior: reducedMotion ? 'auto' : 'smooth', block: 'start' });

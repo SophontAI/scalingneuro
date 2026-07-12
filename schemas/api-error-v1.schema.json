@@ -1,0 +1,84 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://scalingneuro.com/schemas/api-error-v1.schema.json",
+  "title": "Scaling Neuro API error response v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["error"],
+  "properties": {
+    "$schema": {
+      "const": "https://scalingneuro.com/schemas/api-error-v1.schema.json"
+    },
+    "error": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["code", "message", "request_id"],
+      "properties": {
+        "code": {
+          "enum": [
+            "INVALID_REQUEST",
+            "UNAUTHORIZED",
+            "INVALID_INVITE",
+            "DEVICE_REVOKED",
+            "CONSENT_POLICY_UPDATE_REQUIRED",
+            "NOT_FOUND",
+            "UPLOAD_NOT_WRITABLE",
+            "DUPLICATE_BUNDLE",
+            "OBJECT_MISSING",
+            "OBJECT_MISMATCH",
+            "CREDENTIALS_UNAVAILABLE",
+            "STORAGE_UNAVAILABLE",
+            "CONFLICT",
+            "INTERNAL"
+          ]
+        },
+        "message": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512
+        },
+        "request_id": {
+          "type": "string",
+          "minLength": 8,
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9._~-]+$"
+        },
+        "details": {
+          "type": "object",
+          "additionalProperties": false,
+          "minProperties": 1,
+          "maxProperties": 4,
+          "properties": {
+            "field": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 64,
+              "pattern": "^[a-z][a-z0-9_.-]*$"
+            },
+            "upload_id": {
+              "$ref": "https://scalingneuro.com/schemas/common-v1.schema.json#/$defs/uuid"
+            },
+            "bundle_id": {
+              "$ref": "https://scalingneuro.com/schemas/common-v1.schema.json#/$defs/pseudonymId"
+            },
+            "series_id": {
+              "$ref": "https://scalingneuro.com/schemas/common-v1.schema.json#/$defs/pseudonymId"
+            },
+            "key": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 512,
+              "pattern": "^(?!/)(?!.*(?:^|/)\\.{1,2}(?:/|$))(?!.*//)[A-Za-z0-9._~/-]+$"
+            },
+            "consent_policy_version": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 64,
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9.+_-]*$"
+            }
+          }
+        }
+      }
+    }
+  }
+}

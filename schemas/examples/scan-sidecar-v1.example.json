@@ -1,0 +1,103 @@
+{
+  "schema_version": "1.0.0",
+  "bundle_id": "7c2a5f77f3ab6c6d9e011234",
+  "subject_id": "a4b73d9e6f12a2b011223344",
+  "session_id": "b9e5cf2f5a74a3f811223344",
+  "series_id": "45fa0d3f9a2e9af111223344",
+  "protocol_group_id": "27f2a6f4d9a3aa6b11223344",
+  "modality": "bold",
+  "source": {
+    "dicom_count": 14400,
+    "manufacturer": "SIEMENS",
+    "model": "MAGNETOM Prisma_fit",
+    "software_versions": ["syngo MR XA30"],
+    "magnetic_field_strength": 3,
+    "sequence_name": "epfid2d1",
+    "scanning_sequence": ["EP"],
+    "sequence_variant": ["SK"],
+    "scan_options": ["FS", "PFP"],
+    "mr_acquisition_type": "2D",
+    "image_type": ["ORIGINAL", "PRIMARY", "M", "ND", "NORM", "MOSAIC"],
+    "series_number": 12,
+    "acquisition_number": 1,
+    "receive_coil_name": "HeadNeck_64",
+    "patient_position": "HFS"
+  },
+  "image": {
+    "dimensions": [64, 64, 48, 300],
+    "voxel_size_mm": [3, 3, 3],
+    "datatype": "int16",
+    "bits_per_voxel": 16,
+    "affine": [
+      [-3, 0, 0, 94.5],
+      [0, 3, 0, -94.5],
+      [0, 0, 3, -70.5],
+      [0, 0, 0, 1]
+    ],
+    "orientation": "LAS",
+    "volume_count": 300,
+    "tr_seconds": 0.8,
+    "te_seconds": 0.037,
+    "flip_angle_degrees": 52,
+    "phase_encoding_direction": "j-",
+    "effective_echo_spacing_seconds": 0.00058,
+    "total_readout_time_seconds": 0.0365,
+    "multiband_acceleration_factor": 6,
+    "parallel_reduction_factor_in_plane": 2,
+    "partial_fourier": 0.875,
+    "echo_train_length": 64,
+    "number_of_averages": 1,
+    "imaging_frequency_mhz": 123.25,
+    "imaged_nucleus": "1H",
+    "slice_thickness_mm": 3,
+    "spacing_between_slices_mm": 3,
+    "pixel_bandwidth_hz": 2232,
+    "acquisition_matrix": [64, 0, 0, 64],
+    "recon_matrix": [64, 64, 48]
+  },
+  "files": {
+    "nifti": {
+      "filename": "sub-a4b73d9e6f12a2b011223344_ses-b9e5cf2f5a74a3f811223344_ser-45fa0d3f9a2e9af111223344_bold.nii.gz",
+      "size_bytes": 184237921,
+      "sha256": "85c21ffb8a905454f874b1a0391b6e3b54b8f4d256362a89ae95a4f42e794ea7",
+      "uncompressed_sha256": "16dba13ef49dd70fce8a3a5f8bcfb201af58535312082bd73eec43baa8af6f67"
+    }
+  },
+  "conversion": {
+    "client_version": "0.1.0",
+    "converter": "dcm2niix",
+    "converter_version": "v1.0.20260416",
+    "arguments": [
+      "-b", "y", "-ba", "y", "-g", "i", "-i", "n", "-l", "o", "-m", "2",
+      "-p", "y", "-t", "n", "-x", "i", "-z", "n", "-f", "series"
+    ]
+  },
+  "classification": {
+    "decision": "accepted",
+    "kind": "functional_epi",
+    "confidence": 0.99,
+    "evidence": [
+      { "code": "modality_mr", "source": "dicom_header", "effect": "supports" },
+      { "code": "sequence_epi", "source": "dicom_header", "effect": "supports" },
+      { "code": "nifti_4d", "source": "nifti_header", "effect": "supports" },
+      { "code": "no_diffusion_outputs", "source": "converter_sidecar", "effect": "supports" },
+      { "code": "no_asl_context", "source": "converter_sidecar", "effect": "supports" }
+    ]
+  },
+  "qc": {
+    "passed": true,
+    "checks": [
+      { "code": "nifti_header_valid", "status": "pass" },
+      { "code": "native_geometry_preserved", "status": "pass" },
+      { "code": "finite_nonconstant_signal", "status": "pass" },
+      { "code": "dicom_volume_count_consistent", "status": "pass" },
+      { "code": "metadata_allowlist_valid", "status": "pass" },
+      { "code": "nifti_text_fields_sanitized", "status": "pass" }
+    ],
+    "warnings": []
+  },
+  "metadata_policy": {
+    "policy_id": "scaling-neuro-epi-default-deny",
+    "policy_version": "1.0.0"
+  }
+}

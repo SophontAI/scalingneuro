@@ -1,0 +1,56 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://scalingneuro.com/schemas/enrollment-response-v1.schema.json",
+  "title": "Scaling Neuro enrollment response v1",
+  "description": "The stable result of a successful new or replayed enrollment operation.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "enrollment_id",
+    "device_token",
+    "device_id",
+    "site_id",
+    "project_id",
+    "project_name",
+    "consent_policy_version",
+    "pseudonym_key_b64"
+  ],
+  "properties": {
+    "enrollment_id": {
+      "$ref": "https://scalingneuro.com/schemas/common-v1.schema.json#/$defs/uuid"
+    },
+    "device_token": {
+      "type": "string",
+      "minLength": 53,
+      "maxLength": 53,
+      "pattern": "^sn_device_[A-Za-z0-9_-]{43}$"
+    },
+    "device_id": {
+      "$ref": "https://scalingneuro.com/schemas/common-v1.schema.json#/$defs/uuid"
+    },
+    "site_id": {
+      "$ref": "https://scalingneuro.com/schemas/common-v1.schema.json#/$defs/uuid"
+    },
+    "project_id": {
+      "$ref": "https://scalingneuro.com/schemas/common-v1.schema.json#/$defs/uuid"
+    },
+    "project_name": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[^\\u0000-\\u001F\\u007F]+$"
+    },
+    "consent_policy_version": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 64,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9.+_-]*$"
+    },
+    "pseudonym_key_b64": {
+      "type": "string",
+      "minLength": 44,
+      "maxLength": 44,
+      "pattern": "^[A-Za-z0-9+/]{43}=$"
+    }
+  }
+}

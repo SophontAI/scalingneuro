@@ -1,0 +1,199 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://scalingneuro.com/schemas/local-manifest-v1.schema.json",
+  "title": "Scaling Neuro local preparation manifest v1",
+  "description": "The owner-only checkpoint created after local conversion and before upload. It contains local paths and must never be uploaded, logged, or shared as a collaborator report.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "run_id",
+    "site_id",
+    "project_id",
+    "consent_policy_version",
+    "client_version",
+    "created_at",
+    "source_summary",
+    "bundles"
+  ],
+  "properties": {
+    "schema_version": { "const": "1.0.0" },
+    "run_id": {
+      "$ref": "https://scalingneuro.com/schemas/common-v1.schema.json#/$defs/uuid"
+    },
+    "site_id": {
+      "$ref": "https://scalingneuro.com/schemas/common-v1.schema.json#/$defs/uuid"
+    },
+    "project_id": {
+      "$ref": "https://scalingneuro.com/schemas/common-v1.schema.json#/$defs/uuid"
+    },
+    "consent_policy_version": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 64,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9.+_-]*$"
+    },
+    "client_version": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 64,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9.+_-]*$"
+    },
+    "created_at": {
+      "$ref": "https://scalingneuro.com/schemas/common-v1.schema.json#/$defs/timestamp"
+    },
+    "source_summary": {
+      "$ref": "https://scalingneuro.com/schemas/common-v1.schema.json#/$defs/sourceSummary"
+    },
+    "bundles": {
+      "type": "array",
+      "maxItems": 10000,
+      "items": { "$ref": "#/$defs/manifestBundle" }
+    }
+  },
+  "$defs": {
+    "localObject": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["relative_key", "local_path", "size", "sha256"],
+      "properties": {
+        "relative_key": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512,
+          "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.(?:/|$))[A-Za-z0-9._~/-]+(?:\\.nii\\.gz|\\.json)$"
+        },
+        "local_path": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 8192
+        },
+        "size": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 5368709120
+        },
+        "sha256": {
+          "$ref": "https://scalingneuro.com/schemas/common-v1.schema.json#/$defs/sha256"
+        },
+        "uncompressed_sha256": {
+          "$ref": "https://scalingneuro.com/schemas/common-v1.schema.json#/$defs/sha256"
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "type": "object",
+            "properties": {
+              "relative_key": {
+                "type": "string",
+                "pattern": "\\.nii\\.gz$"
+              }
+            },
+            "required": ["relative_key"]
+          },
+          "then": {
+            "type": "object",
+            "properties": {
+              "uncompressed_sha256": {}
+            },
+            "required": ["uncompressed_sha256"]
+          }
+        },
+        {
+          "if": {
+            "type": "object",
+            "properties": {
+              "relative_key": {
+                "type": "string",
+                "pattern": "\\.json$"
+              }
+            },
+            "required": ["relative_key"]
+          },
+          "then": {
+            "type": "object",
+            "properties": {
+              "uncompressed_sha256": false
+            }
+          }
+        }
+      ]
+    },
+    "manifestBundle": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "bundle_id",
+        "series_id",
+        "subject_id",
+        "session_id",
+        "protocol_group_id",
+        "nifti",
+        "metadata",
+        "source_dicom_count",
+        "classification",
+        "qc"
+      ],
+      "properties": {
+        "bundle_id": {
+          "$ref": "https://scalingneuro.com/schemas/common-v1.schema.json#/$defs/pseudonymId"
+        },
+        "series_id": {
+          "$ref": "https://scalingneuro.com/schemas/common-v1.schema.json#/$defs/pseudonymId"
+        },
+        "subject_id": {
+          "$ref": "https://scalingneuro.com/schemas/common-v1.schema.json#/$defs/pseudonymId"
+        },
+        "session_id": {
+          "$ref": "https://scalingneuro.com/schemas/common-v1.schema.json#/$defs/pseudonymId"
+        },
+        "protocol_group_id": {
+          "$ref": "https://scalingneuro.com/schemas/common-v1.schema.json#/$defs/pseudonymId"
+        },
+        "nifti": {
+          "allOf": [
+            { "$ref": "#/$defs/localObject" },
+            {
+              "type": "object",
+              "properties": {
+                "relative_key": {
+                  "type": "string",
+                  "pattern": "\\.nii\\.gz$"
+                }
+              }
+            }
+          ]
+        },
+        "metadata": {
+          "allOf": [
+            { "$ref": "#/$defs/localObject" },
+            {
+              "type": "object",
+              "properties": {
+                "relative_key": {
+                  "type": "string",
+                  "pattern": "\\.json$"
+                },
+                "size": {
+                  "type": "integer",
+                  "maximum": 8388608
+                }
+              }
+            }
+          ]
+        },
+        "source_dicom_count": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "classification": {
+          "$ref": "https://scalingneuro.com/schemas/common-v1.schema.json#/$defs/classification"
+        },
+        "qc": {
+          "$ref": "https://scalingneuro.com/schemas/common-v1.schema.json#/$defs/qualityControl"
+        }
+      }
+    }
+  }
+}

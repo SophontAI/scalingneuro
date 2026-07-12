@@ -1,0 +1,15 @@
+{
+  "upload_id": "0190f86f-e0de-7f2a-a24c-0a6abf16ec81",
+  "status": "committed",
+  "object_prefix": "archive/v1/0190f870-1111-7f2a-a24c-0a6abf16ec81/0190f870-2222-7f2a-a24c-0a6abf16ec81/0190f86f-e0de-7f2a-a24c-0a6abf16ec81/",
+  "series_count": 1,
+  "total_bytes": 184243353,
+  "consent_policy_version": "pilot-2026-07",
+  "created_at": "2026-07-12T03:14:02Z",
+  "updated_at": "2026-07-12T03:19:44Z",
+  "committed_at": "2026-07-12T03:19:44Z",
+  "manifest": {
+    "key": "manifests/v1/0190f870-1111-7f2a-a24c-0a6abf16ec81/0190f870-2222-7f2a-a24c-0a6abf16ec81/0190f86f-e0de-7f2a-a24c-0a6abf16ec81.json",
+      "sha256": "8c4eac4323ded670225dcf77a0d3da7ae9ab43a5bad068fd1f6ac1b341c4c3d5"
+  }
+}

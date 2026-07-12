@@ -1,0 +1,152 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://scalingneuro.com/schemas/metadata-policy-v1.schema.json",
+  "title": "Scaling Neuro metadata policy v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "policy_id",
+    "scope",
+    "default_action",
+    "allowed_fields",
+    "local_only_inputs",
+    "forbidden_categories",
+    "invariants"
+  ],
+  "properties": {
+    "$schema": {
+      "const": "https://scalingneuro.com/schemas/metadata-policy-v1.schema.json"
+    },
+    "schema_version": {
+      "$ref": "https://scalingneuro.com/schemas/common-v1.schema.json#/$defs/schemaVersion"
+    },
+    "policy_id": {
+      "const": "scaling-neuro-epi-default-deny"
+    },
+    "scope": {
+      "const": "dicom-to-acquisition-space-nifti-sidecar"
+    },
+    "default_action": {
+      "const": "drop"
+    },
+    "allowed_fields": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": { "$ref": "#/$defs/fieldRule" }
+    },
+    "local_only_inputs": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["source", "use", "upload"],
+        "properties": {
+          "source": { "$ref": "#/$defs/source" },
+          "use": {
+            "enum": ["classify", "exclude", "pseudonymize", "group"]
+          },
+          "transform": {
+            "enum": ["none", "site_hmac_sha256_v1", "safe_evidence_code"]
+          },
+          "upload": { "const": false }
+        }
+      }
+    },
+    "forbidden_categories": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["category", "matches", "action"],
+        "properties": {
+          "category": {
+            "type": "string",
+            "pattern": "^[a-z][a-z0-9_]{2,63}$"
+          },
+          "matches": {
+            "type": "array",
+            "minItems": 1,
+            "uniqueItems": true,
+            "items": { "type": "string", "minLength": 1, "maxLength": 128 }
+          },
+          "action": {
+            "enum": ["drop", "reject_series"]
+          }
+        }
+      }
+    },
+    "invariants": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "pattern": "^[a-z][a-z0-9_.-]{2,95}$"
+      }
+    }
+  },
+  "$defs": {
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "selector"],
+      "properties": {
+        "kind": {
+          "enum": ["dicom_standard", "dcm2niix_anonymized", "nifti_header", "derived"]
+        },
+        "selector": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 96
+        },
+        "dicom_tag": {
+          "type": "string",
+          "pattern": "^[0-9A-F]{4},[0-9A-F]{4}$"
+        }
+      }
+    },
+    "fieldRule": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["output_path", "sources", "value_type", "transform", "purpose"],
+      "properties": {
+        "output_path": {
+          "type": "string",
+          "pattern": "^/[a-z][a-z0-9_]*(?:/[a-z][a-z0-9_]*)*$"
+        },
+        "sources": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/source" }
+        },
+        "value_type": {
+          "enum": ["code", "code_list", "string", "string_list", "integer", "integer_list", "number", "number_list", "matrix"]
+        },
+        "transform": {
+          "enum": [
+            "normalize_safe_ascii_128",
+            "normalize_safe_ascii_list_128",
+            "normalize_code",
+            "normalize_code_list",
+            "normalize_number",
+            "normalize_number_list",
+            "milliseconds_to_seconds",
+            "site_hmac_sha256_v1",
+            "converter_normalization",
+            "nifti_header_normalization"
+          ]
+        },
+        "purpose": {
+          "enum": ["identity", "acquisition_context", "conversion_fidelity", "qc", "grouping"]
+        }
+      }
+    }
+  }
+}

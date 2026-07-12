@@ -1,0 +1,8 @@
+{
+  "url": "https://example-account.r2.cloudflarestorage.com/scaling-neuro-archive/archive/v1/example?partNumber=1&uploadId=opaque&X-Amz-Expires=900&X-Amz-Signature=redacted",
+  "headers": {
+    "content-length": "67108864",
+    "x-amz-content-sha256": "4d927ef68b696afbc1f5e6a5b2b7b372f4b33f576cc8d5340cdbbea33e970234"
+  },
+  "expires_at": "2026-07-12T04:15:00Z"
+}

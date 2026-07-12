@@ -6,11 +6,23 @@
 # Local neuroimaging inputs (never publish or commit without explicit clearance)
 *.nii
 *.nii.gz
+*.dcm
+*.dicom
+*.ima
 
 # Cloudflare and package-manager artifacts
 .wrangler/
 node_modules/
 dist/
+
+# Client, QA, and release artifacts
+client/target/
+output/
+artifacts/
+*.sbom.json
+SHA256SUMS
+__pycache__/
+*.py[cod]
 
 # macOS
 .DS_Store

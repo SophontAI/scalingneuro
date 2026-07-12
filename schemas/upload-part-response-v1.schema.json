@@ -1,0 +1,35 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://scalingneuro.com/schemas/upload-part-response-v1.schema.json",
+  "title": "Scaling Neuro presigned multipart-part URL response v1",
+  "description": "A short-lived UploadPart capability bound to one initialized key, part number, content length, and SHA-256. The URL and headers are secrets until expiry and must not be logged.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["url", "headers", "expires_at"],
+  "properties": {
+    "url": {
+      "type": "string",
+      "format": "uri",
+      "pattern": "^https://",
+      "maxLength": 8192
+    },
+    "headers": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["content-length", "x-amz-content-sha256"],
+      "properties": {
+        "content-length": {
+          "description": "Decimal string because HTTP header values are serialized as text.",
+          "type": "string",
+          "pattern": "^[1-9][0-9]{0,9}$"
+        },
+        "x-amz-content-sha256": {
+          "$ref": "https://scalingneuro.com/schemas/common-v1.schema.json#/$defs/sha256"
+        }
+      }
+    },
+    "expires_at": {
+      "$ref": "https://scalingneuro.com/schemas/common-v1.schema.json#/$defs/timestamp"
+    }
+  }
+}

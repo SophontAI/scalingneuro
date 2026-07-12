@@ -1,0 +1,10 @@
+{
+  "error": {
+    "code": "OBJECT_MISMATCH",
+    "message": "Uploaded object metadata does not match the initialized bundle",
+    "request_id": "req_0190f86fe0de7f2aa24c0a6abf16ec81",
+    "details": {
+      "field": "sha256"
+    }
+  }
+}

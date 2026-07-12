@@ -1,0 +1,51 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://scalingneuro.com/schemas/enrollment-request-v1.schema.json",
+  "title": "Scaling Neuro idempotent enrollment request v1",
+  "description": "A client-generated, replay-safe enrollment operation. The invite and device token are secrets and must never be logged.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "invite_code",
+    "enrollment_id",
+    "device_token",
+    "device_name",
+    "client_version",
+    "platform"
+  ],
+  "properties": {
+    "invite_code": {
+      "type": "string",
+      "minLength": 53,
+      "maxLength": 53,
+      "pattern": "^sn_invite_[A-Za-z0-9_-]{43}$"
+    },
+    "enrollment_id": {
+      "$ref": "https://scalingneuro.com/schemas/common-v1.schema.json#/$defs/uuid"
+    },
+    "device_token": {
+      "type": "string",
+      "minLength": 53,
+      "maxLength": 53,
+      "pattern": "^sn_device_[A-Za-z0-9_-]{43}$"
+    },
+    "device_name": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 96,
+      "pattern": "^[^\\u0000-\\u001F\\u007F]+$"
+    },
+    "client_version": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 64,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9.+_-]*$"
+    },
+    "platform": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 32,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*$"
+    }
+  }
+}

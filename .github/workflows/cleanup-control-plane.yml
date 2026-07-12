@@ -1,0 +1,31 @@
+name: Cleanup control plane
+
+on:
+  schedule:
+    - cron: "17 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: scalingneuro-control-plane-cleanup
+  cancel-in-progress: false
+
+jobs:
+  cleanup:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment:
+      name: production
+    steps:
+      - name: Purge expired and withdrawn uploads
+        env:
+          ADMIN_API_TOKEN: ${{ secrets.SCALING_NEURO_ADMIN_API_TOKEN }}
+        run: |
+          test -n "$ADMIN_API_TOKEN"
+          curl --fail-with-body --silent --show-error \
+            --retry 3 --retry-all-errors \
+            --request POST \
+            --header "Authorization: Bearer $ADMIN_API_TOKEN" \
+            https://scalingneuro.com/v1/admin/cleanup

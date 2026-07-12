@@ -1,0 +1,813 @@
+name: Release neuro-sync client
+
+on:
+  push:
+    tags:
+      - client-v*
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Client version (must match client/Cargo.toml; leading v is optional)
+        required: false
+        type: string
+      publish_release:
+        description: Create a GitHub release after building
+        required: true
+        default: false
+        type: boolean
+      prerelease:
+        description: Mark a manually published release as a prerelease
+        required: true
+        default: true
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: neuro-sync-release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  DCM2NIIX_VERSION: v1.0.20260416
+  DCM2NIIX_LINUX_SHA256: e88b40f6ebbcf9f47ebfdd7bb5f0127297cb7e8b06266a91a4642b5814031bd0
+  DCM2NIIX_MACOS_SHA256: 51e909fca34db8198d8a917cb85a00e135841d32a3c51f1154ec8d5b874de852
+  DCM2NIIX_WINDOWS_SHA256: 969bca4fc41d5f82658acef9d0ed9cbfbd4114ec8e8668906910241fcbb2c048
+
+jobs:
+  metadata:
+    name: Verify release version
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v6
+
+      - name: Resolve and verify version
+        id: version
+        env:
+          REQUESTED_VERSION: ${{ inputs.version }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f client/Cargo.toml
+          crate_version=$(sed -n 's/^version = "\([^"]*\)"/\1/p' client/Cargo.toml | head -1)
+          if [[ -z "$crate_version" ]]; then
+            echo "Unable to read the client crate version" >&2
+            exit 1
+          fi
+
+          if [[ "$GITHUB_REF_TYPE" == "tag" ]]; then
+            version=${GITHUB_REF_NAME#client-v}
+          elif [[ -n "${REQUESTED_VERSION:-}" ]]; then
+            version=${REQUESTED_VERSION#v}
+          else
+            version=$crate_version
+          fi
+
+          if [[ "$version" != "$crate_version" ]]; then
+            echo "Requested version $version does not match client/Cargo.toml $crate_version" >&2
+            exit 1
+          fi
+          if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+([+-][A-Za-z0-9.-]+)?$ ]]; then
+            echo "Invalid semantic version: $version" >&2
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Require current main for publication
+        if: github.ref_type == 'tag' || inputs.publish_release == true
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin main:refs/remotes/origin/main
+          main_sha=$(git rev-parse origin/main)
+          if [[ "$GITHUB_SHA" != "$main_sha" ]]; then
+            echo "Published releases must use the current main commit ($main_sha), not $GITHUB_SHA" >&2
+            exit 1
+          fi
+
+  verify:
+    name: Release contract and implementation gate
+    needs: metadata
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v6
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+          cache: pip
+          cache-dependency-path: schemas/requirements.txt
+
+      - name: Set up Node
+        uses: actions/setup-node@v6
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: worker/package-lock.json
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.85.0
+          components: rustfmt, clippy
+
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: client
+
+      - name: Install locked validators and Worker dependencies
+        run: |
+          python -m pip install --requirement schemas/requirements.txt
+          npm ci --prefix worker
+
+      - name: Validate public contracts
+        run: |
+          python schemas/validate.py
+          node schemas/validate-ajv.mjs
+
+      - name: Verify Worker
+        run: |
+          npm run typecheck --prefix worker
+          npm test --prefix worker
+
+      - name: Verify client
+        run: |
+          cargo fmt --manifest-path client/Cargo.toml --all -- --check
+          cargo clippy --locked --manifest-path client/Cargo.toml --all-targets --all-features -- -D warnings
+          cargo test --locked --manifest-path client/Cargo.toml --all-features
+
+  linux:
+    name: Linux x86_64 package
+    needs: [metadata, verify]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v6
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.85.0
+          targets: x86_64-unknown-linux-musl
+
+      - name: Install static Linux linker
+        run: sudo apt-get update && sudo apt-get install --yes musl-tools
+
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: client
+
+      - name: Build locked release binary
+        run: cargo build --locked --release --manifest-path client/Cargo.toml --target x86_64-unknown-linux-musl
+
+      - name: Stage client and verified converter
+        env:
+          VERSION: ${{ needs.metadata.outputs.version }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          package_name="neuro-sync-v${VERSION}-linux-x86_64"
+          stage_dir="$RUNNER_TEMP/$package_name"
+          mkdir -p "$stage_dir/libexec" "$RUNNER_TEMP/release-assets"
+          install -m 0755 client/target/x86_64-unknown-linux-musl/release/neuro-sync "$stage_dir/neuro-sync"
+
+          converter_zip="$RUNNER_TEMP/dcm2niix_lnx.zip"
+          curl --fail --location --silent --show-error \
+            --output "$converter_zip" \
+            "https://github.com/rordenlab/dcm2niix/releases/download/${DCM2NIIX_VERSION}/dcm2niix_lnx.zip"
+          echo "${DCM2NIIX_LINUX_SHA256}  ${converter_zip}" | sha256sum --check --status
+          unzip -q "$converter_zip" -d "$stage_dir/libexec"
+          chmod 0755 "$stage_dir/libexec/dcm2niix"
+          cp docs/collaborator-onboarding.md "$stage_dir/CONTRIBUTING-SCANS.md"
+          cp LICENSE-MIT LICENSE-APACHE "$stage_dir/"
+          mkdir -p "$stage_dir/THIRD-PARTY-LICENSES"
+          cp docs/dcm2niix-license.txt "$stage_dir/THIRD-PARTY-LICENSES/dcm2niix-license.txt"
+
+          jq -n \
+            --arg client_version "$VERSION" \
+            --arg converter_version "$DCM2NIIX_VERSION" \
+            --arg converter_sha256 "$DCM2NIIX_LINUX_SHA256" \
+            --arg git_commit "$GITHUB_SHA" \
+            --arg platform "linux-x86_64" \
+            '{client_version:$client_version,converter:{name:"dcm2niix",version:$converter_version,source_archive_sha256:$converter_sha256},git_commit:$git_commit,platform:$platform,signed:false}' \
+            > "$stage_dir/RELEASE.json"
+
+          echo "PACKAGE_NAME=$package_name" >> "$GITHUB_ENV"
+          echo "STAGE_DIR=$stage_dir" >> "$GITHUB_ENV"
+          echo "ASSET_DIR=$RUNNER_TEMP/release-assets" >> "$GITHUB_ENV"
+
+      - name: Install Syft
+        uses: anchore/sbom-action/download-syft@v0
+
+      - name: Generate and package SBOMs
+        shell: bash
+        run: |
+          set -euo pipefail
+          syft "dir:${STAGE_DIR}" \
+            -o "spdx-json=${STAGE_DIR}/neuro-sync.spdx.json" \
+            -o "cyclonedx-json=${STAGE_DIR}/neuro-sync.cdx.json"
+          cp "$STAGE_DIR/neuro-sync.spdx.json" "$ASSET_DIR/${PACKAGE_NAME}.spdx.json"
+          cp "$STAGE_DIR/neuro-sync.cdx.json" "$ASSET_DIR/${PACKAGE_NAME}.cdx.json"
+          tar -C "$(dirname "$STAGE_DIR")" -czf "$ASSET_DIR/${PACKAGE_NAME}.tar.gz" "$PACKAGE_NAME"
+
+      - name: Upload Linux release assets
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-linux-x86_64
+          path: ${{ env.ASSET_DIR }}/*
+          if-no-files-found: error
+
+  macos:
+    name: macOS universal package
+    needs: [metadata, verify]
+    runs-on: macos-14
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v6
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.85.0
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: client
+
+      - name: Build both macOS architectures
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo build --locked --release --manifest-path client/Cargo.toml --target aarch64-apple-darwin
+          cargo build --locked --release --manifest-path client/Cargo.toml --target x86_64-apple-darwin
+
+      - name: Stage, optionally sign, and verify package
+        env:
+          VERSION: ${{ needs.metadata.outputs.version }}
+          APPLE_CERTIFICATE_P12_BASE64: ${{ secrets.APPLE_CERTIFICATE_P12_BASE64 }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_NOTARY_KEY_P8_BASE64: ${{ secrets.APPLE_NOTARY_KEY_P8_BASE64 }}
+          APPLE_NOTARY_KEY_ID: ${{ secrets.APPLE_NOTARY_KEY_ID }}
+          APPLE_NOTARY_ISSUER_ID: ${{ secrets.APPLE_NOTARY_ISSUER_ID }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          stage_dir="$RUNNER_TEMP/neuro-sync-stage-macos"
+          asset_dir="$RUNNER_TEMP/release-assets"
+          mkdir -p "$stage_dir/libexec" "$asset_dir"
+          lipo -create \
+            client/target/aarch64-apple-darwin/release/neuro-sync \
+            client/target/x86_64-apple-darwin/release/neuro-sync \
+            -output "$stage_dir/neuro-sync"
+          chmod 0755 "$stage_dir/neuro-sync"
+          lipo -verify_arch arm64 x86_64 "$stage_dir/neuro-sync"
+
+          converter_zip="$RUNNER_TEMP/dcm2niix_mac.zip"
+          curl --fail --location --silent --show-error \
+            --output "$converter_zip" \
+            "https://github.com/rordenlab/dcm2niix/releases/download/${DCM2NIIX_VERSION}/dcm2niix_mac.zip"
+          echo "${DCM2NIIX_MACOS_SHA256}  ${converter_zip}" | shasum -a 256 --check --status
+          ditto -x -k "$converter_zip" "$stage_dir/libexec"
+          chmod 0755 "$stage_dir/libexec/dcm2niix"
+          lipo -verify_arch arm64 x86_64 "$stage_dir/libexec/dcm2niix"
+          cp docs/collaborator-onboarding.md "$stage_dir/CONTRIBUTING-SCANS.md"
+          cp LICENSE-MIT LICENSE-APACHE "$stage_dir/"
+          mkdir -p "$stage_dir/THIRD-PARTY-LICENSES"
+          cp docs/dcm2niix-license.txt "$stage_dir/THIRD-PARTY-LICENSES/dcm2niix-license.txt"
+
+          signed=false
+          if [[ -n "$APPLE_CERTIFICATE_P12_BASE64" && -n "$APPLE_CERTIFICATE_PASSWORD" && -n "$APPLE_SIGNING_IDENTITY" ]]; then
+            certificate_path="$RUNNER_TEMP/apple-signing.p12"
+            keychain_path="$RUNNER_TEMP/neuro-sync-signing.keychain-db"
+            echo "APPLE_KEYCHAIN_PATH=$keychain_path" >> "$GITHUB_ENV"
+            echo "APPLE_CERTIFICATE_PATH=$certificate_path" >> "$GITHUB_ENV"
+            keychain_password=$(openssl rand -hex 24)
+            printf '%s' "$APPLE_CERTIFICATE_P12_BASE64" | /usr/bin/base64 -D > "$certificate_path"
+            security create-keychain -p "$keychain_password" "$keychain_path"
+            security set-keychain-settings -lut 21600 "$keychain_path"
+            security unlock-keychain -p "$keychain_password" "$keychain_path"
+            security import "$certificate_path" -k "$keychain_path" -P "$APPLE_CERTIFICATE_PASSWORD" -T /usr/bin/codesign
+            security set-key-partition-list -S apple-tool:,apple: -s -k "$keychain_password" "$keychain_path"
+            security list-keychains -d user -s "$keychain_path"
+            codesign --force --options runtime --timestamp --sign "$APPLE_SIGNING_IDENTITY" "$stage_dir/neuro-sync"
+            codesign --force --options runtime --timestamp --sign "$APPLE_SIGNING_IDENTITY" "$stage_dir/libexec/dcm2niix"
+            codesign --verify --strict --verbose=2 "$stage_dir/neuro-sync"
+            codesign --verify --strict --verbose=2 "$stage_dir/libexec/dcm2niix"
+            signed=true
+          fi
+
+          notarize=false
+          if [[ "$signed" == true && -n "$APPLE_NOTARY_KEY_P8_BASE64" && -n "$APPLE_NOTARY_KEY_ID" && -n "$APPLE_NOTARY_ISSUER_ID" ]]; then
+            notarize=true
+            package_name="neuro-sync-v${VERSION}-macos-universal"
+          elif [[ "$signed" == true ]]; then
+            package_name="neuro-sync-v${VERSION}-macos-universal-CODESIGNED-PILOT"
+          else
+            package_name="neuro-sync-v${VERSION}-macos-universal-UNSIGNED-PILOT"
+          fi
+          final_stage="$RUNNER_TEMP/$package_name"
+          mv "$stage_dir" "$final_stage"
+          jq -n \
+            --arg client_version "$VERSION" \
+            --arg converter_version "$DCM2NIIX_VERSION" \
+            --arg converter_sha256 "$DCM2NIIX_MACOS_SHA256" \
+            --arg git_commit "$GITHUB_SHA" \
+            --arg platform "macos-universal" \
+            --argjson signed "$signed" \
+            --argjson notarized "$notarize" \
+            '{client_version:$client_version,converter:{name:"dcm2niix",version:$converter_version,source_archive_sha256:$converter_sha256},git_commit:$git_commit,platform:$platform,signed:$signed,notarized:$notarized}' \
+            > "$final_stage/RELEASE.json"
+
+          echo "PACKAGE_NAME=$package_name" >> "$GITHUB_ENV"
+          echo "STAGE_DIR=$final_stage" >> "$GITHUB_ENV"
+          echo "ASSET_DIR=$asset_dir" >> "$GITHUB_ENV"
+          echo "NOTARIZE_MACOS=$notarize" >> "$GITHUB_ENV"
+          echo "APPLE_KEYCHAIN_PATH=${keychain_path:-}" >> "$GITHUB_ENV"
+          echo "APPLE_CERTIFICATE_PATH=${certificate_path:-}" >> "$GITHUB_ENV"
+
+      - name: Remove temporary Apple signing material
+        if: always()
+        shell: bash
+        run: |
+          if [[ -n "${APPLE_KEYCHAIN_PATH:-}" && -f "$APPLE_KEYCHAIN_PATH" ]]; then
+            security delete-keychain "$APPLE_KEYCHAIN_PATH" || true
+          fi
+          if [[ -n "${APPLE_CERTIFICATE_PATH:-}" ]]; then
+            rm -f "$APPLE_CERTIFICATE_PATH"
+          fi
+
+      - name: Install Syft
+        uses: anchore/sbom-action/download-syft@v0
+
+      - name: Generate and package SBOMs
+        shell: bash
+        run: |
+          set -euo pipefail
+          syft "dir:${STAGE_DIR}" \
+            -o "spdx-json=${STAGE_DIR}/neuro-sync.spdx.json" \
+            -o "cyclonedx-json=${STAGE_DIR}/neuro-sync.cdx.json"
+          cp "$STAGE_DIR/neuro-sync.spdx.json" "$ASSET_DIR/${PACKAGE_NAME}.spdx.json"
+          cp "$STAGE_DIR/neuro-sync.cdx.json" "$ASSET_DIR/${PACKAGE_NAME}.cdx.json"
+          ditto -c -k --keepParent "$STAGE_DIR" "$ASSET_DIR/${PACKAGE_NAME}.zip"
+
+      - name: Notarize the signed macOS archive
+        if: env.NOTARIZE_MACOS == 'true'
+        env:
+          APPLE_NOTARY_KEY_P8_BASE64: ${{ secrets.APPLE_NOTARY_KEY_P8_BASE64 }}
+          APPLE_NOTARY_KEY_ID: ${{ secrets.APPLE_NOTARY_KEY_ID }}
+          APPLE_NOTARY_ISSUER_ID: ${{ secrets.APPLE_NOTARY_ISSUER_ID }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          key_path="$RUNNER_TEMP/AuthKey_${APPLE_NOTARY_KEY_ID}.p8"
+          result_path="$RUNNER_TEMP/notary-result.json"
+          trap 'rm -f "$key_path" "$result_path"' EXIT
+          printf '%s' "$APPLE_NOTARY_KEY_P8_BASE64" | /usr/bin/base64 -D > "$key_path"
+          xcrun notarytool submit "$ASSET_DIR/${PACKAGE_NAME}.zip" \
+            --key "$key_path" \
+            --key-id "$APPLE_NOTARY_KEY_ID" \
+            --issuer "$APPLE_NOTARY_ISSUER_ID" \
+            --wait \
+            --timeout 60m \
+            --output-format json > "$result_path"
+          jq '{id,status,message}' "$result_path"
+          jq --exit-status '.status == "Accepted"' "$result_path" > /dev/null
+
+      - name: Upload macOS release assets
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-macos-universal
+          path: ${{ env.ASSET_DIR }}/*
+          if-no-files-found: error
+
+  windows:
+    name: Windows x86_64 package
+    needs: [metadata, verify]
+    runs-on: windows-2025
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v6
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.85.0
+
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: client
+
+      - name: Build locked release binary
+        run: cargo build --locked --release --manifest-path client/Cargo.toml
+
+      - name: Stage, optionally sign, and verify package
+        env:
+          VERSION: ${{ needs.metadata.outputs.version }}
+          WINDOWS_CERTIFICATE_PFX_BASE64: ${{ secrets.WINDOWS_CERTIFICATE_PFX_BASE64 }}
+          WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $stageDir = Join-Path $env:RUNNER_TEMP "neuro-sync-stage-windows"
+          $assetDir = Join-Path $env:RUNNER_TEMP "release-assets"
+          $runtimeDir = Join-Path $stageDir "libexec"
+          New-Item -ItemType Directory -Force -Path $runtimeDir, $assetDir | Out-Null
+          Copy-Item "client/target/release/neuro-sync.exe" (Join-Path $stageDir "neuro-sync.exe")
+
+          $converterZip = Join-Path $env:RUNNER_TEMP "dcm2niix_win.zip"
+          $converterUri = "https://github.com/rordenlab/dcm2niix/releases/download/$env:DCM2NIIX_VERSION/dcm2niix_win.zip"
+          Invoke-WebRequest -Uri $converterUri -OutFile $converterZip
+          $actualHash = (Get-FileHash -Algorithm SHA256 $converterZip).Hash.ToLowerInvariant()
+          if ($actualHash -ne $env:DCM2NIIX_WINDOWS_SHA256) {
+            throw "dcm2niix Windows archive digest mismatch"
+          }
+          Expand-Archive -Path $converterZip -DestinationPath $runtimeDir
+          Copy-Item "docs/collaborator-onboarding.md" (Join-Path $stageDir "CONTRIBUTING-SCANS.md")
+          Copy-Item -Path "LICENSE-MIT", "LICENSE-APACHE" -Destination $stageDir
+          $licenseDir = Join-Path $stageDir "THIRD-PARTY-LICENSES"
+          New-Item -ItemType Directory -Force -Path $licenseDir | Out-Null
+          Copy-Item "docs/dcm2niix-license.txt" (Join-Path $licenseDir "dcm2niix-license.txt")
+
+          $signed = $false
+          if ($env:WINDOWS_CERTIFICATE_PFX_BASE64 -and $env:WINDOWS_CERTIFICATE_PASSWORD) {
+            $certificatePath = Join-Path $env:RUNNER_TEMP "windows-signing.pfx"
+            "WINDOWS_CERTIFICATE_PATH=$certificatePath" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+            [IO.File]::WriteAllBytes(
+              $certificatePath,
+              [Convert]::FromBase64String($env:WINDOWS_CERTIFICATE_PFX_BASE64)
+            )
+            $signtool = Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\bin\*\x64\signtool.exe" |
+              Sort-Object FullName -Descending |
+              Select-Object -First 1
+            if (-not $signtool) { throw "signtool.exe was not found" }
+            Get-ChildItem $stageDir -Recurse -File -Include *.exe,*.dll | ForEach-Object {
+              & $signtool.FullName sign /f $certificatePath /p $env:WINDOWS_CERTIFICATE_PASSWORD /fd SHA256 /td SHA256 /tr http://timestamp.digicert.com $_.FullName
+              if ($LASTEXITCODE -ne 0) { throw "Authenticode signing failed for $($_.Name)" }
+              & $signtool.FullName verify /pa /all $_.FullName
+              if ($LASTEXITCODE -ne 0) { throw "Authenticode verification failed for $($_.Name)" }
+            }
+            $signed = $true
+          }
+
+          if ($signed) {
+            $packageName = "neuro-sync-v$env:VERSION-windows-x86_64"
+          } else {
+            $packageName = "neuro-sync-v$env:VERSION-windows-x86_64-UNSIGNED-PILOT"
+          }
+          $finalStage = Join-Path $env:RUNNER_TEMP $packageName
+          Move-Item $stageDir $finalStage
+          [ordered]@{
+            client_version = $env:VERSION
+            converter = [ordered]@{
+              name = "dcm2niix"
+              version = $env:DCM2NIIX_VERSION
+              source_archive_sha256 = $env:DCM2NIIX_WINDOWS_SHA256
+            }
+            git_commit = $env:GITHUB_SHA
+            platform = "windows-x86_64"
+            signed = $signed
+          } | ConvertTo-Json -Depth 4 | Set-Content -Encoding utf8NoBOM (Join-Path $finalStage "RELEASE.json")
+
+          "PACKAGE_NAME=$packageName" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "STAGE_DIR=$finalStage" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "ASSET_DIR=$assetDir" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "WINDOWS_CERTIFICATE_PATH=$($certificatePath ?? '')" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Remove temporary Windows signing material
+        if: always()
+        shell: pwsh
+        run: |
+          if ($env:WINDOWS_CERTIFICATE_PATH) {
+            Remove-Item -Force -ErrorAction SilentlyContinue $env:WINDOWS_CERTIFICATE_PATH
+          }
+
+      - name: Install Syft
+        uses: anchore/sbom-action/download-syft@v0
+
+      - name: Generate and package SBOMs
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          syft "dir:$env:STAGE_DIR" -o "spdx-json=$env:STAGE_DIR/neuro-sync.spdx.json" -o "cyclonedx-json=$env:STAGE_DIR/neuro-sync.cdx.json"
+          Copy-Item "$env:STAGE_DIR/neuro-sync.spdx.json" "$env:ASSET_DIR/$env:PACKAGE_NAME.spdx.json"
+          Copy-Item "$env:STAGE_DIR/neuro-sync.cdx.json" "$env:ASSET_DIR/$env:PACKAGE_NAME.cdx.json"
+          Compress-Archive -Path $env:STAGE_DIR -DestinationPath "$env:ASSET_DIR/$env:PACKAGE_NAME.zip"
+
+      - name: Upload Windows release assets
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-windows-x86_64
+          path: ${{ env.ASSET_DIR }}/*
+          if-no-files-found: error
+
+  assemble:
+    name: Checksums and public collaborator downloads
+    needs: [metadata, linux, macos, windows]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v6
+
+      - name: Download platform assets
+        uses: actions/download-artifact@v4
+        with:
+          pattern: release-*
+          path: release-assets
+          merge-multiple: true
+
+      - name: Generate portable release index
+        env:
+          VERSION: ${{ needs.metadata.outputs.version }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          linux=(release-assets/neuro-sync-v"${VERSION}"-linux-x86_64.tar.gz)
+          macos=(release-assets/neuro-sync-v"${VERSION}"-macos-universal*.zip)
+          windows=(release-assets/neuro-sync-v"${VERSION}"-windows-x86_64*.zip)
+          if (( ${#linux[@]} != 1 || ${#macos[@]} != 1 || ${#windows[@]} != 1 )); then
+            echo "Expected exactly one package for each public platform" >&2
+            exit 1
+          fi
+
+          linux_name=$(basename "${linux[0]}")
+          macos_name=$(basename "${macos[0]}")
+          windows_name=$(basename "${windows[0]}")
+          linux_stem=${linux_name%.tar.gz}
+          macos_stem=${macos_name%.zip}
+          windows_stem=${windows_name%.zip}
+          linux_sha=$(sha256sum "${linux[0]}" | cut -d' ' -f1)
+          macos_sha=$(sha256sum "${macos[0]}" | cut -d' ' -f1)
+          windows_sha=$(sha256sum "${windows[0]}" | cut -d' ' -f1)
+          macos_signed=true
+          macos_notarized=true
+          windows_signed=true
+          [[ "$macos_name" != *-UNSIGNED-PILOT.zip ]] || macos_signed=false
+          [[ "$macos_name" != *-PILOT.zip ]] || macos_notarized=false
+          [[ "$windows_name" != *-UNSIGNED-PILOT.zip ]] || windows_signed=false
+
+          jq -n \
+            --arg version "$VERSION" \
+            --arg linux_name "$linux_name" \
+            --arg linux_sha "$linux_sha" \
+            --arg macos_name "$macos_name" \
+            --arg macos_stem "$macos_stem" \
+            --arg macos_sha "$macos_sha" \
+            --arg windows_name "$windows_name" \
+            --arg windows_stem "$windows_stem" \
+            --arg windows_sha "$windows_sha" \
+            --arg linux_stem "$linux_stem" \
+            --argjson macos_signed "$macos_signed" \
+            --argjson macos_notarized "$macos_notarized" \
+            --argjson windows_signed "$windows_signed" \
+            '{
+              schema_version:"1.0.0",
+              version:$version,
+              channel:"pilot",
+              checksums_url:"/downloads/SHA256SUMS",
+              artifacts:{
+                macos:{url:("/downloads/"+$macos_name),sha256:$macos_sha,signed:$macos_signed,notarized:$macos_notarized,sbom_spdx_url:("/downloads/"+$macos_stem+".spdx.json"),sbom_cyclonedx_url:("/downloads/"+$macos_stem+".cdx.json")},
+                windows:{url:("/downloads/"+$windows_name),sha256:$windows_sha,signed:$windows_signed,sbom_spdx_url:("/downloads/"+$windows_stem+".spdx.json"),sbom_cyclonedx_url:("/downloads/"+$windows_stem+".cdx.json")},
+                linux:{url:("/downloads/"+$linux_name),sha256:$linux_sha,signed:false,sbom_spdx_url:("/downloads/"+$linux_stem+".spdx.json"),sbom_cyclonedx_url:("/downloads/"+$linux_stem+".cdx.json")}
+              }
+            }' > release-assets/latest.json
+
+      - name: Generate top-level checksums
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd release-assets
+          find . -maxdepth 1 -type f ! -name SHA256SUMS -printf '%f\n' | LC_ALL=C sort | xargs sha256sum > SHA256SUMS
+          sha256sum --check SHA256SUMS
+
+      - name: Enforce Cloudflare Pages file limit
+        shell: bash
+        run: |
+          set -euo pipefail
+          oversized=$(find release-assets -maxdepth 1 -type f -size +26214400c -printf '%f\n')
+          if [[ -n "$oversized" ]]; then
+            echo "Cloudflare Pages rejects files larger than 25 MiB:" >&2
+            echo "$oversized" >&2
+            exit 1
+          fi
+
+      - name: Upload complete release bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: neuro-sync-v${{ needs.metadata.outputs.version }}-release-assets
+          path: release-assets/*
+          if-no-files-found: error
+
+      - name: Create GitHub release
+        if: github.ref_type == 'tag' || inputs.publish_release == true
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: client-v${{ needs.metadata.outputs.version }}
+          name: neuro-sync v${{ needs.metadata.outputs.version }}
+          prerelease: ${{ github.event_name == 'workflow_dispatch' && inputs.prerelease || contains(needs.metadata.outputs.version, '-') }}
+          fail_on_unmatched_files: true
+          files: release-assets/*
+          body: |
+            Scaling Neuro EPI ingestion client pilot.
+
+            Verify the selected package against SHA256SUMS before use. Files labeled
+            UNSIGNED-PILOT and CODESIGNED-PILOT are restricted pilot artifacts and are not
+            low-friction general-public releases.
+
+      - name: Set up Node for Pages Worker build
+        if: github.ref_type == 'tag' || inputs.publish_release == true
+        uses: actions/setup-node@v6
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: worker/package-lock.json
+
+      - name: Install locked Worker dependencies
+        if: github.ref_type == 'tag' || inputs.publish_release == true
+        run: npm ci --prefix worker
+
+      - name: Build public site bundle
+        if: github.ref_type == 'tag' || inputs.publish_release == true
+        run: ./scripts/build-site.sh
+
+      - name: Add versioned downloads and public index
+        if: github.ref_type == 'tag' || inputs.publish_release == true
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp release-assets/* dist/downloads/
+
+      - name: Upload public Pages bundle
+        if: github.ref_type == 'tag' || inputs.publish_release == true
+        uses: actions/upload-artifact@v4
+        with:
+          name: neuro-sync-v${{ needs.metadata.outputs.version }}-pages
+          path: dist/
+          if-no-files-found: error
+
+  publish-pages:
+    name: Publish collaborator downloads
+    if: github.ref_type == 'tag' || inputs.publish_release == true
+    needs: [metadata, assemble]
+    runs-on: ubuntu-latest
+    concurrency:
+      group: scalingneuro-production
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      deployments: write
+    environment:
+      name: production
+      url: https://scalingneuro.com/downloads/
+    steps:
+      - name: Check out release source
+        uses: actions/checkout@v6
+
+      - name: Require the current main commit
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin main:refs/remotes/origin/main
+          main_sha=$(git rev-parse origin/main)
+          if [[ "$GITHUB_SHA" != "$main_sha" ]]; then
+            echo "Public downloads must be released from the current main commit ($main_sha), not $GITHUB_SHA" >&2
+            exit 1
+          fi
+
+      - name: Set up Node for migration gate
+        uses: actions/setup-node@v6
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: worker/package-lock.json
+
+      - name: Install locked Worker dependencies
+        run: npm ci --prefix worker
+
+      - name: Enforce fail-closed production and isolated previews
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: ./scripts/configure-pages-production.sh
+
+      - name: Apply control-plane migrations
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: npm exec --prefix worker -- wrangler d1 migrations apply scaling-neuro-control --remote --config worker/wrangler.jsonc
+
+      - name: Download public Pages bundle
+        uses: actions/download-artifact@v4
+        with:
+          name: neuro-sync-v${{ needs.metadata.outputs.version }}-pages
+          path: dist
+
+      - name: Deploy collaborator downloads to Cloudflare Pages
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          command: pages deploy dist --project-name=scalingneuro --branch=main --commit-hash=${{ github.sha }}
+          gitHubToken: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Verify production API and released downloads
+        env:
+          EXPECTED_VERSION: ${{ needs.metadata.outputs.version }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          release_dir=$(mktemp -d)
+          trap 'rm -rf "$release_dir"' EXIT
+
+          converged=false
+          for attempt in $(seq 1 20); do
+            health=$(curl --fail --silent --show-error --max-time 15 \
+              "https://scalingneuro.com/health?commit=$GITHUB_SHA" || true)
+            source_version=$(curl --fail --silent --show-error --max-time 15 \
+              "https://scalingneuro.com/version.json?commit=$GITHUB_SHA" || true)
+            if curl --fail --silent --show-error --max-time 15 \
+                --output "$release_dir/latest.json" \
+                "https://scalingneuro.com/downloads/latest.json?release=$EXPECTED_VERSION&commit=$GITHUB_SHA" &&
+               jq --exit-status '.status == "ok"' <<<"$health" >/dev/null 2>&1 &&
+               jq --exit-status --arg sha "$GITHUB_SHA" '.commit == $sha' <<<"$source_version" >/dev/null 2>&1 &&
+               jq --exit-status --arg version "$EXPECTED_VERSION" '
+                 .schema_version == "1.0.0" and
+                 .version == $version and
+                 .channel == "pilot" and
+                 .checksums_url == "/downloads/SHA256SUMS" and
+                 ((.artifacts | keys | sort) == ["linux", "macos", "windows"]) and
+                 (all(.artifacts[];
+                   (.url | type == "string" and test("^/downloads/[A-Za-z0-9][A-Za-z0-9._+-]*$")) and
+                   (.sha256 | type == "string" and test("^[0-9a-f]{64}$")) and
+                   (.signed | type == "boolean") and
+                   (.sbom_spdx_url | type == "string" and test("^/downloads/[A-Za-z0-9][A-Za-z0-9._+-]*\\.spdx\\.json$")) and
+                   (.sbom_cyclonedx_url | type == "string" and test("^/downloads/[A-Za-z0-9][A-Za-z0-9._+-]*\\.cdx\\.json$"))
+                 ))
+               ' "$release_dir/latest.json" >/dev/null 2>&1; then
+              converged=true
+              break
+            fi
+            sleep 5
+          done
+          if [[ "$converged" != true ]]; then
+            echo "Production API and release index did not converge" >&2
+            exit 1
+          fi
+
+          curl --fail --location --silent --show-error \
+            --retry 5 --retry-all-errors \
+            --output "$release_dir/SHA256SUMS" \
+            "https://scalingneuro.com/downloads/SHA256SUMS?release=$EXPECTED_VERSION"
+
+          if ! awk '
+            NF != 2 ||
+            $1 !~ /^[0-9a-f]{64}$/ ||
+            $2 !~ /^[A-Za-z0-9][A-Za-z0-9._+-]*$/ { exit 1 }
+          ' "$release_dir/SHA256SUMS"; then
+            echo "Unsafe or malformed production SHA256SUMS" >&2
+            exit 1
+          fi
+
+          expected=$(mktemp)
+          {
+            printf '%s\n' latest.json
+            jq -r '.artifacts[] | [.url, .sbom_spdx_url, .sbom_cyclonedx_url][] | split("/")[-1]' \
+              "$release_dir/latest.json"
+          } | LC_ALL=C sort -u > "$expected"
+          actual=$(mktemp)
+          awk '{print $2}' "$release_dir/SHA256SUMS" | LC_ALL=C sort > "$actual"
+          diff -u "$expected" "$actual"
+
+          jq -r '.artifacts[] | [.url, .sbom_spdx_url, .sbom_cyclonedx_url][]' \
+            "$release_dir/latest.json" |
+            while IFS= read -r url; do
+              name=${url##*/}
+              curl --fail --location --silent --show-error \
+                --retry 5 --retry-all-errors \
+                --output "$release_dir/$name" \
+                "https://scalingneuro.com${url}?release=$EXPECTED_VERSION"
+            done
+
+          (cd "$release_dir" && sha256sum --check --strict SHA256SUMS)
+          jq -r '.artifacts[] | [.url, .sha256] | @tsv' "$release_dir/latest.json" |
+            while IFS=$'\t' read -r url expected_sha; do
+              name=${url##*/}
+              actual_sha=$(sha256sum "$release_dir/$name" | cut -d' ' -f1)
+              [[ "$actual_sha" == "$expected_sha" ]] || {
+                echo "Published artifact digest does not match latest.json: $name" >&2
+                exit 1
+              }
+            done

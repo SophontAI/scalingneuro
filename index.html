@@ -4,7 +4,7 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Scaling Neuro — An Open Data Commons for Brain Foundation Models</title>
-  <meta name="description" content="A community-led plan to turn prospectively consented structural and functional MRI into an open, privacy-first training resource for brain foundation models." />
+  <meta name="description" content="An invite-only, researcher-led pipeline for contributing approved functional EPI scans as native-space NIfTI plus privacy-minimized acquisition metadata." />
   <meta name="theme-color" content="#e1e3ec" />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
@@ -121,9 +121,9 @@
         <div class="manifesto reveal">
           <div class="mani"><div class="mani-no"><span class="num">01</span> / Consent</div><h4>Approve</h4><p>Only approved projects enter.</p></div>
           <div class="mani"><div class="mani-no"><span class="num">02</span> / Capture</div><h4>Watch</h4><p>Detect new series automatically.</p></div>
-          <div class="mani"><div class="mani-no"><span class="num">03</span> / De-ID</div><h4>Strip</h4><p>Remove identifying metadata locally.</p></div>
-          <div class="mani"><div class="mani-no"><span class="num">04</span> / Privacy</div><h4>Clear</h4><p>Process structural faces; hold uncertainty.</p></div>
-          <div class="mani"><div class="mani-no"><span class="num">05</span> / Commons</div><h4>Share</h4><p>Transfer scans. Contributors get the commons back.</p></div>
+          <div class="mani"><div class="mani-no"><span class="num">03</span> / Convert</div><h4>Preserve</h4><p>Make native-space NIfTI locally.</p></div>
+          <div class="mani"><div class="mani-no"><span class="num">04</span> / Gate</div><h4>Verify</h4><p>Keep only functional 4D EPI; hold uncertainty.</p></div>
+          <div class="mani"><div class="mani-no"><span class="num">05</span> / Commons</div><h4>Share</h4><p>Upload bundles with checksums and provenance.</p></div>
         </div>
       </div>
     </section>
@@ -133,31 +133,29 @@
       <div class="wrap">
         <div style="max-width:820px;margin-bottom:clamp(36px,5vw,60px)">
           <span class="label reveal" style="display:block;margin-bottom:20px">02 — The archive</span>
-          <h2 class="h-sec reveal" style="margin-bottom:20px">A bucket humans can actually understand.</h2>
+          <h2 class="h-sec reveal" style="margin-bottom:20px">A raw archive models—and researchers—can trust.</h2>
           <p class="lede reveal">
-            Browse by participant, compare metadata, and inspect a scan instantly.
-            <span class="badge-demo">Synthetic public previews · real NIfTI stays local</span>
+            Every entry is one native-space functional scan, one minimized acquisition sidecar, and one verifiable manifest record.
+            <span class="badge-demo">Synthetic public previews · private archive is invite-only</span>
           </p>
         </div>
 
-        <div class="access-policy reveal" aria-label="Proposed modality access policy">
-          <div><span class="policy-icon policy-open">01</span><p><strong>Functional: cleared</strong><small>Consent + metadata de-identification.</small></p></div>
-          <div><span class="policy-icon policy-local">02</span><p><strong>Structural: cleared</strong><small>Local face processing + privacy check.</small></p></div>
-          <div><span class="policy-icon policy-view">03</span><p><strong>Compute: beside data</strong><small>Avoid needless duplication.</small></p></div>
+        <div class="access-policy reveal" aria-label="Version one archive policy">
+          <div><span class="policy-icon policy-open">01</span><p><strong>Functional EPI only</strong><small>4D time series that pass local classification and QC.</small></p></div>
+          <div><span class="policy-icon policy-local">02</span><p><strong>Acquisition space</strong><small>No registration, masking, resampling, or lossy transform.</small></p></div>
+          <div><span class="policy-icon policy-view">03</span><p><strong>Default-deny metadata</strong><small>Useful scanner parameters stay; identifiers and free text do not.</small></p></div>
         </div>
 
         <div class="vault-grid reveal">
           <!-- archive browser -->
           <aside class="vault-left" aria-label="Scan archive">
             <div class="vault-head">
-              <span class="label" id="archiveRoot">R2 / S3 API <b>concept</b></span>
-              <span class="mchip mchip-sage" id="archiveState">planned</span>
+              <span class="label" id="archiveRoot">R2 / S3 archive <b>live</b></span>
+              <span class="mchip mchip-sage" id="archiveState">private</span>
             </div>
             <div class="filters" id="filters">
               <button class="filt is-active" data-filt="all">All</button>
               <button class="filt" data-filt="bold">EPI</button>
-              <button class="filt" data-filt="dwi">DWI</button>
-              <button class="filt" data-filt="anat">T1w</button>
             </div>
             <div class="browser-list" id="scanList"><!-- populated by JS --></div>
           </aside>
@@ -173,7 +171,7 @@
               <div class="viewer-metaoverlay" id="viewerMeta" hidden></div>
               <div class="viewer-empty" id="viewerEmpty">
                 <svg viewBox="0 0 24 24" width="38" height="38"><use href="#i-cube"/></svg>
-                <p>Select one of the synthetic collection previews. Local development can also load a private NIfTI test volume.</p>
+                <p>Select a synthetic functional-EPI bundle preview. The private archive is never fetched by this public page.</p>
               </div>
               <div class="viewer-loading" id="viewerLoading" hidden>
                 <div class="load-ring"></div>
@@ -202,56 +200,52 @@
         <span class="label reveal" style="display:block;margin-bottom:24px">03 — For every new session</span>
         <h2 class="display reveal" style="font-size:clamp(2.4rem,7vw,5rem)">Point it at one folder. Let every future scan count.</h2>
         <p class="hero-para reveal">
-          Keep the scanner workflow. One portable tool clears approved functional and structural scans locally, then shares only what passes.
+          Keep the scanner workflow. One portable tool finds approved functional EPI scans, converts and checks them locally, then resumes the upload until every verified bundle is committed.
         </p>
 
         <div class="adoption-line reveal" aria-label="Why a lab should adopt the tool">
-          <span>One command</span><span>CPU-only</span><span>Fails closed</span>
+          <span>Native folder picker</span><span>No Python or Docker</span><span>Fails closed</span>
         </div>
 
         <div class="terminal reveal">
           <div class="term-tabs" role="tablist" aria-label="Script walkthrough">
-            <button class="term-tab is-active" id="tab-install" data-tab="install" role="tab" aria-selected="true" aria-controls="pane-install">1 · Preview</button>
-            <button class="term-tab" id="tab-run" data-tab="run" role="tab" aria-selected="false" aria-controls="pane-run" tabindex="-1">2 · Portable run</button>
-            <button class="term-tab" id="tab-inside" data-tab="inside" role="tab" aria-selected="false" aria-controls="pane-inside" tabindex="-1">Safety contract</button>
+            <button class="term-tab is-active" id="tab-install" data-tab="install" role="tab" aria-selected="true" aria-controls="pane-install">1 · First launch</button>
+            <button class="term-tab" id="tab-run" data-tab="run" role="tab" aria-selected="false" aria-controls="pane-run" tabindex="-1">2 · CLI</button>
+            <button class="term-tab" id="tab-inside" data-tab="inside" role="tab" aria-selected="false" aria-controls="pane-inside" tabindex="-1">What leaves</button>
           </div>
           <div class="term-body">
-            <pre class="term-pane is-active" id="pane-install" data-pane="install" role="tabpanel" aria-labelledby="tab-install"><code><span class="c-com"># the downloadable preview is safe: it reads and uploads nothing</span>
-<span class="c-p">$</span> bash neuro-sync-preview.sh --deface auto ./new_session_dicoms
-<span class="c-ok">✓</span> Source folder accepted: <span class="c-hi">./new_session_dicoms</span>
-<span class="c-ok">✓</span> Plan: classify → de-identify → privacy-check → upload
-<span class="c-ok">✓</span> Laptop mode: CPU-only · one series at a time · resumable
-<span class="c-skip">i</span> Preview mode only. No files were opened or transmitted.</code></pre>
-            <pre class="term-pane" id="pane-run" data-pane="run" role="tabpanel" aria-labelledby="tab-run"><code><span class="c-com"># proposed experience — one file; privacy pack fetched only if needed</span>
-<span class="c-p">$</span> ./neuro-sync ./my_lab_dicoms --project LAB_04
+            <pre class="term-pane is-active" id="pane-install" data-pane="install" role="tabpanel" aria-labelledby="tab-install"><code><span class="c-com"># double-click the app, or launch it without arguments</span>
+<span class="c-p">$</span> ./neuro-sync
+<span class="c-ok">✓</span> Project: <span class="c-hi">PNI functional pilot</span> · authorization policy v1
+<span class="c-ok">✓</span> Choose the folder containing this session's DICOMs
+<span class="c-ok">✓</span> Discover → convert → minimize metadata → QC → upload
+<span class="c-ok">✓</span> Safe to stop: conversion and multipart upload resume locally</code></pre>
+            <pre class="term-pane" id="pane-run" data-pane="run" role="tabpanel" aria-labelledby="tab-run"><code><span class="c-com"># enrollment is once per device; the invite selects the project</span>
+<span class="c-p">$</span> ./neuro-sync enroll sn_invite_…
+<span class="c-p">$</span> ./neuro-sync upload ./new_session_dicoms
 
-<span class="c-dim">[device]</span> CPU-only · 1 series at a time · safe to stop and resume
-<span class="c-dim">[watch]</span>  ./my_lab_dicoms  →  4 new series
-  <span class="c-ok">↑</span> task-rest_bold    EPI 2.0mm  480 vol   <span class="c-ok">shared</span>
-  <span class="c-ok">↑</span> task-movie_bold   EPI 1.6mm  610 vol   <span class="c-ok">shared</span>
-  <span class="c-ok">↑</span> dwi_dir98         DWI 1.5mm   99 vol   <span class="c-ok">shared</span>
-  <span class="c-ok">↑</span> T1w_mprage        face → processed → QC pass   <span class="c-ok">shared</span>
-<span class="c-dim">[deid]</span>  stripped PHI · kept scanner·field·TR·TE
-<span class="c-dim">[up]</span>    s3://scaling-neuro/  (Cloudflare R2 · encrypted)  <span class="c-ok">complete</span></code></pre>
-            <pre class="term-pane" id="pane-inside" data-pane="inside" role="tabpanel" aria-labelledby="tab-inside"><code><span class="c-kw">consent</span>  only process projects approved for open research sharing
-<span class="c-kw">watch</span>    the DICOM directory for newly written series
-<span class="c-kw">detect</span>   modality and whether structural facial anatomy is present
-<span class="c-kw">clear</span>    process faces locally; no-face FOVs pass unchanged
-<span class="c-kw">verify</span>   check face removal and brain preservation
-<span class="c-kw">hold</span>     anything uncertain stays on this machine
-<span class="c-kw">budget</span>   one scan at a time; checkpoint every completed series
-<span class="c-kw">convert</span>  DICOM → research-ready NIfTI
-<span class="c-kw">deid</span>     remove names, MRNs, dates; keep TR/TE, field
-<span class="c-kw">upload</span>   to encrypted Cloudflare R2 (S3-compatible API)
-<span class="c-kw">rule</span>     nothing leaves the building without a privacy pass</code></pre>
+<span class="c-dim">[scan]</span>   6 DICOM series discovered
+  <span class="c-ok">↑</span> functional EPI   2.0mm  480 vol   <span class="c-ok">committed</span>
+  <span class="c-ok">↑</span> functional EPI   1.6mm  610 vol   <span class="c-ok">committed</span>
+  <span class="c-skip">—</span> T1w / DWI / SBRef / uncertain series      <span class="c-skip">held locally</span>
+<span class="c-dim">[meta]</span>   scanner · field · TR · TE · geometry · timing retained
+<span class="c-dim">[archive]</span> native NIfTI + sidecar + manifest + SHA-256   <span class="c-ok">complete</span></code></pre>
+            <pre class="term-pane" id="pane-inside" data-pane="inside" role="tabpanel" aria-labelledby="tab-inside"><code><span class="c-kw">local</span>    source DICOMs remain unchanged on the lab's machine
+<span class="c-kw">voxels</span>   native-space .nii.gz; no registration, masking, or resampling
+<span class="c-kw">metadata</span> explicit acquisition allowlist; unknown keys are dropped
+<span class="c-kw">identity</span> names, IDs, dates, UIDs, sites, paths, and free text never upload
+<span class="c-kw">linkage</span>  site-scoped HMAC subject/session/series pseudonyms only
+<span class="c-kw">proof</span>    converter version, QC decisions, and compressed + raw hashes
+<span class="c-kw">hold</span>     structural, diffusion, field maps, references, and ambiguity stay local
+<span class="c-kw">access</span>   device credentials can only upload parts to a server-created session</code></pre>
           </div>
         </div>
 
         <div class="contribute-actions reveal">
-          <a class="btn btn-sage" href="downloads/neuro-sync-preview.sh" download id="dlBtn">Download safe preview script</a>
-          <button class="btn btn-outline-d" id="copyBtn" type="button">Copy preview command</button>
+          <a class="btn btn-sage" href="downloads/" id="dlBtn">Download the pilot app</a>
+          <button class="btn btn-outline-d" id="copyBtn" type="button">Copy CLI command</button>
         </div>
-        <div class="term-foot reveal"><span style="color:var(--sage-deep)">safe preview</span>&nbsp;&nbsp;·&nbsp;&nbsp;reads and uploads nothing&nbsp;&nbsp;·&nbsp;&nbsp;production CLI forthcoming</div>
+        <div class="term-foot reveal"><span style="color:var(--sage-deep)">invite-only pilot</span>&nbsp;&nbsp;·&nbsp;&nbsp;macOS, Windows, Linux&nbsp;&nbsp;·&nbsp;&nbsp;functional EPI only</div>
 
       </div>
     </section>
@@ -268,7 +262,7 @@
         </div>
         <div class="foot-brand reveal">Scaling Neuro</div>
         <div class="foot-legal reveal">
-          © 2026 Scaling Neuro Initiative · concept prototype · working name<br/>
+          © 2026 Scaling Neuro Initiative · invite-only functional MRI pilot · working name<br/>
           All shared data intended as an open resource · source notes: “Scaling Up Neuroimaging Data…” + “Creating a web-scale neuroimaging database”
         </div>
       </div>

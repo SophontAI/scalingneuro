@@ -1,0 +1,271 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://scalingneuro.com/schemas/scan-sidecar-v1.schema.json",
+  "title": "Scaling Neuro acquisition-space EPI scan sidecar v1",
+  "description": "The privacy-filtered metadata stored beside one immutable acquisition-space NIfTI. It is not a copy of a dcm2niix sidecar or a DICOM header dump.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "bundle_id",
+    "subject_id",
+    "session_id",
+    "series_id",
+    "protocol_group_id",
+    "modality",
+    "source",
+    "image",
+    "files",
+    "conversion",
+    "classification",
+    "qc",
+    "metadata_policy"
+  ],
+  "properties": {
+    "$schema": {
+      "const": "https://scalingneuro.com/schemas/scan-sidecar-v1.schema.json"
+    },
+    "schema_version": {
+      "$ref": "https://scalingneuro.com/schemas/common-v1.schema.json#/$defs/schemaVersion"
+    },
+    "bundle_id": {
+      "$ref": "https://scalingneuro.com/schemas/common-v1.schema.json#/$defs/pseudonymId"
+    },
+    "subject_id": {
+      "$ref": "https://scalingneuro.com/schemas/common-v1.schema.json#/$defs/pseudonymId"
+    },
+    "session_id": {
+      "$ref": "https://scalingneuro.com/schemas/common-v1.schema.json#/$defs/pseudonymId"
+    },
+    "series_id": {
+      "$ref": "https://scalingneuro.com/schemas/common-v1.schema.json#/$defs/pseudonymId"
+    },
+    "protocol_group_id": {
+      "$ref": "https://scalingneuro.com/schemas/common-v1.schema.json#/$defs/pseudonymId"
+    },
+    "modality": {
+      "const": "bold"
+    },
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["dicom_count"],
+      "properties": {
+        "dicom_count": { "type": "integer", "minimum": 1 },
+        "manufacturer": { "$ref": "#/$defs/safeMetadataString" },
+        "model": { "$ref": "#/$defs/safeMetadataString" },
+        "software_versions": {
+          "type": "array",
+          "uniqueItems": true,
+          "maxItems": 16,
+          "items": { "$ref": "#/$defs/safeMetadataString" }
+        },
+        "magnetic_field_strength": { "type": "number", "exclusiveMinimum": 0, "maximum": 15 },
+        "sequence_name": { "$ref": "#/$defs/safeMetadataString" },
+        "scanning_sequence": { "$ref": "#/$defs/codeList" },
+        "sequence_variant": { "$ref": "#/$defs/codeList" },
+        "scan_options": { "$ref": "#/$defs/codeList" },
+        "mr_acquisition_type": {
+          "enum": ["2D", "3D", "UNKNOWN"]
+        },
+        "image_type": { "$ref": "#/$defs/codeList" },
+        "series_number": { "type": "integer", "minimum": 0 },
+        "acquisition_number": { "type": "integer", "minimum": 0 },
+        "receive_coil_name": { "$ref": "#/$defs/safeMetadataString" },
+        "transmit_coil_name": { "$ref": "#/$defs/safeMetadataString" },
+        "patient_position": {
+          "enum": ["HFP", "HFS", "HFDR", "HFDL", "FFDR", "FFDL", "FFP", "FFS", "UNKNOWN"]
+        }
+      }
+    },
+    "image": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "dimensions",
+        "voxel_size_mm",
+        "datatype",
+        "bits_per_voxel",
+        "affine",
+        "orientation",
+        "volume_count",
+        "tr_seconds",
+        "te_seconds"
+      ],
+      "properties": {
+        "dimensions": {
+          "type": "array",
+          "minItems": 4,
+          "maxItems": 4,
+          "prefixItems": [
+            { "type": "integer", "minimum": 8, "maximum": 4096 },
+            { "type": "integer", "minimum": 8, "maximum": 4096 },
+            { "type": "integer", "minimum": 8, "maximum": 4096 },
+            { "type": "integer", "minimum": 10, "maximum": 10000000 }
+          ]
+        },
+        "voxel_size_mm": {
+          "type": "array",
+          "minItems": 3,
+          "maxItems": 3,
+          "items": { "type": "number", "exclusiveMinimum": 0, "maximum": 100 }
+        },
+        "datatype": {
+          "enum": ["uint8", "int8", "uint16", "int16", "uint32", "int32", "uint64", "int64", "float32", "float64"]
+        },
+        "bits_per_voxel": { "enum": [8, 16, 32, 64] },
+        "affine": { "$ref": "#/$defs/affine" },
+        "orientation": {
+          "type": "string",
+          "pattern": "^[LR][AP][SI]$"
+        },
+        "volume_count": { "type": "integer", "minimum": 10, "maximum": 10000000 },
+        "tr_seconds": { "type": "number", "minimum": 0.1, "maximum": 20 },
+        "te_seconds": { "type": "number", "exclusiveMinimum": 0, "maximum": 2 },
+        "inversion_time_seconds": { "type": "number", "minimum": 0, "maximum": 30 },
+        "flip_angle_degrees": { "type": "number", "minimum": 0, "maximum": 360 },
+        "echo_number": { "type": "integer", "minimum": 1 },
+        "slice_timing_seconds": {
+          "type": "array",
+          "maxItems": 4096,
+          "items": { "type": "number", "minimum": 0, "maximum": 60 }
+        },
+        "phase_encoding_direction": {
+          "enum": ["i", "i-", "j", "j-", "k", "k-"]
+        },
+        "effective_echo_spacing_seconds": { "type": "number", "exclusiveMinimum": 0, "maximum": 1 },
+        "total_readout_time_seconds": { "type": "number", "minimum": 0, "maximum": 10 },
+        "dwell_time_seconds": { "type": "number", "exclusiveMinimum": 0, "maximum": 1 },
+        "multiband_acceleration_factor": { "type": "number", "minimum": 1, "maximum": 64 },
+        "parallel_reduction_factor_in_plane": { "type": "number", "minimum": 1, "maximum": 64 },
+        "partial_fourier": { "type": "number", "exclusiveMinimum": 0, "maximum": 1 },
+        "echo_train_length": { "type": "integer", "minimum": 1 },
+        "number_of_averages": { "type": "number", "exclusiveMinimum": 0 },
+        "imaging_frequency_mhz": { "type": "number", "exclusiveMinimum": 0 },
+        "imaged_nucleus": { "$ref": "#/$defs/safeMetadataString" },
+        "slice_thickness_mm": { "type": "number", "exclusiveMinimum": 0, "maximum": 100 },
+        "spacing_between_slices_mm": { "type": "number", "exclusiveMinimum": 0, "maximum": 100 },
+        "pixel_bandwidth_hz": { "type": "number", "exclusiveMinimum": 0 },
+        "acquisition_matrix": {
+          "type": "array",
+          "minItems": 4,
+          "maxItems": 4,
+          "items": { "type": "integer", "minimum": 0 }
+        },
+        "recon_matrix": {
+          "type": "array",
+          "minItems": 2,
+          "maxItems": 3,
+          "items": { "type": "integer", "minimum": 1 }
+        }
+      }
+    },
+    "files": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["nifti"],
+      "properties": {
+        "nifti": {
+          "$ref": "https://scalingneuro.com/schemas/common-v1.schema.json#/$defs/niftiFile"
+        }
+      }
+    },
+    "conversion": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "client_version",
+        "converter",
+        "converter_version",
+        "arguments"
+      ],
+      "properties": {
+        "client_version": {
+          "type": "string",
+          "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+(?:[-+][A-Za-z0-9.-]+)?$"
+        },
+        "converter": { "const": "dcm2niix" },
+        "converter_version": { "const": "v1.0.20260416" },
+        "arguments": {
+          "description": "Only normalized option tokens; never include source or temporary paths.",
+          "const": [
+            "-b", "y",
+            "-ba", "y",
+            "-g", "i",
+            "-i", "n",
+            "-l", "o",
+            "-m", "2",
+            "-p", "y",
+            "-t", "n",
+            "-x", "i",
+            "-z", "n",
+            "-f", "series"
+          ]
+        }
+      }
+    },
+    "classification": {
+      "allOf": [
+        { "$ref": "https://scalingneuro.com/schemas/common-v1.schema.json#/$defs/classification" },
+        {
+          "type": "object",
+          "properties": {
+            "decision": { "const": "accepted" },
+            "kind": { "const": "functional_epi" },
+            "confidence": { "type": "number", "minimum": 0.9 }
+          }
+        }
+      ]
+    },
+    "qc": {
+      "allOf": [
+        { "$ref": "https://scalingneuro.com/schemas/common-v1.schema.json#/$defs/qualityControl" },
+        {
+          "type": "object",
+          "properties": {
+            "passed": { "const": true }
+          }
+        }
+      ]
+    },
+    "metadata_policy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["policy_id", "policy_version"],
+      "properties": {
+        "policy_id": { "const": "scaling-neuro-epi-default-deny" },
+        "policy_version": { "const": "1.0.0" }
+      }
+    }
+  },
+  "$defs": {
+    "safeMetadataString": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9 ._+,:;()/-]{0,127}$"
+    },
+    "codeList": {
+      "type": "array",
+      "uniqueItems": true,
+      "maxItems": 32,
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 32,
+        "pattern": "^[A-Za-z0-9_+.-]+$"
+      }
+    },
+    "affine": {
+      "type": "array",
+      "minItems": 4,
+      "maxItems": 4,
+      "items": {
+        "type": "array",
+        "minItems": 4,
+        "maxItems": 4,
+        "items": { "type": "number" }
+      }
+    }
+  }
+}

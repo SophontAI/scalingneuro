@@ -1,0 +1,88 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://scalingneuro.com/schemas/upload-status-v1.schema.json",
+  "title": "Scaling Neuro upload status response v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "upload_id",
+    "status",
+    "object_prefix",
+    "series_count",
+    "total_bytes",
+    "consent_policy_version",
+    "created_at",
+    "updated_at"
+  ],
+  "properties": {
+    "$schema": {
+      "const": "https://scalingneuro.com/schemas/upload-status-v1.schema.json"
+    },
+    "upload_id": {
+      "$ref": "https://scalingneuro.com/schemas/common-v1.schema.json#/$defs/uuid"
+    },
+    "status": {
+      "enum": ["created", "uploading", "committed", "expired", "withdrawn"]
+    },
+    "object_prefix": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 512,
+      "pattern": "^(?!/)(?!.*\\.\\.)[A-Za-z0-9._~/-]+/$"
+    },
+    "series_count": { "type": "integer", "minimum": 1, "maximum": 32 },
+    "total_bytes": { "type": "integer", "minimum": 1, "maximum": 34359738368 },
+    "consent_policy_version": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 64,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9.+_-]*$"
+    },
+    "created_at": {
+      "$ref": "https://scalingneuro.com/schemas/common-v1.schema.json#/$defs/timestamp"
+    },
+    "updated_at": {
+      "$ref": "https://scalingneuro.com/schemas/common-v1.schema.json#/$defs/timestamp"
+    },
+    "committed_at": {
+      "$ref": "https://scalingneuro.com/schemas/common-v1.schema.json#/$defs/timestamp"
+    },
+    "withdrawn_at": {
+      "$ref": "https://scalingneuro.com/schemas/common-v1.schema.json#/$defs/timestamp"
+    },
+    "manifest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["key", "sha256"],
+      "properties": {
+        "key": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512,
+          "pattern": "^(?!/)(?!.*\\.\\.)[A-Za-z0-9._~/-]+$"
+        },
+        "sha256": {
+          "$ref": "https://scalingneuro.com/schemas/common-v1.schema.json#/$defs/sha256"
+        }
+      }
+    }
+  },
+  "allOf": [
+    {
+      "if": { "properties": { "status": { "type": "string", "const": "committed" } }, "required": ["status"] },
+      "then": {
+        "type": "object",
+        "required": ["committed_at", "manifest"],
+        "properties": { "committed_at": {}, "manifest": {} }
+      }
+    },
+    {
+      "if": { "properties": { "status": { "type": "string", "const": "withdrawn" } }, "required": ["status"] },
+      "then": {
+        "type": "object",
+        "required": ["withdrawn_at"],
+        "properties": { "withdrawn_at": {} }
+      }
+    }
+  ]
+}

@@ -1,0 +1,10 @@
+{
+  "enrollment_id": "0190f86f-e0de-7f2a-a24c-0a6abf16ec82",
+  "device_token": "sn_device_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "device_id": "0190f86f-e0de-7f2a-a24c-0a6abf16ec83",
+  "site_id": "0190f870-1111-7f2a-a24c-0a6abf16ec81",
+  "project_id": "0190f870-2222-7f2a-a24c-0a6abf16ec81",
+  "project_name": "EPI Pilot",
+  "consent_policy_version": "pilot-2026-07",
+  "pseudonym_key_b64": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8="
+}

@@ -1,0 +1,27 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://scalingneuro.com/schemas/upload-part-request-v1.schema.json",
+  "title": "Scaling Neuro request one presigned multipart-part URL v1",
+  "description": "The exact part capability requested from POST /v1/uploads/{upload_id}/parts. The Worker verifies that the key, part number, byte range, size, and digest match the initialized multipart plan before signing anything.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["key", "part_number", "size", "sha256"],
+  "properties": {
+    "key": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 512,
+      "pattern": "^(?!/)(?!.*(?:^|/)\\.{1,2}(?:/|$))(?!.*//)[A-Za-z0-9._~/-]+$"
+    },
+    "part_number": { "type": "integer", "minimum": 1, "maximum": 10000 },
+    "size": {
+      "description": "Exact bytes in this part; non-final parts must also match the initialized part_size.",
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 5368709120
+    },
+    "sha256": {
+      "$ref": "https://scalingneuro.com/schemas/common-v1.schema.json#/$defs/sha256"
+    }
+  }
+}
