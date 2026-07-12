@@ -1,9 +1,12 @@
 use std::{
     ffi::OsString,
-    fs::{self, OpenOptions},
+    fs::OpenOptions,
     path::{Path, PathBuf},
     time::Duration,
 };
+
+#[cfg(unix)]
+use std::fs;
 
 use anyhow::{Context, Result};
 use chrono::Utc;
