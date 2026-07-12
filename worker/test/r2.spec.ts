@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { credentialTtl, presignUploadPart } from "../src/r2";
+import {
+  credentialTtl,
+  deleteObject,
+  deletePrefix,
+  presignUploadPart,
+} from "../src/r2";
 
 describe("R2 UploadPart query signing", () => {
   it("keeps exact-part grants fixed to fifteen minutes", () => {
@@ -38,5 +43,101 @@ describe("R2 UploadPart query signing", () => {
       "content-length": "123456",
       "x-amz-content-sha256": "a".repeat(64),
     });
+  });
+});
+
+describe("verified R2 deletion", () => {
+  const environment = (archive: R2Bucket) =>
+    ({
+      ARCHIVE: archive,
+      R2_ACCOUNT_ID: "0123456789abcdef0123456789abcdef",
+      R2_PARENT_ACCESS_KEY_ID: "TESTACCESSKEY",
+      R2_PARENT_SECRET_ACCESS_KEY: "test-secret-key",
+      R2_BUCKET_NAME: "test-bucket",
+    }) as never;
+  const acceptedNoOp = (async () =>
+    new Response(null, { status: 204 })) as typeof fetch;
+
+  it("deletes every prefix object individually and relists from the start", async () => {
+    const objects = new Set(["archive/upload/a", "archive/upload/b"]);
+    const deleteArguments: string[] = [];
+    const bucket = {
+      async list({ prefix }: { prefix: string }) {
+        return {
+          objects: [...objects]
+            .filter((key) => key.startsWith(prefix))
+            .map((key) => ({ key })),
+          truncated: false,
+        };
+      },
+      async delete(key: string) {
+        deleteArguments.push(key);
+        objects.delete(key);
+      },
+      async head(key: string) {
+        return objects.has(key) ? ({ key } as R2Object) : null;
+      },
+    } as unknown as R2Bucket;
+
+    await deletePrefix(environment(bucket), "archive/upload/");
+
+    expect(deleteArguments).toEqual([
+      "archive/upload/a",
+      "archive/upload/b",
+    ]);
+    expect(objects.size).toBe(0);
+  });
+
+  it("fails closed when a prefix deletion silently leaves an object", async () => {
+    const bucket = {
+      async list() {
+        return { objects: [{ key: "archive/upload/a" }], truncated: false };
+      },
+      async delete() {},
+      async head() {
+        return { key: "archive/upload/a" } as R2Object;
+      },
+    } as unknown as R2Bucket;
+    await expect(
+      deletePrefix(environment(bucket), "archive/upload/", acceptedNoOp),
+    ).rejects.toThrow(
+      /remained/u,
+    );
+  });
+
+  it("falls back to a signed S3 DELETE and still requires absence", async () => {
+    let present = true;
+    const bucket = {
+      async delete() {},
+      async head() {
+        return present ? ({ key: "manifest" } as R2Object) : null;
+      },
+    } as unknown as R2Bucket;
+    const requests: Array<{ url: string; method: string | undefined }> = [];
+    const successfulFallback = (async (
+      input: RequestInfo | URL,
+      init?: RequestInit,
+    ) => {
+      requests.push({ url: String(input), method: init?.method });
+      present = false;
+      return new Response(null, { status: 204 });
+    }) as typeof fetch;
+    await deleteObject(environment(bucket), "manifest", successfulFallback);
+    expect(requests).toEqual([
+      {
+        url: "https://0123456789abcdef0123456789abcdef.r2.cloudflarestorage.com/test-bucket/manifest",
+        method: "DELETE",
+      },
+    ]);
+
+    const noOpBucket = {
+      async delete() {},
+      async head() {
+        return { key: "manifest" } as R2Object;
+      },
+    } as unknown as R2Bucket;
+    await expect(
+      deleteObject(environment(noOpBucket), "manifest", acceptedNoOp),
+    ).rejects.toThrow(/remained/u);
   });
 });

@@ -11,6 +11,7 @@ mkdir -p "$DIST_DIR/downloads" "$DIST_DIR/docs" "$DIST_DIR/schemas/examples"
 install -m 0644 \
   "$ROOT_DIR/index.html" \
   "$ROOT_DIR/404.html" \
+  "$ROOT_DIR/favicon.svg" \
   "$ROOT_DIR/styles.css" \
   "$ROOT_DIR/app.js" \
   "$DIST_DIR/"

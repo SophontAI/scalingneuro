@@ -25,6 +25,8 @@ The accepted Siemens fixture was sent through the production `scalingneuro.com` 
 - no source path or forbidden PHI/UID marker in either stored JSON document;
 - withdrawal deletion of both bundle objects and the manifest, retention of the catalog tombstone, and rejection of replay.
 
+After deployment of the authoritative R2 `HEAD` verification and replay-safe D1 enrollment migration, the ordinary release-mode client completed this same public Siemens fixture from a fresh local state directory using the unmodified official `dcm2niix` executable. The client reported one accepted series and a committed Worker upload. Independent R2 download reproduced the exact compressed NIfTI, uncompressed NIfTI, sidecar, and manifest SHA-256 values; both stored JSON documents passed their published schemas and the D1 catalog matched the bundle/protocol identities and hashes. The single-use invite was consumed exactly once and stored only a token hash plus its enrollment replay identifier.
+
 For the 3.1 MB fixture, the full completion request took about 3.9 seconds wall time and 254 ms CPU in Cloudflare's production trace. The Pages function is fail-closed and configured with a 300,000 ms CPU ceiling; previews have no D1, R2, or secret bindings. Larger representative EPIs still belong in the per-release performance matrix.
 
 ## Required collaborator-site evidence

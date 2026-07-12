@@ -167,17 +167,135 @@ export async function presignUploadPart(
 }
 
 export async function deletePrefix(
-  bucket: R2Bucket,
+  env: Pick<
+    Env,
+    | "ARCHIVE"
+    | "R2_ACCOUNT_ID"
+    | "R2_PARENT_ACCESS_KEY_ID"
+    | "R2_PARENT_SECRET_ACCESS_KEY"
+    | "R2_BUCKET_NAME"
+  >,
   prefix: string,
+  request: typeof fetch = fetch,
 ): Promise<void> {
-  let cursor: string | undefined;
-  do {
-    const options: R2ListOptions = { prefix, limit: 1000 };
-    if (cursor !== undefined) options.cursor = cursor;
-    const page = await bucket.list(options);
-    if (page.objects.length > 0) {
-      await bucket.delete(page.objects.map((object) => object.key));
+  // An upload prefix is bounded to 64 objects by the public contract. Restart
+  // from the beginning after every pass: cursors are not stable when the page
+  // they describe is being deleted, and a successful batch call does not give
+  // us per-key confirmation.
+  for (let pass = 0; pass < 4; pass += 1) {
+    const page = await env.ARCHIVE.list({ prefix, limit: 1000 });
+    if (page.objects.length === 0 && !page.truncated) return;
+    for (const object of page.objects) {
+      await deleteObject(env, object.key, request);
     }
-    cursor = page.truncated ? page.cursor : undefined;
-  } while (cursor !== undefined);
+  }
+
+  const remaining = await env.ARCHIVE.list({ prefix, limit: 1000 });
+  if (remaining.objects.length > 0 || remaining.truncated) {
+    throw new Error("R2 prefix deletion did not converge");
+  }
+}
+
+export async function deleteObject(
+  env: Pick<
+    Env,
+    | "ARCHIVE"
+    | "R2_ACCOUNT_ID"
+    | "R2_PARENT_ACCESS_KEY_ID"
+    | "R2_PARENT_SECRET_ACCESS_KEY"
+    | "R2_BUCKET_NAME"
+  >,
+  key: string,
+  request: typeof fetch = fetch,
+): Promise<void> {
+  await env.ARCHIVE.delete(key);
+  if ((await env.ARCHIVE.head(key)) === null) return;
+
+  // Live R2 QA found that the binding can acknowledge a delete of a completed
+  // multipart object while leaving it readable. Fall back to the same S3 API
+  // used by the verified signer, then require an authoritative binding HEAD to
+  // observe absence before callers persist purged_at.
+  await deleteObjectViaS3(env, key, request);
+  if ((await env.ARCHIVE.head(key)) !== null) {
+    throw new Error("R2 object remained after deletion");
+  }
+}
+
+const EMPTY_PAYLOAD_SHA256 =
+  "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
+
+async function deleteObjectViaS3(
+  env: Pick<
+    Env,
+    | "R2_ACCOUNT_ID"
+    | "R2_PARENT_ACCESS_KEY_ID"
+    | "R2_PARENT_SECRET_ACCESS_KEY"
+    | "R2_BUCKET_NAME"
+  >,
+  key: string,
+  request: typeof fetch,
+  issuedAt = new Date(),
+): Promise<void> {
+  if (
+    !env.R2_ACCOUNT_ID ||
+    !env.R2_PARENT_ACCESS_KEY_ID ||
+    !env.R2_PARENT_SECRET_ACCESS_KEY ||
+    !env.R2_BUCKET_NAME
+  ) {
+    throw new Error("R2 delete credentials are unavailable");
+  }
+
+  const host = `${env.R2_ACCOUNT_ID}.r2.cloudflarestorage.com`;
+  const amzDate = issuedAt
+    .toISOString()
+    .replace(/[:-]|\.\d{3}/gu, "");
+  const date = amzDate.slice(0, 8);
+  const region = "auto";
+  const service = "s3";
+  const scope = `${date}/${region}/${service}/aws4_request`;
+  const canonicalUri = `/${awsEncode(env.R2_BUCKET_NAME)}/${key
+    .split("/")
+    .map(awsEncode)
+    .join("/")}`;
+  const signedHeaders = "host;x-amz-content-sha256;x-amz-date";
+  const canonicalHeaders =
+    `host:${host}\n` +
+    `x-amz-content-sha256:${EMPTY_PAYLOAD_SHA256}\n` +
+    `x-amz-date:${amzDate}\n`;
+  const canonicalRequest = [
+    "DELETE",
+    canonicalUri,
+    "",
+    canonicalHeaders,
+    signedHeaders,
+    EMPTY_PAYLOAD_SHA256,
+  ].join("\n");
+  const stringToSign = [
+    "AWS4-HMAC-SHA256",
+    amzDate,
+    scope,
+    await sha256Hex(utf8Bytes(canonicalRequest)),
+  ].join("\n");
+  const dateKey = await hmacSha256(
+    `AWS4${env.R2_PARENT_SECRET_ACCESS_KEY}`,
+    date,
+  );
+  const regionKey = await hmacSha256(dateKey, region);
+  const serviceKey = await hmacSha256(regionKey, service);
+  const signingKey = await hmacSha256(serviceKey, "aws4_request");
+  const signature = hex(await hmacSha256(signingKey, stringToSign));
+  const response = await request(`https://${host}${canonicalUri}`, {
+    method: "DELETE",
+    redirect: "error",
+    headers: {
+      authorization:
+        `AWS4-HMAC-SHA256 Credential=${env.R2_PARENT_ACCESS_KEY_ID}/${scope}, ` +
+        `SignedHeaders=${signedHeaders}, Signature=${signature}`,
+      "x-amz-content-sha256": EMPTY_PAYLOAD_SHA256,
+      "x-amz-date": amzDate,
+    },
+  });
+  if (!response.ok) {
+    throw new Error(`R2 S3 deletion failed with status ${response.status}`);
+  }
 }

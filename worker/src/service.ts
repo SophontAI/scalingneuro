@@ -20,6 +20,7 @@ import {
   type NiftiFacts,
 } from "./nifti";
 import {
+  deleteObject,
   deletePrefix,
   presignUploadPart as signR2UploadPart,
   uploadTtl,
@@ -612,8 +613,8 @@ async function retireExpiredUploadAttempt(
   }
   try {
     await abortMultipartUploads(env, upload.id);
-    await deletePrefix(env.ARCHIVE, upload.archive_prefix);
-    await env.ARCHIVE.delete(archiveManifestKey(upload));
+    await deletePrefix(env, upload.archive_prefix);
+    await deleteObject(env, archiveManifestKey(upload));
   } catch {
     await releaseUploadOperation(env, upload.id, token);
     throw new AppError(
@@ -1489,8 +1490,8 @@ async function rejectStoredUpload(
 
   try {
     await abortMultipartUploads(env, upload.id);
-    await deletePrefix(env.ARCHIVE, upload.archive_prefix);
-    await env.ARCHIVE.delete(archiveManifestKey(upload));
+    await deletePrefix(env, upload.archive_prefix);
+    await deleteObject(env, archiveManifestKey(upload));
     await env.DB.prepare(
       `UPDATE uploads
        SET purged_at = ?1, updated_at = ?1,
@@ -2084,8 +2085,8 @@ export async function withdrawUpload(
   if (upload.purged_at === null) {
     try {
       await abortMultipartUploads(env, upload.id);
-      await deletePrefix(env.ARCHIVE, upload.archive_prefix);
-      await env.ARCHIVE.delete(archiveManifestKey(upload));
+      await deletePrefix(env, upload.archive_prefix);
+      await deleteObject(env, archiveManifestKey(upload));
       await env.DB.prepare(
         "UPDATE uploads SET purged_at = ?1, updated_at = ?1 WHERE id = ?2",
       )
@@ -2174,8 +2175,8 @@ export async function cleanupAbandoned(env: Env): Promise<void> {
   for (const { upload, token } of purgeClaims) {
     try {
       await abortMultipartUploads(env, upload.id);
-      await deletePrefix(env.ARCHIVE, upload.archive_prefix);
-      await env.ARCHIVE.delete(archiveManifestKey(upload));
+      await deletePrefix(env, upload.archive_prefix);
+      await deleteObject(env, archiveManifestKey(upload));
       const purged = await env.DB.prepare(
         `UPDATE uploads
          SET purged_at = ?1, updated_at = ?1,
