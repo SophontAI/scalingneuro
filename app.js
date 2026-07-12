@@ -654,7 +654,7 @@ async function selectScan(scan, card, userInitiated = false) {
     `rendering synthetic ${scan.res} structural preview`,
     `no live scan is read or transferred`,
   ] : [
-    `↪ simulating pull from s3://scaling-neuro-concept …`,
+    `↪ simulating pull from Cloudflare R2 via its S3-compatible API …`,
     `GET ${scan.pid}/${scan.ses}/  (${scan.field} · ${scan.scanner})`,
     `synthetic payload ${scan.size} · ${scan.vols} · ${scan.res}`,
     `reconstructing ${N}³ concept grid …`,
@@ -709,7 +709,7 @@ async function selectScan(scan, card, userInitiated = false) {
   const m = MOD_META[scan.mod];
   viewerMode.textContent = scan.realNifti ? 'Instant View · real local NIfTI' : 'Instant View · synthetic';
   stage.setAttribute('aria-label', `Interactive 3D preview of ${scan.pid}, ${scan.title}`);
-  archiveRoot.innerHTML = scan.realNifti ? 'local://examples/ <b>real file</b>' : 's3://scaling-neuro/ <b>concept</b>';
+  archiveRoot.innerHTML = scan.realNifti ? 'local://examples/ <b>real file</b>' : 'R2 / S3 API <b>concept</b>';
   archiveState.textContent = scan.realNifti ? 'same-origin' : 'planned';
   viewerMeta.hidden = false;
   if (scan.realNifti) {
@@ -767,7 +767,7 @@ $('#spinBtn')?.addEventListener('click', () => {
   button.title = spinning ? 'Pause auto-rotate' : 'Resume auto-rotate';
 });
 
-/* Load the real local T1w example so the viewer proves an actual NIfTI path on arrival. */
+/* Load the first available scan: the real fixture on localhost, a synthetic preview in production. */
 requestAnimationFrame(() => {
   const firstCard = $('.scan-card[data-idx="0"]');
   if (firstCard) selectScan(SCANS[0], firstCard);

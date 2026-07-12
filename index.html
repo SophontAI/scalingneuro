@@ -150,7 +150,7 @@
           <!-- archive browser -->
           <aside class="vault-left" aria-label="Scan archive">
             <div class="vault-head">
-              <span class="label" id="archiveRoot">s3://scaling-neuro/ <b>concept</b></span>
+              <span class="label" id="archiveRoot">R2 / S3 API <b>concept</b></span>
               <span class="mchip mchip-sage" id="archiveState">planned</span>
             </div>
             <div class="filters" id="filters">
@@ -232,7 +232,7 @@
   <span class="c-ok">↑</span> dwi_dir98         DWI 1.5mm   99 vol   <span class="c-ok">shared</span>
   <span class="c-ok">↑</span> T1w_mprage        face → processed → QC pass   <span class="c-ok">shared</span>
 <span class="c-dim">[deid]</span>  stripped PHI · kept scanner·field·TR·TE
-<span class="c-dim">[up]</span>    s3://scaling-neuro/  (encrypted)  <span class="c-ok">complete</span></code></pre>
+<span class="c-dim">[up]</span>    s3://scaling-neuro/  (Cloudflare R2 · encrypted)  <span class="c-ok">complete</span></code></pre>
             <pre class="term-pane" id="pane-inside" data-pane="inside" role="tabpanel" aria-labelledby="tab-inside"><code><span class="c-kw">consent</span>  only process projects approved for open research sharing
 <span class="c-kw">watch</span>    the DICOM directory for newly written series
 <span class="c-kw">detect</span>   modality and whether structural facial anatomy is present
@@ -242,7 +242,7 @@
 <span class="c-kw">budget</span>   one scan at a time; checkpoint every completed series
 <span class="c-kw">convert</span>  DICOM → research-ready NIfTI
 <span class="c-kw">deid</span>     remove names, MRNs, dates; keep TR/TE, field
-<span class="c-kw">upload</span>   to encrypted, redundant S3 (server-side enc.)
+<span class="c-kw">upload</span>   to encrypted Cloudflare R2 (S3-compatible API)
 <span class="c-kw">rule</span>     nothing leaves the building without a privacy pass</code></pre>
           </div>
         </div>
@@ -269,7 +269,7 @@
         <div class="foot-brand reveal">Scaling Neuro</div>
         <div class="foot-legal reveal">
           © 2026 Scaling Neuro Initiative · concept prototype · working name<br/>
-          All shared data intended as an open resource · source: “Scaling Up Neuroimaging Data for Foundation Models”
+          All shared data intended as an open resource · source notes: “Scaling Up Neuroimaging Data…” + “Creating a web-scale neuroimaging database”
         </div>
       </div>
     </footer>
