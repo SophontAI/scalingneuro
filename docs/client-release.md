@@ -32,7 +32,7 @@ The workflow downloads official `rordenlab/dcm2niix` release assets at tag `v1.0
 
 The macOS converter is already a universal x86_64/arm64 Mach-O. The workflow builds both Rust targets and combines them with `lipo` into a universal `neuro-sync` executable. Windows includes the runtime DLLs shipped in the official converter archive.
 
-The Linux client is built for `x86_64-unknown-linux-musl` so the Rust executable is not tied to the runner's glibc. The official converter still requires glibc 2.19 or newer; that is the actual Linux compatibility floor and must be stated rather than promising every historical Unix machine.
+The Linux client is built for `x86_64-unknown-linux-gnu`. Both the native XDG folder picker and the official converter use the desktop Linux runtime; the converter requires glibc 2.19 or newer, which is the bundle's actual compatibility floor. The release gate installs the Wayland development headers needed to compile the portal picker, while collaborator machines need a normal desktop portal/Wayland runtime rather than a compiler toolchain.
 
 Updating dcm2niix requires a separate reviewed change to the version, all three official asset digests, converter regression fixtures, metadata policy if output semantics changed, and the `converter_version` constant in the scan-sidecar schema.
 

@@ -126,6 +126,9 @@ jobs:
           python -m pip install --requirement schemas/requirements.txt
           npm ci --prefix worker
 
+      - name: Install Linux folder-picker build dependencies
+        run: sudo apt-get update && sudo apt-get install --yes libwayland-dev pkg-config
+
       - name: Validate public contracts
         run: |
           python schemas/validate.py
@@ -154,10 +157,9 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: 1.85.0
-          targets: x86_64-unknown-linux-musl
 
-      - name: Install static Linux linker
-        run: sudo apt-get update && sudo apt-get install --yes musl-tools
+      - name: Install Linux folder-picker build dependencies
+        run: sudo apt-get update && sudo apt-get install --yes libwayland-dev pkg-config
 
       - name: Cache Rust build
         uses: Swatinem/rust-cache@v2
@@ -165,7 +167,7 @@ jobs:
           workspaces: client
 
       - name: Build locked release binary
-        run: cargo build --locked --release --manifest-path client/Cargo.toml --target x86_64-unknown-linux-musl
+        run: cargo build --locked --release --manifest-path client/Cargo.toml
 
       - name: Stage client and verified converter
         env:
@@ -176,7 +178,7 @@ jobs:
           package_name="neuro-sync-v${VERSION}-linux-x86_64"
           stage_dir="$RUNNER_TEMP/$package_name"
           mkdir -p "$stage_dir/libexec" "$RUNNER_TEMP/release-assets"
-          install -m 0755 client/target/x86_64-unknown-linux-musl/release/neuro-sync "$stage_dir/neuro-sync"
+          install -m 0755 client/target/release/neuro-sync "$stage_dir/neuro-sync"
 
           converter_zip="$RUNNER_TEMP/dcm2niix_lnx.zip"
           curl --fail --location --silent --show-error \
