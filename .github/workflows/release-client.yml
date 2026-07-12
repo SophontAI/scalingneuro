@@ -272,7 +272,7 @@ jobs:
             client/target/x86_64-apple-darwin/release/neuro-sync \
             -output "$stage_dir/neuro-sync"
           chmod 0755 "$stage_dir/neuro-sync"
-          lipo -verify_arch arm64 x86_64 "$stage_dir/neuro-sync"
+          lipo "$stage_dir/neuro-sync" -verify_arch arm64 x86_64
 
           converter_zip="$RUNNER_TEMP/dcm2niix_mac.zip"
           curl --fail --location --silent --show-error \
@@ -281,7 +281,7 @@ jobs:
           echo "${DCM2NIIX_MACOS_SHA256}  ${converter_zip}" | shasum -a 256 --check --status
           ditto -x -k "$converter_zip" "$stage_dir/libexec"
           chmod 0755 "$stage_dir/libexec/dcm2niix"
-          lipo -verify_arch arm64 x86_64 "$stage_dir/libexec/dcm2niix"
+          lipo "$stage_dir/libexec/dcm2niix" -verify_arch arm64 x86_64
           cp docs/collaborator-onboarding.md "$stage_dir/CONTRIBUTING-SCANS.md"
           cp LICENSE-MIT LICENSE-APACHE "$stage_dir/"
           mkdir -p "$stage_dir/THIRD-PARTY-LICENSES"
