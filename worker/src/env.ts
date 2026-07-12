@@ -1,7 +1,6 @@
 export interface Env {
   DB: D1Database;
   ARCHIVE: R2Bucket;
-  SERVICE_VERSION: string;
   R2_ACCOUNT_ID: string;
   R2_PARENT_ACCESS_KEY_ID: string;
   R2_BUCKET_NAME: string;
@@ -22,8 +21,4 @@ export interface DeviceContext {
 }
 
 export type UploadStatus =
-  | "created"
-  | "uploading"
-  | "committed"
-  | "expired"
-  | "withdrawn";
+  "created" | "uploading" | "committed" | "expired" | "withdrawn";

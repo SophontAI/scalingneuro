@@ -39,8 +39,10 @@ import type {
   EnrollRequest,
   SignPartRequest,
 } from "./validation";
+import packageManifest from "../package.json";
 
 const MINIMUM_CLIENT_VERSION = "0.1.1";
+const SERVICE_VERSION = packageManifest.version;
 
 function semanticVersion(
   value: string,
@@ -1970,7 +1972,7 @@ export async function completeUpload(
           },
         };
       }),
-      control_plane: { service_version: env.SERVICE_VERSION },
+      control_plane: { service_version: SERVICE_VERSION },
     };
     const manifestJson = canonicalJson(manifest);
     const manifestPayload = `${manifestJson}\n`;
@@ -2617,6 +2619,6 @@ export async function health(env: Env): Promise<Record<string, unknown>> {
   return {
     status: "ok",
     service: "scaling-neuro-ingest",
-    version: env.SERVICE_VERSION,
+    version: SERVICE_VERSION,
   };
 }

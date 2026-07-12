@@ -222,6 +222,13 @@ def canonical_json(value: Any) -> bytes:
 
 def validate_example_consistency() -> None:
     archive = read_json(ROOT / "examples" / "archive-manifest-v1.example.json")
+    worker_package_path = ROOT.parent / "worker" / "package.json"
+    if worker_package_path.exists():
+        worker_package = read_json(worker_package_path)
+        if archive["control_plane"]["service_version"] != worker_package["version"]:
+            raise ValueError(
+                "archive example service version differs from the Worker package"
+            )
     upload_init = read_json(ROOT / "examples" / "upload-init-v1.example.json")
     upload_session = read_json(ROOT / "examples" / "upload-session-v1.example.json")
     part_request = read_json(ROOT / "examples" / "upload-part-request-v1.example.json")
