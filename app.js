@@ -8,38 +8,26 @@ const $$ = (s, r = document) => [...r.querySelectorAll(s)];
 const clamp = (v, a, b) => Math.min(b, Math.max(a, v));
 const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
 
-/* ---------- visual theme lab ---------- */
-const THEME_META = {
-  atlas:      { color: '#29203c', networkA: '166,187,175', networkB: '145,134,173' },
-  whiteboard: { color: '#f7f6ef', networkA: '33,102,209',   networkB: '237,93,86' },
-  fieldnote:  { color: '#173a31', networkA: '255,105,55',  networkB: '133,195,179' },
-};
-let activeTheme = document.documentElement.dataset.theme || 'atlas';
-
-function applyTheme(theme, persist = true) {
-  if (!THEME_META[theme]) return;
-  activeTheme = theme;
-  document.documentElement.dataset.theme = theme;
-  document.querySelector('meta[name="theme-color"]')?.setAttribute('content', THEME_META[theme].color);
-  $$('.theme-option').forEach((button) => {
-    const selected = button.dataset.themeValue === theme;
-    button.classList.toggle('is-active', selected);
-    button.setAttribute('aria-pressed', String(selected));
-  });
-  if (persist) {
-    try { localStorage.setItem('scaling-neuro-theme', theme); } catch (_) {}
-  }
-}
-
-$$('.theme-option').forEach((button) => button.addEventListener('click', () => {
-  applyTheme(button.dataset.themeValue);
-  toast(`${button.textContent.trim()} direction applied`);
-}));
-applyTheme(activeTheme, false);
+/* ---------- fixed visual palette ---------- */
+const NETWORK_A = '52,67,111';
+const NETWORK_B = '173,95,102';
 
 /* ---------- nav scroll state ---------- */
 const nav = $('#nav');
-const onScroll = () => nav.classList.toggle('scrolled', window.scrollY > 24);
+const navLinks = $$('.nav-links a[href^="#"]');
+const navSections = navLinks.map((link) => ({ link, section: $(link.getAttribute('href')) })).filter((item) => item.section);
+const onScroll = () => {
+  nav.classList.toggle('scrolled', window.scrollY > 24);
+  const marker = window.scrollY + window.innerHeight * 0.34;
+  let current = navSections[0];
+  navSections.forEach((item) => { if (item.section.offsetTop <= marker) current = item; });
+  navLinks.forEach((link) => {
+    const active = link === current?.link;
+    link.classList.toggle('is-current', active);
+    if (active) link.setAttribute('aria-current', 'location');
+    else link.removeAttribute('aria-current');
+  });
+};
 window.addEventListener('scroll', onScroll, { passive: true });
 onScroll();
 
@@ -110,8 +98,8 @@ $$('#scaleBars li').forEach((li) => { li.querySelector('.sb-fill').style.setProp
         if (d2 < 20000) {
           const alpha = (1 - d2 / 20000) * 0.5;
           const grad = ctx.createLinearGradient(a.x, a.y, b.x, b.y);
-          grad.addColorStop(0, `rgba(${THEME_META[activeTheme].networkA},${alpha})`);
-          grad.addColorStop(1, `rgba(${THEME_META[activeTheme].networkB},${alpha})`);
+          grad.addColorStop(0, `rgba(${NETWORK_A},${alpha})`);
+          grad.addColorStop(1, `rgba(${NETWORK_B},${alpha})`);
           ctx.strokeStyle = grad; ctx.lineWidth = 0.7;
           ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); ctx.stroke();
         }
@@ -119,7 +107,7 @@ $$('#scaleBars li').forEach((li) => { li.querySelector('.sb-fill').style.setProp
     }
     for (const n of nodes) {
       ctx.beginPath(); ctx.arc(n.x, n.y, n.r, 0, Math.PI * 2);
-      ctx.fillStyle = `rgba(${THEME_META[activeTheme].networkA},0.72)`; ctx.fill();
+      ctx.fillStyle = `rgba(${NETWORK_A},0.72)`; ctx.fill();
     }
     raf = requestAnimationFrame(draw);
   };
@@ -251,10 +239,11 @@ function renderList() {
         : '<span class="mchip mchip-sage">share path</span>';
       card.type = 'button';
       card.setAttribute('aria-label', `${s.pid}, ${s.ses}, ${s.title}, ${s.res}, ${s.size}`);
+      card.setAttribute('aria-pressed', 'false');
       card.innerHTML = `
         <div class="sc-row"><span class="sc-name">${fileName(s)}</span><span class="sc-size">${s.size}</span></div>
         <div class="sc-sub"><span class="mchip ${m.chip}">${m.label}</span><span>${s.ses}</span><span>${s.res}</span><span>TR ${s.tr}</span>${hires}${safe}${policy}</div>`;
-      card.addEventListener('click', () => selectScan(s, card));
+      card.addEventListener('click', () => selectScan(s, card, true));
       scanList.appendChild(card);
     });
   });
@@ -502,7 +491,7 @@ function sliceTexture(axis, index) {
       else                   v = volume[index + a * n + b * n * n];         // sagittal: a=y, b=z
       const g = Math.round(clamp(v, 0, 1) * 255);
       const i = (a + b * n) * 4;
-      // warm ivory/bone tissue on black — editorial, matches the manuscript palette
+      // Warm tissue is tuned by CSS for the dark viewer surface.
       data[i]     = g;
       data[i + 1] = Math.round(g * 0.965);
       data[i + 2] = Math.round(g * 0.83);
@@ -525,15 +514,15 @@ function initThreeScene() {
   camera = new THREE.PerspectiveCamera(42, 16 / 11, 0.1, 100);
   camera.position.set(2.4, 1.5, 2.9);
 
-  scene.add(new THREE.AmbientLight(0xffffff, 0.8));
-  const l1 = new THREE.PointLight(0xe6d6ab, 1.9, 20); l1.position.set(3, 3, 4); scene.add(l1);
-  const l2 = new THREE.PointLight(0x9fb8a8, 1.5, 20); l2.position.set(-3, -1, -3); scene.add(l2);
+  scene.add(new THREE.AmbientLight(0xffffff, 0.9));
+  const l1 = new THREE.PointLight(0xffe5c6, 2.0, 20); l1.position.set(3, 3, 4); scene.add(l1);
+  const l2 = new THREE.PointLight(0x9aa7d1, 1.6, 20); l2.position.set(-3, -1, -3); scene.add(l2);
 
   // glass brain shell
   const geo = new THREE.SphereGeometry(1, 48, 32);
-  const mat = new THREE.MeshStandardMaterial({ color: 0xa6bbaf, transparent: true, opacity: 0.05, roughness: 0.5, metalness: 0.1, side: THREE.FrontSide, depthWrite: false });
+  const mat = new THREE.MeshStandardMaterial({ color: 0x8f9bc2, transparent: true, opacity: 0.07, roughness: 0.5, metalness: 0.1, side: THREE.FrontSide, depthWrite: false });
   glass = new THREE.Mesh(geo, mat);
-  const wire = new THREE.Mesh(geo, new THREE.MeshBasicMaterial({ color: 0x869c8f, wireframe: true, transparent: true, opacity: 0.09 }));
+  const wire = new THREE.Mesh(geo, new THREE.MeshBasicMaterial({ color: 0xb3bad2, wireframe: true, transparent: true, opacity: 0.12 }));
   const grp = new THREE.Group(); grp.add(glass); grp.add(wire); scene.add(grp);
   grp.scale.set(radii.x, radii.z, radii.y);   // three Y is up → map anatomical z to world Y
   glass._grp = grp;
@@ -605,7 +594,7 @@ function buildActivations(scan) {
   });
   activations = [];
   if (scan.mod !== 'bold') return;   // activation hotspots only for functional
-  const colors = [0xd8c58a, 0xa6bbaf, 0xc9a86a, 0x8fae9d];
+  const colors = [0xe3a0a5, 0xaab7df, 0xe1b475, 0x9bc7b5];
   const count = 4;
   for (let i = 0; i < count; i++) {
     const rnd = (k) => hash3(i * 7 + k, scan.seed, 3, scan.seed) - 0.5;
@@ -614,10 +603,10 @@ function buildActivations(scan) {
     // bright core + soft additive halo → reads as a glowing activation focus
     const coreMesh = new THREE.Mesh(
       new THREE.SphereGeometry(core, 16, 12),
-      new THREE.MeshBasicMaterial({ color: colors[i % colors.length], transparent: true, opacity: 0.9, blending: THREE.AdditiveBlending, depthWrite: false }));
+      new THREE.MeshBasicMaterial({ color: colors[i % colors.length], transparent: true, opacity: 0.92, depthWrite: false }));
     const halo = new THREE.Mesh(
       new THREE.SphereGeometry(core * 2.6, 16, 12),
-      new THREE.MeshBasicMaterial({ color: colors[i % colors.length], transparent: true, opacity: 0.22, blending: THREE.AdditiveBlending, depthWrite: false }));
+      new THREE.MeshBasicMaterial({ color: colors[i % colors.length], transparent: true, opacity: 0.16, blending: THREE.AdditiveBlending, depthWrite: false }));
     grp.add(coreMesh); grp.add(halo);
     grp.position.set(rnd(1) * 1.1 * radii.x, rnd(2) * 1.0 * radii.z, rnd(3) * 1.1 * radii.y);
     grp._phase = i * 1.3;
@@ -640,9 +629,10 @@ function animate() {
 
 /* ---------- select + "stream" a scan ---------- */
 let loadToken = 0;
-async function selectScan(scan, card) {
-  $$('.scan-card').forEach((c) => c.classList.remove('is-active'));
+async function selectScan(scan, card, userInitiated = false) {
+  $$('.scan-card').forEach((c) => { c.classList.remove('is-active'); c.setAttribute('aria-pressed', 'false'); });
   card?.classList.add('is-active');
+  card?.setAttribute('aria-pressed', 'true');
 
   const token = ++loadToken;
   emptyEl.hidden = true;
@@ -718,6 +708,7 @@ async function selectScan(scan, card) {
   viewerTitle.textContent = `${scan.pid} · ${scan.title}`;
   const m = MOD_META[scan.mod];
   viewerMode.textContent = scan.realNifti ? 'Instant View · real local NIfTI' : 'Instant View · synthetic';
+  stage.setAttribute('aria-label', `Interactive 3D preview of ${scan.pid}, ${scan.title}`);
   archiveRoot.innerHTML = scan.realNifti ? 'local://examples/ <b>real file</b>' : 's3://scaling-neuro/ <b>concept</b>';
   archiveState.textContent = scan.realNifti ? 'same-origin' : 'planned';
   viewerMeta.hidden = false;
@@ -734,6 +725,9 @@ async function selectScan(scan, card) {
       `SEQ: ${m.seq}<br/>` +
       `FIELD: ${scan.field} · TR ${scan.tr}<br/>` +
       `STATE: ${scan.mod === 'anat' ? 'LOCAL_ONLY_CONCEPT' : 'SYNTHETIC_PULL'}${scan.safe ? ' · DEFACED' : ''}`;
+  }
+  if (userInitiated && window.matchMedia('(max-width: 760px)').matches) {
+    stage.closest('.vault-right')?.scrollIntoView({ behavior: reducedMotion ? 'auto' : 'smooth', block: 'start' });
   }
 }
 
@@ -766,8 +760,11 @@ $$('#viewerControls input[type=range]').forEach((sl) => {
 });
 $('#spinBtn')?.addEventListener('click', () => {
   spinning = !spinning;
-  $('#spinBtn').classList.toggle('is-active', spinning);
-  $('#spinBtn').setAttribute('aria-pressed', String(spinning));
+  const button = $('#spinBtn');
+  button.classList.toggle('is-active', spinning);
+  button.setAttribute('aria-pressed', String(spinning));
+  button.setAttribute('aria-label', spinning ? 'Pause auto-rotate' : 'Resume auto-rotate');
+  button.title = spinning ? 'Pause auto-rotate' : 'Resume auto-rotate';
 });
 
 /* Load the real local T1w example so the viewer proves an actual NIfTI path on arrival. */

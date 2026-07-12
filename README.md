@@ -3,23 +3,18 @@
 A single-page site outlining the open neuroimaging scaling initiative described in
 [*Scaling Up Neuroimaging Data for Foundation Models*](./Scaling%20Up%20Neuroimaging%20Data%20for%20Foundation%20Models.md).
 
-It is a static concept prototype—no build step or package install—and now includes three
-switchable visual directions:
-
-- **Atlas** — aubergine, parchment, and sage; editorial/scientific-manuscript typography.
-- **Whiteboard** — warm dry-erase white, blue and red marker, and yellow highlighter; an academic scratch-space direction with handwritten display type, graph lines, and lightly imperfect diagram frames.
-- **Fieldnote** — bottle green, unbleached paper, and safety orange; a tactile academic-notebook direction with graph grids, registration marks, and offset print-like frames.
-
-The selected theme is saved in local browser storage so the three directions can be compared
-without maintaining three separate site builds.
+It is a static concept prototype—no build step or package install—with a single, fixed visual
+system: muted lavender-gray, softened navy, and dusty coral; low-glare editorial surfaces with
+a faint graph-paper texture, plus deep-navy imaging and terminal workspaces for technical focus.
 
 The landing page is intentionally reduced to four surfaces: the scaling argument, contribution
-flow, scan explorer, and one-folder script. The hero pairs the original two-bar capacity
-comparison—today's flagship public sources versus one year across six centers—with a second,
-CortexMAE-inspired scaling-law plot. The solid segment ends at the public-data frontier available
-today; a dotted segment shows the conceptual frontier that coordinated institutional sharing
-could unlock. The dotted extension is explicitly described as explanatory rather than a measured
-performance projection.
+flow, scan explorer, and one-folder script. The hero compares the estimated 32.2k hours of fMRI
+in freely accessible archives with a transparent planning scenario: 25 centers acquiring 25
+hours per week would produce 32.5k hours in one year, before consent and privacy filtering. A
+second, CortexMAE-inspired plot shows the public-data frontier and the conceptual frontier that
+coordinated institutional sharing could unlock. The contribution flow also makes the exchange
+explicit: labs share approved scans without unpublished study annotations and receive access to
+the resulting commons.
 
 ## Run locally
 
@@ -29,6 +24,17 @@ python3 -m http.server 4173
 ```
 
 (Three.js loads from a CDN at runtime, so the 3D viewer needs a network connection.)
+
+## Production deployment
+
+Every push to `main` builds an explicit allowlist of public assets and deploys it to the
+`scalingneuro` Cloudflare Pages project through GitHub Actions. The production URL is
+<https://scalingneuro.com>; requests to `scalingneuro.pages.dev` redirect to the canonical
+domain. `version.json` records the deployed Git commit for release verification.
+
+The GitHub repository must provide the Actions secrets `CLOUDFLARE_API_TOKEN` and
+`CLOUDFLARE_ACCOUNT_ID`. The API token needs Cloudflare Pages edit access for the Sophont
+Cloudflare account.
 
 ## Deployment safety
 
@@ -43,7 +49,7 @@ previews only.
 |------|---------|
 | `index.html` | Page structure, hero bar comparison, and SVG sprite |
 | `styles.css` | All styling and the design system (CSS variables at the top) |
-| `app.js` | Theme switching, archive filtering, browser-side NIfTI-1 decoding, and the 3D viewer (Three.js) |
+| `app.js` | Archive filtering, browser-side NIfTI-1 decoding, and the 3D viewer (Three.js) |
 | `sub-1001_T1w.nii.gz` | Optional, ignored local T1w input used to prove the viewer path; never deployed |
 | `downloads/neuro-sync-preview.sh` | Safe, non-functional workflow preview; reads and uploads nothing |
 

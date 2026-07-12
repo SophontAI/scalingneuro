@@ -1,22 +1,15 @@
 <!doctype html>
-<html lang="en" data-theme="atlas">
+<html lang="en">
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Scaling Neuro — An Open Data Commons for Brain Foundation Models</title>
   <meta name="description" content="A community-led plan to turn prospectively consented structural and functional MRI into an open, privacy-first training resource for brain foundation models." />
-  <meta name="theme-color" content="#29203c" />
+  <meta name="theme-color" content="#e1e3ec" />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&amp;family=EB+Garamond:ital,wght@0,400;0,500;0,600;0,700;1,400;1,500;1,600&amp;family=JetBrains+Mono:wght@400;500&amp;family=Patrick+Hand&amp;family=Space+Grotesk:wght@400;500;600;700&amp;display=swap" rel="stylesheet" />
-  <script>
-    try {
-      const savedTheme = localStorage.getItem('scaling-neuro-theme');
-      const migratedTheme = ({ signal: 'whiteboard', afterimage: 'whiteboard', lab: 'fieldnote' })[savedTheme] || savedTheme;
-      if (['atlas', 'whiteboard', 'fieldnote'].includes(migratedTheme)) document.documentElement.dataset.theme = migratedTheme;
-    } catch (_) {}
-  </script>
-  <link rel="stylesheet" href="styles.css?v=11" />
+  <link href="https://fonts.googleapis.com/css2?family=EB+Garamond:ital,wght@0,400;0,500;0,600;0,700;1,400;1,500;1,600&amp;family=JetBrains+Mono:wght@400;500&amp;display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="styles.css?v=19" />
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🧠</text></svg>" />
   <script type="importmap">
   { "imports": {
@@ -42,21 +35,6 @@
     <a class="btn btn-sage" href="#contribute">Pilot the script</a>
   </header>
 
-  <aside class="theme-switcher" aria-label="Try a visual direction">
-    <span class="theme-switcher-label">Try the look</span>
-    <div class="theme-options">
-      <button type="button" class="theme-option is-active" data-theme-value="atlas" aria-pressed="true">
-        <span class="theme-dot theme-dot-atlas"></span><span>Atlas</span>
-      </button>
-      <button type="button" class="theme-option" data-theme-value="whiteboard" aria-pressed="false">
-        <span class="theme-dot theme-dot-whiteboard"></span><span>Whiteboard</span>
-      </button>
-      <button type="button" class="theme-option" data-theme-value="fieldnote" aria-pressed="false">
-        <span class="theme-dot theme-dot-fieldnote"></span><span>Fieldnote</span>
-      </button>
-    </div>
-  </aside>
-
   <main id="main-content">
     <!-- ============ HERO ============ -->
     <section class="band band-plum hero" id="top">
@@ -64,7 +42,7 @@
       <div class="wrap hero-grid">
         <div class="hero-copy">
           <div class="label hero-eyebrow reveal">Academic-led infrastructure for open neuroimaging</div>
-          <h1 class="hero-statement reveal">The next MRI dataset already exists—across our institutions.</h1>
+          <h1 class="hero-statement reveal">Brain models need scale. The scans already exist.</h1>
           <p class="hero-para reveal">
             Our CortexMAE work found strict power-law improvement as open fMRI pretraining data grew. Scaling Neuro gives US academic labs a low-friction, institution-governed path to build that shared commons together.
           </p>
@@ -78,27 +56,26 @@
         <figure class="hero-scale reveal" aria-labelledby="scale-title" aria-describedby="scale-note">
           <div class="scale-kicker">
             <span>THE SCALE OPPORTUNITY</span>
-            <span>ONE YEAR</span>
+            <span>25 CENTERS · ONE YEAR</span>
           </div>
-          <h2 id="scale-title">One year can exceed decades of shared data.</h2>
+          <h2 id="scale-title">One year across 25 academic centers could rival today’s public fMRI archive.</h2>
 
-          <div class="scale-bars" role="img" aria-label="Three flagship imaging sources represent 151,787 participant records. Six academic medical centers operating at Boston University's reported annual MRI volume would collect 165,462 exams in one year.">
+          <div class="scale-bars" role="img" aria-label="Freely accessible archives contain an estimated 32,200 hours of fMRI. A planning scenario of 25 academic centers each acquiring 25 hours per week would produce 32,500 hours in one year, before consent and privacy filtering.">
             <div class="scale-bar-group">
-              <div class="scale-bar-label"><span>UKB + OpenNeuro + HCP</span><strong>151,787</strong></div>
+              <div class="scale-bar-label"><span>Freely available fMRI</span><strong>~32.2k h</strong></div>
               <div class="scale-track">
-                <div class="scale-reference">
-                  <i class="scale-ukb"></i><i class="scale-openneuro"></i><i class="scale-hcp"></i>
-                </div>
+                <div class="scale-public"></div>
               </div>
-              <div class="scale-key" aria-hidden="true"><span>UKB&nbsp;100k</span><span>OpenNeuro&nbsp;50.7k</span><span>HCP&nbsp;1.1k</span></div>
+              <div class="scale-key" aria-hidden="true"><span>OpenNeuro + major public datasets</span></div>
             </div>
 
             <div class="scale-bar-group scale-bar-year">
-              <div class="scale-bar-label"><span>6 centers · 1 year</span><strong>165,462</strong></div>
+              <div class="scale-bar-label"><span>25 centers · 1 year</span><strong>~32.5k h</strong></div>
               <div class="scale-track">
-                <div class="scale-network"><i></i><i></i><i></i><i></i><i></i><i></i></div>
-                <div class="scale-threshold"><span>today</span></div>
+                <div class="scale-network"><i></i><i></i><i></i><i></i><i></i></div>
+                <div class="scale-threshold"><span>public total</span></div>
               </div>
+              <div class="scale-key" aria-hidden="true"><span>25 h/week/center · planning scenario</span></div>
             </div>
           </div>
 
@@ -124,7 +101,7 @@
           <figcaption id="scale-note">
             <details>
               <summary>Sources + assumptions</summary>
-              <p><a href="https://www.ukbiobank.ac.uk/discoveries-and-impact/major-achievements/" target="_blank" rel="noopener">UK Biobank</a> 100k · <a href="https://docs.openneuro.org/api.html" target="_blank" rel="noopener">OpenNeuro MRI</a> 50,674 · <a href="https://www.humanconnectome.org/study/hcp-young-adult/data-releases" target="_blank" rel="noopener">HCP</a> 1,113. Six centers use <a href="https://www.bumc.bu.edu/radiology/radiology/a-unique-department/equipment/" target="_blank" rel="noopener">BU’s 27,577 MRI exams/year</a>. Capacity comparison only: exams are not participants, and not every exam is brain imaging, consented, or shareable. The dotted curve is a conceptual extension of the strict data-scaling trend reported in <a href="https://arxiv.org/abs/2510.13768" target="_blank" rel="noopener">CortexMAE</a>, not a performance projection.</p>
+              <p>The public baseline is the ~32.2k recorded fMRI hours estimated across freely accessible archives in <a href="https://arxiv.org/abs/2411.18526" target="_blank" rel="noopener">NeuroAI for AI Safety</a>. The network bar is a planning scenario: 25 centers × 25 hours/week × 52 weeks = 32.5k acquired hours. The shareable total would be lower after consent and privacy gates. The dotted curve extends the strict data-scaling trend reported in <a href="https://arxiv.org/abs/2510.13768" target="_blank" rel="noopener">CortexMAE</a>; it is not a performance projection.</p>
             </details>
           </figcaption>
         </figure>
@@ -138,7 +115,7 @@
           <span class="label reveal" style="display:block;margin-bottom:20px">01 — The contribution flow</span>
           <h2 class="h-sec reveal" style="color:var(--cream-txt);margin-bottom:20px">One approved folder becomes a continuous contribution.</h2>
           <p class="lede reveal">
-            Point the tool at the folder where DICOMs already land. No labels or manual curation required.
+            Share approved scans, not unpublished study annotations. No labels or manual curation; contributing labs receive access to the full commons.
           </p>
         </div>
         <div class="manifesto reveal">
@@ -146,7 +123,7 @@
           <div class="mani"><div class="mani-no"><span class="num">02</span> / Capture</div><h4>Watch</h4><p>Detect new series automatically.</p></div>
           <div class="mani"><div class="mani-no"><span class="num">03</span> / De-ID</div><h4>Strip</h4><p>Remove identifying metadata locally.</p></div>
           <div class="mani"><div class="mani-no"><span class="num">04</span> / Privacy</div><h4>Clear</h4><p>Process structural faces; hold uncertainty.</p></div>
-          <div class="mani"><div class="mani-no"><span class="num">05</span> / Commons</div><h4>Share</h4><p>Encrypt, transfer, and return access.</p></div>
+          <div class="mani"><div class="mani-no"><span class="num">05</span> / Commons</div><h4>Share</h4><p>Transfer scans. Contributors get the commons back.</p></div>
         </div>
       </div>
     </section>
@@ -185,14 +162,14 @@
             <div class="browser-list" id="scanList"><!-- populated by JS --></div>
           </aside>
 
-          <!-- black instant-view viewer -->
-          <div class="vault-right on-dark">
-            <div class="viewer-head">
+          <!-- instant-view viewer -->
+          <div class="vault-right">
+            <div class="viewer-head" aria-live="polite">
               <span class="label" id="viewerMode">Instant View · loading</span>
               <span class="viewer-title" id="viewerTitle">// loading preview</span>
             </div>
-            <div class="viewer-stage" id="viewerStage">
-              <canvas id="brainCanvas"></canvas>
+            <div class="viewer-stage" id="viewerStage" role="img" aria-label="Interactive 3D neuroimaging preview">
+              <canvas id="brainCanvas" aria-hidden="true"></canvas>
               <div class="viewer-metaoverlay" id="viewerMeta" hidden></div>
               <div class="viewer-empty" id="viewerEmpty">
                 <svg viewBox="0 0 24 24" width="38" height="38"><use href="#i-cube"/></svg>
@@ -211,7 +188,7 @@
               <label class="ctrl"><span>Axial</span><input type="range" min="0" max="100" value="50" data-axis="z" /></label>
               <label class="ctrl"><span>Coronal</span><input type="range" min="0" max="100" value="50" data-axis="y" /></label>
               <label class="ctrl"><span>Sagittal</span><input type="range" min="0" max="100" value="50" data-axis="x" /></label>
-              <button class="ctrl-btn is-active" id="spinBtn" type="button" title="Auto-rotate" aria-label="Toggle auto-rotate" aria-pressed="true"><svg viewBox="0 0 24 24" width="15" height="15"><use href="#i-rotate"/></svg></button>
+              <button class="ctrl-btn is-active" id="spinBtn" type="button" title="Pause auto-rotate" aria-label="Pause auto-rotate" aria-pressed="true"><svg viewBox="0 0 24 24" width="15" height="15"><use href="#i-rotate"/></svg></button>
             </div>
           </div>
         </div>
@@ -274,7 +251,7 @@
           <a class="btn btn-sage" href="downloads/neuro-sync-preview.sh" download id="dlBtn">Download safe preview script</a>
           <button class="btn btn-outline-d" id="copyBtn" type="button">Copy preview command</button>
         </div>
-        <div class="term-foot reveal"><span style="color:var(--sage)">safe preview</span>&nbsp;&nbsp;·&nbsp;&nbsp;reads and uploads nothing&nbsp;&nbsp;·&nbsp;&nbsp;production CLI forthcoming</div>
+        <div class="term-foot reveal"><span style="color:var(--sage-deep)">safe preview</span>&nbsp;&nbsp;·&nbsp;&nbsp;reads and uploads nothing&nbsp;&nbsp;·&nbsp;&nbsp;production CLI forthcoming</div>
 
       </div>
     </section>
@@ -310,6 +287,6 @@
     <symbol id="i-rotate" viewBox="0 0 24 24"><path d="M20 12a8 8 0 1 1-2.3-5.6M20 4v4h-4" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></symbol>
   </defs></svg>
 
-  <script type="module" src="app.js?v=9"></script>
+  <script type="module" src="app.js?v=13"></script>
 </body>
 </html>
