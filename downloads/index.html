@@ -4,7 +4,7 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Download neuro-sync — Scaling Neuro</title>
-  <meta name="description" content="Download the invite-only neuro-sync pilot for macOS, Windows, or Linux." />
+  <meta name="description" content="Download neuro-sync for macOS, Windows, or Linux and contribute approved functional EPI scans to Scaling Neuro." />
   <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
   <style>
     :root { color-scheme: light; --paper:#ececf2; --ink:#1d2337; --muted:#626779; --plum:#242238; --sage:#bdd2b2; --line:#cfd0da; }
@@ -18,6 +18,8 @@
     h1 { max-width:800px; margin:14px 0 18px; font-size:clamp(42px,8vw,76px); line-height:.98; letter-spacing:-.035em; }
     .lede { max-width:720px; color:#42475a; font-size:22px; }
     .status { display:inline-block; margin:12px 0 32px; padding:7px 10px; border:1px solid var(--line); border-radius:999px; }
+    .recommended { display:block; width:fit-content; margin:0 0 28px; padding:15px 20px; border-radius:10px; background:var(--plum); color:#fff; text-decoration:none; font:600 14px/1.2 ui-monospace,SFMono-Regular,Menlo,monospace; }
+    .recommended[hidden] { display:none; }
     .grid { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:14px; margin:28px 0; }
     .card { min-height:205px; padding:22px; border:1px solid var(--line); border-radius:14px; background:#f5f4f7; display:flex; flex-direction:column; }
     .card h2 { margin:0; font-size:28px; }
@@ -39,28 +41,29 @@
 <body>
   <main>
     <a class="brand" href="../">🧠 <span>Scaling Neuro</span></a>
-    <div class="eyebrow">Invite-only pilot · functional EPI only</div>
+    <div class="eyebrow">Open self-service beta · functional EPI only</div>
     <h1>Choose a folder. The rest is automatic.</h1>
-    <p class="lede">Each bundle contains the app and its pinned DICOM converter. There is no Python, Docker, FSL, account setup, or cloud credential to configure.</p>
-    <div class="status" id="releaseStatus">Checking the current pilot release…</div>
+    <p class="lede">Each download contains one portable tool and its pinned DICOM converter. There is no Python, Docker, FSL, account, or cloud credential to configure.</p>
+    <div class="status" id="releaseStatus">Checking the current release…</div>
+    <a class="recommended" id="recommendedDownload" hidden>Download for this computer</a>
 
-    <section class="grid" aria-label="Pilot downloads">
+    <section class="grid" aria-label="neuro-sync downloads">
       <article class="card">
         <h2>macOS</h2>
         <p>Apple silicon and Intel in one universal bundle.</p>
         <p class="artifact-warning" data-warning="macos" role="status" hidden></p>
-        <a class="download" data-platform="macos" href="mailto:admin@sophont.med?subject=Scaling%20Neuro%20macOS%20pilot">Request pilot bundle</a>
+        <a class="download" data-platform="macos" href="#" aria-disabled="true">Preparing download…</a>
       </article>
       <article class="card">
         <h2>Windows</h2>
         <p>64-bit Windows 10 or newer.</p>
         <p class="artifact-warning" data-warning="windows" role="status" hidden></p>
-        <a class="download" data-platform="windows" href="mailto:admin@sophont.med?subject=Scaling%20Neuro%20Windows%20pilot">Request pilot bundle</a>
+        <a class="download" data-platform="windows" href="#" aria-disabled="true">Preparing download…</a>
       </article>
       <article class="card">
         <h2>Linux</h2>
         <p>64-bit glibc 2.28+ Linux with <code>libwayland-client.so.0</code> and an XDG desktop portal.</p>
-        <a class="download" data-platform="linux" href="mailto:admin@sophont.med?subject=Scaling%20Neuro%20Linux%20pilot">Request pilot bundle</a>
+        <a class="download" data-platform="linux" href="#" aria-disabled="true">Preparing download…</a>
       </article>
     </section>
 
@@ -68,49 +71,65 @@
       <h2>First run</h2>
       <ol>
         <li>Extract the complete bundle; keep <code>libexec/dcm2niix</code> beside the app.</li>
-        <li>Open <code>neuro-sync</code>, paste the project invite once, and review the displayed contribution-policy version.</li>
+        <li>Open <code>neuro-sync</code> and complete the one-minute lab registration on first launch.</li>
         <li>Confirm that the scans are covered by your institution’s IRB, participant-consent, and data-use approvals; then select the DICOM export folder.</li>
       </ol>
       <p>Source DICOMs never leave the machine. V1 uploads only native-space functional 4D NIfTI, an explicit metadata allowlist, and checksum/provenance manifests. Structural, diffusion, reference, derived, or ambiguous scans stay local.</p>
-      <p>An invite grants this workstation access to a pre-approved project. It is not evidence of participant consent and cannot authorize an otherwise impermissible upload.</p>
+      <p>The registration creates a private, revocable upload identity for your lab. It is not evidence of participant consent and cannot authorize an otherwise impermissible upload.</p>
     </section>
 
-    <p class="meta">Every published bundle has <a id="checksumsLink" href="mailto:admin@sophont.med?subject=Scaling%20Neuro%20checksums">SHA-256 checksums</a> and SPDX/CycloneDX SBOMs. Restricted builds are labeled <code>UNSIGNED-PILOT</code> or <code>CODESIGNED-PILOT</code>; warnings appear above before download.</p>
+    <p class="meta">Every published bundle has <a id="checksumsLink" href="#">SHA-256 checksums</a> and SPDX/CycloneDX SBOMs. Beta packages may still carry <code>UNSIGNED-PILOT</code> or <code>CODESIGNED-PILOT</code> filenames until signing is configured; operating-system warnings are shown before download.</p>
   </main>
   <script>
     const labels = { macos: 'Download for macOS', windows: 'Download for Windows', linux: 'Download for Linux' };
     const safeDownload = (value) => typeof value === 'string' && /^\/downloads\/[A-Za-z0-9._+-]+$/.test(value);
+    const currentPlatform = /Mac/i.test(navigator.userAgent) ? 'macos' : /Windows/i.test(navigator.userAgent) ? 'windows' : /Linux|X11/i.test(navigator.userAgent) ? 'linux' : null;
+    const supportedVersion = (value) => {
+      const match = /^(\d+)\.(\d+)\.(\d+)$/.exec(value || '');
+      if (!match) return false;
+      const parts = match.slice(1).map(Number);
+      return parts[0] > 0 || parts[1] > 2 || (parts[1] === 2 && parts[2] >= 0);
+    };
     fetch('./latest.json', { cache: 'no-store' }).then((response) => {
       if (!response.ok) throw new Error('not published');
       return response.json();
     }).then((release) => {
+      if (!supportedVersion(release.version)) throw new Error('self-service release not published');
       let restricted = false;
       for (const [platform, artifact] of Object.entries(release.artifacts || {})) {
         if (!(platform in labels) || !artifact || !safeDownload(artifact.url) || !/^[a-f0-9]{64}$/.test(artifact.sha256 || '')) continue;
         const link = document.querySelector(`[data-platform="${platform}"]`);
         if (!link) continue;
         link.href = artifact.url;
+        link.removeAttribute('aria-disabled');
         link.textContent = labels[platform] || 'Download';
         const warning = document.querySelector(`[data-warning="${platform}"]`);
         if (platform === 'macos' && artifact.notarized !== true) {
           restricted = true;
           warning.hidden = false;
           warning.textContent = artifact.signed === true
-            ? 'Restricted pilot: code-signed, but not Apple-notarized. Gatekeeper may warn or block it.'
-            : 'Restricted pilot: not code-signed or Apple-notarized. Gatekeeper will warn or block it.';
-          link.textContent += ' — restricted pilot';
+            ? 'Beta build: code-signed, but not Apple-notarized. Gatekeeper may warn or block it.'
+            : 'Beta build: not code-signed or Apple-notarized. Gatekeeper will warn or block it.';
+          link.textContent += ' — beta warning';
         }
         if (platform === 'windows' && artifact.signed !== true) {
           restricted = true;
           warning.hidden = false;
-          warning.textContent = 'Restricted pilot: no Windows Authenticode signature. SmartScreen will likely warn.';
-          link.textContent += ' — restricted pilot';
+          warning.textContent = 'Beta build: no Windows Authenticode signature. SmartScreen will likely warn.';
+          link.textContent += ' — beta warning';
         }
       }
+      const recommendedArtifact = currentPlatform && release.artifacts?.[currentPlatform];
+      if (recommendedArtifact && safeDownload(recommendedArtifact.url)) {
+        const recommended = document.querySelector('#recommendedDownload');
+        recommended.href = recommendedArtifact.url;
+        recommended.textContent = labels[currentPlatform];
+        recommended.hidden = false;
+      }
       if (safeDownload(release.checksums_url)) document.querySelector('#checksumsLink').href = release.checksums_url;
-      document.querySelector('#releaseStatus').textContent = `${release.version} · ${release.channel || 'pilot'} · SHA-256 verified bundles${restricted ? ' · restricted-build warnings shown' : ''}`;
+      document.querySelector('#releaseStatus').textContent = `${release.version} · ${release.channel || 'open beta'} · SHA-256 verified bundles${restricted ? ' · OS security warnings shown' : ''}`;
     }).catch(() => {
-      document.querySelector('#releaseStatus').textContent = 'Pilot bundles are currently issued directly with a project invite';
+      document.querySelector('#releaseStatus').textContent = 'Self-service 0.2.0 downloads are being prepared';
     });
   </script>
 </body>

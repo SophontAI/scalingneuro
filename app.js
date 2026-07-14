@@ -157,7 +157,7 @@ $('#copyBtn')?.addEventListener('click', async () => {
   try { await navigator.clipboard.writeText(cmd); toast('CLI command copied'); }
   catch { toast('Copy failed — command shown in the terminal'); }
 });
-$('#dlBtn')?.addEventListener('click', () => toast('Opening pilot downloads'));
+$('#dlBtn')?.addEventListener('click', () => toast('Opening downloads'));
 
 /* ==========================================================================
    Scan browser + 3D viewer

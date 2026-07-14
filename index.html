@@ -4,7 +4,7 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Scaling Neuro — An Open Data Commons for Brain Foundation Models</title>
-  <meta name="description" content="An invite-only, researcher-led pipeline for contributing approved functional EPI scans as native-space NIfTI plus privacy-minimized acquisition metadata." />
+  <meta name="description" content="An open, researcher-led pipeline for contributing approved functional EPI scans as native-space NIfTI plus privacy-minimized acquisition metadata." />
   <meta name="theme-color" content="#e1e3ec" />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
@@ -32,7 +32,7 @@
       <a href="#vault">Explorer</a>
       <a href="#contribute">Contribute</a>
     </nav>
-    <a class="btn btn-sage" href="#contribute">Pilot the script</a>
+    <a class="btn btn-sage" href="downloads/">Download neuro-sync</a>
   </header>
 
   <main id="main-content">
@@ -44,12 +44,12 @@
           <div class="label hero-eyebrow reveal">Academic-led infrastructure for open neuroimaging</div>
           <h1 class="hero-statement reveal">Brain models need scale. The scans already exist.</h1>
           <p class="hero-para reveal">
-            Our CortexMAE work found strict power-law improvement as open fMRI pretraining data grew. Scaling Neuro gives US academic labs a low-friction, institution-governed path to build that shared commons together.
+            Our CortexMAE work found strict power-law improvement as open fMRI pretraining data grew. Scaling Neuro gives academic labs everywhere a low-friction, institution-governed path to build that shared commons together.
           </p>
           <p class="hero-provenance reveal">Built by academic neuroimaging researchers behind <a href="https://medarc-ai.github.io/mindeye/" target="_blank" rel="noopener">MindEye</a>, <a href="https://arxiv.org/abs/2510.13768" target="_blank" rel="noopener">CortexMAE</a>, and <a href="https://github.com/MedARC-AI/brainmarks" target="_blank" rel="noopener">Brainmarks</a></p>
           <div class="hero-cta reveal">
-            <a class="btn btn-sage" href="#contribute">How labs contribute</a>
-            <a class="hero-text-link" href="#vault">Explore a scan <span aria-hidden="true">→</span></a>
+            <a class="btn btn-sage" href="downloads/">Download neuro-sync</a>
+            <a class="hero-text-link" href="#contribute">See how it works <span aria-hidden="true">→</span></a>
           </div>
         </div>
 
@@ -115,7 +115,7 @@
           <span class="label reveal" style="display:block;margin-bottom:20px">01 — The contribution flow</span>
           <h2 class="h-sec reveal" style="color:var(--cream-txt);margin-bottom:20px">One approved folder becomes a continuous contribution.</h2>
           <p class="lede reveal">
-            Share approved scans, not unpublished study annotations. No labels or manual curation; contributing labs receive access to the full commons.
+            Share approved scans, not unpublished study annotations. No labels, manual curation, or cloud setup; each contribution remains attributable to its lab and policy context.
           </p>
         </div>
         <div class="manifesto reveal">
@@ -136,7 +136,7 @@
           <h2 class="h-sec reveal" style="margin-bottom:20px">A raw archive models—and researchers—can trust.</h2>
           <p class="lede reveal">
             Every entry is one native-space functional scan, one minimized acquisition sidecar, and one verifiable manifest record.
-            <span class="badge-demo">Synthetic public previews · private archive is invite-only</span>
+            <span class="badge-demo">Synthetic public previews · contributed archive is governed</span>
           </p>
         </div>
 
@@ -214,14 +214,14 @@
             <button class="term-tab" id="tab-inside" data-tab="inside" role="tab" aria-selected="false" aria-controls="pane-inside" tabindex="-1">What leaves</button>
           </div>
           <div class="term-body">
-            <pre class="term-pane is-active" id="pane-install" data-pane="install" role="tabpanel" aria-labelledby="tab-install"><code><span class="c-com"># double-click the app, or launch it without arguments</span>
+            <pre class="term-pane is-active" id="pane-install" data-pane="install" role="tabpanel" aria-labelledby="tab-install"><code><span class="c-com"># double-click neuro-sync, or launch it without arguments</span>
 <span class="c-p">$</span> ./neuro-sync
-<span class="c-ok">✓</span> Project: <span class="c-hi">PNI functional pilot</span> · authorization policy v1
+<span class="c-ok">✓</span> One-minute lab registration on first launch
+<span class="c-ok">✓</span> Private upload identity: <span class="c-hi">your lab</span>
 <span class="c-ok">✓</span> Choose the folder containing this session's DICOMs
 <span class="c-ok">✓</span> Discover → convert → minimize metadata → QC → upload
 <span class="c-ok">✓</span> Safe to stop: conversion and multipart upload resume locally</code></pre>
-            <pre class="term-pane" id="pane-run" data-pane="run" role="tabpanel" aria-labelledby="tab-run"><code><span class="c-com"># enrollment is once per device; the invite selects the project</span>
-<span class="c-p">$</span> ./neuro-sync enroll sn_invite_…
+            <pre class="term-pane" id="pane-run" data-pane="run" role="tabpanel" aria-labelledby="tab-run"><code><span class="c-com"># after the one-time guided lab registration</span>
 <span class="c-p">$</span> ./neuro-sync upload ./new_session_dicoms
 
 <span class="c-dim">[scan]</span>   6 DICOM series discovered
@@ -242,10 +242,10 @@
         </div>
 
         <div class="contribute-actions reveal">
-          <a class="btn btn-sage" href="downloads/" id="dlBtn">Download the pilot app</a>
+          <a class="btn btn-sage" href="downloads/" id="dlBtn">Download neuro-sync</a>
           <button class="btn btn-outline-d" id="copyBtn" type="button">Copy CLI command</button>
         </div>
-        <div class="term-foot reveal"><span style="color:var(--sage-deep)">invite-only pilot</span>&nbsp;&nbsp;·&nbsp;&nbsp;macOS, Windows, Linux&nbsp;&nbsp;·&nbsp;&nbsp;functional EPI only</div>
+        <div class="term-foot reveal"><span style="color:var(--sage-deep)">open self-service beta</span>&nbsp;&nbsp;·&nbsp;&nbsp;macOS, Windows, Linux&nbsp;&nbsp;·&nbsp;&nbsp;functional EPI only</div>
 
       </div>
     </section>
@@ -262,7 +262,7 @@
         </div>
         <div class="foot-brand reveal">Scaling Neuro</div>
         <div class="foot-legal reveal">
-          © 2026 Scaling Neuro Initiative · invite-only functional MRI pilot · working name<br/>
+          © 2026 Scaling Neuro Initiative · open functional MRI contribution beta · working name<br/>
           All shared data intended as an open resource · source notes: “Scaling Up Neuroimaging Data…” + “Creating a web-scale neuroimaging database”
         </div>
       </div>

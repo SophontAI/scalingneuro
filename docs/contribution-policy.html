@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>EPI contribution policy — Scaling Neuro</title>
+  <meta name="description" content="The policy for contributing functional EPI scans through neuro-sync." />
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+  <style>
+    :root{color-scheme:light;--paper:#ececf2;--ink:#1d2337;--muted:#5f6578;--line:#cfd0da;--plum:#242238}*{box-sizing:border-box}body{margin:0;background:var(--paper);color:var(--ink);font:18px/1.65 Georgia,serif}main{width:min(760px,calc(100% - 36px));margin:auto;padding:56px 0 96px}a{color:inherit;text-underline-offset:3px}.brand{text-decoration:none;font-weight:700}h1{font-size:clamp(38px,7vw,64px);line-height:1;margin:64px 0 16px;letter-spacing:-.03em}h2{margin:40px 0 10px;font-size:27px}.version,li strong{font-family:ui-monospace,SFMono-Regular,Menlo,monospace}.version{font-size:12px;letter-spacing:.06em;color:var(--muted);border:1px solid var(--line);border-radius:999px;padding:7px 10px;display:inline-block}p,li{color:#41475a}li{margin:9px 0}.notice{margin-top:42px;border-left:4px solid var(--plum);padding:2px 0 2px 18px}</style>
+</head>
+<body><main>
+  <a class="brand" href="/">🧠 Scaling Neuro</a>
+  <h1>Functional EPI contribution policy</h1>
+  <div class="version">open-epi-1.0.0 · effective 14 July 2026</div>
+
+  <h2>What this covers</h2>
+  <p>This policy covers the open beta of <strong>neuro-sync</strong>. The client accepts only confidently identified functional 4D EPI series. Structural MRI, diffusion, ASL, field maps, reference scans, derived images, and uncertain series remain local.</p>
+
+  <h2>Your authority to contribute</h2>
+  <p>By continuing, you confirm that you are authorized by your institution to contribute the selected scans for research use, including the storage, validation, preservation, scientific analysis, and governed sharing needed to build the Scaling Neuro research commons. This confirmation does not replace participant consent, an IRB determination, a data-use agreement, or institutional review.</p>
+
+  <h2>What leaves the workstation</h2>
+  <ul>
+    <li><strong>voxels</strong> — deterministic native-space NIfTI, without registration, masking, resampling, or lossy transforms;</li>
+    <li><strong>metadata</strong> — a default-deny acquisition allowlist covering scanner context, timing, geometry, conversion provenance, classifier evidence, QC, and hashes;</li>
+    <li><strong>linkage</strong> — site-scoped pseudonymous subject, session, series, protocol-group, and bundle IDs; and</li>
+    <li><strong>operations</strong> — client version, upload state, checksums, and a contributor contact stored separately from scan metadata.</li>
+  </ul>
+  <p>Source DICOM files are never uploaded. Names, medical-record and accession numbers, birth dates, source dates and times, DICOM UIDs, institution/station/operator fields, source filenames and paths, free-text protocol descriptions, and private-tag dumps are not permitted in an uploaded bundle.</p>
+
+  <h2>Archive stewardship</h2>
+  <p>Scaling Neuro may validate, deduplicate, quarantine, preserve, and analyze accepted bundles and may include them in documented, governed research datasets. The beta does not by itself promise immediate public release or a specific final data license. Dataset access and licensing terms must be published before a governed release; the canonical raw archive and its provenance remain distinct from derived training caches and model artifacts.</p>
+
+  <h2>Withdrawal and contact</h2>
+  <p>A lab may request that its device be revoked or a contributed upload be withdrawn by emailing <a href="mailto:admin@sophont.med?subject=Scaling%20Neuro%20contribution">admin@sophont.med</a> with the pseudonymous upload ID from its local report. Withdrawal removes the archived objects and leaves a non-identifying audit tombstone so the same bundle is not silently reintroduced. Separately distributed governed datasets or research derived before a withdrawal may not always be retractable; release-specific terms will describe that boundary.</p>
+
+  <div class="notice"><p>This is a research data contribution tool, not a clinical device. Stop and consult your institution if you are unsure whether a scan is authorized for contribution.</p></div>
+</main></body>
+</html>

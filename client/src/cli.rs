@@ -3,7 +3,11 @@ use std::path::PathBuf;
 use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
 
-use crate::{DEFAULT_API_URL, pipeline::Runtime, state::PublicRunStatus};
+use crate::{
+    DEFAULT_API_URL,
+    pipeline::{ContributorDetails, Runtime},
+    state::PublicRunStatus,
+};
 
 #[derive(Parser)]
 #[command(
@@ -22,7 +26,27 @@ pub struct Cli {
 
 #[derive(Subcommand)]
 pub enum Command {
+    /// Register this machine for the open public EPI contribution.
+    Register {
+        #[arg(long)]
+        email: String,
+        #[arg(long)]
+        name: String,
+        #[arg(long)]
+        institution: String,
+        #[arg(long)]
+        lab: String,
+        #[arg(long)]
+        ror: Option<String>,
+        #[arg(long)]
+        contact_opt_in: bool,
+        #[arg(long, default_value = DEFAULT_API_URL)]
+        server: String,
+        #[arg(long)]
+        device_name: Option<String>,
+    },
     /// Enroll this machine using a one-time project invite.
+    #[command(hide = true)]
     Enroll {
         invite: String,
         #[arg(long, default_value = DEFAULT_API_URL)]
@@ -58,6 +82,39 @@ pub async fn execute(cli: Cli) -> Result<()> {
     let runtime = Runtime::initialize(cli.state_dir.as_deref())?;
     match cli.command {
         None => crate::ui::serve(runtime).await,
+        Some(Command::Register {
+            email,
+            name,
+            institution,
+            lab,
+            ror,
+            contact_opt_in,
+            server,
+            device_name,
+        }) => {
+            let contribution = runtime.contribution_info(&server).await?;
+            if !contribution.registration_open {
+                bail!("public contribution registration is temporarily paused");
+            }
+            let config = runtime
+                .register(
+                    ContributorDetails {
+                        contact_email: email,
+                        contact_name: name,
+                        institution_name: institution,
+                        institution_ror_id: ror,
+                        lab_name: lab,
+                        contact_opt_in,
+                    },
+                    contribution.consent_policy_version,
+                    &server,
+                    device_name.unwrap_or_else(default_device_name),
+                )
+                .await?;
+            println!("registered for {}", config.project_name);
+            println!("contribution policy: {}", config.consent_policy_version);
+            Ok(())
+        }
         Some(Command::Enroll {
             invite,
             server,

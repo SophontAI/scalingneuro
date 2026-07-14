@@ -64,7 +64,7 @@
     }
   },
   "conversion": {
-    "client_version": "0.1.1",
+    "client_version": "0.2.0",
     "converter": "dcm2niix",
     "converter_version": "v1.0.20260416",
     "arguments": [

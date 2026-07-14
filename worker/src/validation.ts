@@ -11,6 +11,8 @@ const SHA256 = /^[a-f0-9]{64}$/u;
 const ETAG = /^[A-Za-z0-9+/=_:.-]{1,256}$/u;
 const PLATFORM = /^[A-Za-z0-9][A-Za-z0-9._-]{0,31}$/u;
 const RELATIVE_KEY = /^[A-Za-z0-9._~/-]{1,512}$/u;
+const EMAIL = /^[A-Za-z0-9.!#$%&'*+/=?^_`{|}~-]+@[A-Za-z0-9](?:[A-Za-z0-9.-]{0,251}[A-Za-z0-9])?$/u;
+const ROR_ID = /^https:\/\/ror\.org\/0[a-hj-km-np-tv-z0-9]{8}$/u;
 const MAX_BUNDLES = 32;
 const MAX_NIFTI_BYTES = 5 * 1024 ** 3;
 const MAX_METADATA_BYTES = 8 * 1024 ** 2;
@@ -23,6 +25,21 @@ export interface EnrollRequest {
   device_name: string;
   client_version: string;
   platform: string;
+}
+
+export interface PublicRegistrationRequest {
+  registration_id: string;
+  device_token: string;
+  device_name: string;
+  client_version: string;
+  platform: string;
+  contact_email: string;
+  contact_name: string;
+  institution_name: string;
+  institution_ror_id?: string;
+  lab_name: string;
+  contact_opt_in: boolean;
+  accepted_consent_policy_version: string;
 }
 
 export interface ObjectDescriptor {
@@ -134,6 +151,11 @@ function integer(
     invalid(`${label} must be an integer between ${min} and ${max}`);
   }
   return value as number;
+}
+
+function boolean(value: unknown, label: string): boolean {
+  if (typeof value !== "boolean") invalid(`${label} must be a boolean`);
+  return value;
 }
 
 function pseudonymId(value: unknown, label: string): string {
@@ -267,6 +289,79 @@ export function parseEnrollRequest(value: unknown): EnrollRequest {
       pattern: CLIENT_VERSION,
     }),
     platform: text(input.platform, "platform", { max: 32, pattern: PLATFORM }),
+  };
+}
+
+export function parsePublicRegistrationRequest(
+  value: unknown,
+): PublicRegistrationRequest {
+  const input = record(value, "request");
+  exactKeys(
+    input,
+    [
+      "registration_id",
+      "device_token",
+      "device_name",
+      "client_version",
+      "platform",
+      "contact_email",
+      "contact_name",
+      "institution_name",
+      "lab_name",
+      "contact_opt_in",
+      "accepted_consent_policy_version",
+    ],
+    ["institution_ror_id"],
+    "request",
+  );
+  const contactEmail = text(input.contact_email, "contact_email", {
+    max: 254,
+    pattern: EMAIL,
+  }).toLowerCase();
+  if (contactEmail !== contactEmail.trim() || contactEmail.includes("..")) {
+    invalid("contact_email has an invalid format");
+  }
+  const ror = input.institution_ror_id;
+  return {
+    registration_id: text(input.registration_id, "registration_id", {
+      min: 36,
+      max: 36,
+      pattern: UUID,
+    }),
+    device_token: text(input.device_token, "device_token", {
+      min: 53,
+      max: 53,
+      pattern: /^sn_device_[A-Za-z0-9_-]{43}$/u,
+    }),
+    device_name: humanLabel(input.device_name, "device_name", 96),
+    client_version: text(input.client_version, "client_version", {
+      max: 64,
+      pattern: CLIENT_VERSION,
+    }),
+    platform: text(input.platform, "platform", { max: 32, pattern: PLATFORM }),
+    contact_email: contactEmail,
+    contact_name: humanLabel(input.contact_name, "contact_name", 96),
+    institution_name: humanLabel(
+      input.institution_name,
+      "institution_name",
+      160,
+    ),
+    ...(ror === undefined
+      ? {}
+      : {
+          institution_ror_id: text(ror, "institution_ror_id", {
+            min: 25,
+            max: 25,
+            pattern: ROR_ID,
+          }),
+        }),
+    lab_name: humanLabel(input.lab_name, "lab_name", 160),
+    contact_opt_in: boolean(input.contact_opt_in, "contact_opt_in"),
+    accepted_consent_policy_version: text(
+      input.accepted_consent_policy_version,
+      "accepted_consent_policy_version",
+      { max: 64, pattern: VERSION },
+    ),
   };
 }
 

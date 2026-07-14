@@ -1,0 +1,87 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://scalingneuro.com/schemas/registration-request-v1.schema.json",
+  "title": "Scaling Neuro public contributor registration request v1",
+  "description": "A replay-safe public registration. The device token and contact email must never be logged.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "registration_id",
+    "device_token",
+    "device_name",
+    "client_version",
+    "platform",
+    "contact_email",
+    "contact_name",
+    "institution_name",
+    "lab_name",
+    "contact_opt_in",
+    "accepted_consent_policy_version"
+  ],
+  "properties": {
+    "registration_id": {
+      "$ref": "https://scalingneuro.com/schemas/common-v1.schema.json#/$defs/uuid"
+    },
+    "device_token": {
+      "type": "string",
+      "minLength": 53,
+      "maxLength": 53,
+      "pattern": "^sn_device_[A-Za-z0-9_-]{43}$"
+    },
+    "device_name": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 96,
+      "pattern": "^[^\\u0000-\\u001F\\u007F]+$"
+    },
+    "client_version": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 64,
+      "pattern": "^(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)(?:-[A-Za-z0-9.-]+)?(?:\\+[A-Za-z0-9.-]+)?$"
+    },
+    "platform": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 32,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*$"
+    },
+    "contact_email": {
+      "type": "string",
+      "format": "email",
+      "minLength": 3,
+      "maxLength": 254
+    },
+    "contact_name": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 96,
+      "pattern": "^[^\\u0000-\\u001F\\u007F]+$"
+    },
+    "institution_name": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 160,
+      "pattern": "^[^\\u0000-\\u001F\\u007F]+$"
+    },
+    "institution_ror_id": {
+      "type": "string",
+      "minLength": 25,
+      "maxLength": 25,
+      "pattern": "^https://ror\\.org/0[0-9a-hj-km-np-tv-z]{8}$"
+    },
+    "lab_name": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 160,
+      "pattern": "^[^\\u0000-\\u001F\\u007F]+$"
+    },
+    "contact_opt_in": { "type": "boolean" },
+    "accepted_consent_policy_version": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 64,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9.+_-]*$"
+    }
+  }
+}

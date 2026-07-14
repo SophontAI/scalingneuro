@@ -17,8 +17,10 @@ from referencing import Registry, Resource
 ROOT = Path(__file__).resolve().parent
 
 EXAMPLE_SCHEMAS = {
+    "contribution-info-v1.example.json": "contribution-info-v1.schema.json",
     "enrollment-request-v1.example.json": "enrollment-request-v1.schema.json",
     "enrollment-response-v1.example.json": "enrollment-response-v1.schema.json",
+    "registration-request-v1.example.json": "registration-request-v1.schema.json",
     "local-manifest-v1.example.json": "local-manifest-v1.schema.json",
     "scan-sidecar-v1.example.json": "scan-sidecar-v1.schema.json",
     "upload-init-v1.example.json": "upload-init-v1.schema.json",

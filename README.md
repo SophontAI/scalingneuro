@@ -1,20 +1,20 @@
 # Scaling Neuro
 
-Scaling Neuro is a privacy-first ingestion path for building a scientifically usable, acquisition-space functional MRI archive. The current `0.1.1` pilot is a working EPI-only system: a researcher enrolls once, opens `neuro-sync`, chooses a folder of newly exported DICOMs, and lets the client classify, convert, quality-check, resume, and commit eligible scans to Cloudflare R2.
+Scaling Neuro is a privacy-first ingestion path for building a scientifically usable, acquisition-space functional MRI archive. The current `0.2.0` open beta is a working EPI-only system: a researcher registers their lab once, opens `neuro-sync`, chooses a folder of newly exported DICOMs, and lets the client classify, convert, quality-check, resume, and commit eligible scans to Cloudflare R2.
 
-This is no longer a static workflow mockup. The repository contains the cross-platform Rust client, Cloudflare control plane, D1 migrations, R2 multipart transport, strict public schemas, release automation, and the Scaling Neuro site. It remains an invite-only research pilot, not a clinical device or a substitute for IRB, consent, or data-use review.
+This is no longer a static workflow mockup. The repository contains the cross-platform Rust client, Cloudflare control plane, D1 migrations, R2 multipart transport, strict public schemas, release automation, and the Scaling Neuro site. Self-service registration is open to any lab; the tool is not a clinical device or a substitute for IRB, consent, or data-use review.
 
 ## Researcher experience
 
 1. Download the package for macOS, Windows, or Linux from [scalingneuro.com/downloads](https://scalingneuro.com/downloads/), then extract the whole bundle.
 2. Open `neuro-sync` with no arguments. It launches a loopback-only interface and the operating system’s native folder picker.
-3. Paste the one-time project invite, review the project contribution-policy version, and confirm that the selected scans are institutionally approved for that project. If the response is lost, reopening with the same invite safely recovers the client-bound enrollment instead of consuming it twice.
+3. Complete the one-minute lab form, review the contribution policy, and confirm that the selected scans are institutionally approved. If the response is lost, reopening with the same details safely recovers the same client-bound registration instead of creating duplicates.
 4. Choose the top-level DICOM export folder and click **Validate and upload**.
 5. Leave the client running. If the network drops or the app closes, reopen it and choose **Resume**; completed work is checkpointed locally.
 
 Researchers do not install Python, Docker, FSL, an AWS CLI, or Cloudflare credentials. Release bundles include the pinned multi-vendor `dcm2niix v1.0.20260416` converter under `libexec/`.
 
-An invite authorizes a workstation to access a pre-approved institutional project. It is not evidence of participant consent and cannot authorize an otherwise impermissible upload.
+Registration creates a private, revocable upload identity for a workstation and lab. It is not evidence of participant consent and cannot authorize an otherwise impermissible upload.
 
 ## What the pilot archives
 
@@ -58,8 +58,9 @@ Scientific identity uses the uncompressed NIfTI SHA-256, not a multipart ETag or
 The GUI and CLI use the same local state and resume machinery.
 
 ```bash
-# Enroll once. The default server is https://scalingneuro.com.
-neuro-sync enroll YOUR_INVITE_CODE
+# Register once. The default server is https://scalingneuro.com.
+neuro-sync register --email researcher@example.edu --name "Researcher Name" \
+  --institution "Example University" --lab "Example Neuroimaging Lab"
 
 # Validate, convert, and upload one exported folder.
 neuro-sync upload /path/to/dicom-export
@@ -116,7 +117,7 @@ node --check dist/_worker.js
 
 The Worker tests exercise lost-response enrollment replay, invite exhaustion, strict request parsing, multipart allocation, part signing, authoritative post-completion HEAD verification, manifest/schema validity, idempotency, withdrawal/tombstones, cleanup, and hostile cases using local Cloudflare bindings. The Rust suite includes owner-only pending enrollment recovery, resume-context binding, synthetic Part 10 DICOM discovery/classification, and a full offline conversion/scrubbing/bundling dry run.
 
-### Local Worker and invite
+### Local Worker and registration
 
 ```bash
 cp worker/.dev.vars.example worker/.dev.vars
@@ -126,18 +127,13 @@ npm run db:migrate:local --prefix worker
 npm run dev --prefix worker
 ```
 
-In another terminal, seed a one-use invite using the same local admin token:
-
-```bash
-ADMIN_API_TOKEN='your-local-admin-token' \
-  npm run seed:local --prefix worker
-```
-
-Then enroll a source build against the local API:
+Then register a source build against the local API:
 
 ```bash
 cargo run --manifest-path client/Cargo.toml -- \
-  enroll YOUR_INVITE_CODE --server http://127.0.0.1:8787
+  register --email researcher@example.edu --name Researcher \
+  --institution University --lab Neuroimaging \
+  --server http://127.0.0.1:8787
 ```
 
 An unenrolled offline dry run is also supported. Point the client at the exact pinned converter when running from source:
@@ -152,9 +148,13 @@ Never place real participant scans or populated secret files in the repository. 
 
 ## Administration
 
-The admin API creates/revokes invites and devices, withdraws uploads, and records tombstone/audit state. Use the bundled wrapper rather than hand-writing requests:
+The admin API lists public registrations, revokes devices, withdraws uploads, and retains invite administration for private named projects. Use the bundled wrapper rather than hand-writing requests:
 
 ```bash
+SCALING_NEURO_API_URL=https://scalingneuro.com \
+ADMIN_API_TOKEN='...' \
+npm run admin --prefix worker -- registrations
+
 SCALING_NEURO_API_URL=https://scalingneuro.com \
 ADMIN_API_TOKEN='...' \
 npm run admin --prefix worker -- invite \
@@ -171,7 +171,7 @@ ADMIN_API_TOKEN='...' \
 npm run admin --prefix worker -- revoke-device --id DEVICE_UUID
 ```
 
-Plaintext invite codes and device tokens are shown only when issued; D1 stores hashes. Site pseudonym keys are encrypted with the production site-key encryption secret.
+Device tokens and private invite codes are shown only when issued; D1 stores hashes. Site pseudonym keys and public-registration email addresses are encrypted with the production site-key encryption secret.
 
 ## Deployment and releases
 

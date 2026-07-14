@@ -63,6 +63,33 @@ pub struct EnrollRequest {
     pub platform: String,
 }
 
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct ContributionInfo {
+    pub registration_open: bool,
+    pub project_name: String,
+    pub consent_policy_version: String,
+    pub policy_url: String,
+    pub self_service_quota_bytes: u64,
+    pub minimum_client_version: String,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct RegisterRequest {
+    pub registration_id: String,
+    pub device_token: String,
+    pub device_name: String,
+    pub client_version: String,
+    pub platform: String,
+    pub contact_email: String,
+    pub contact_name: String,
+    pub institution_name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub institution_ror_id: Option<String>,
+    pub lab_name: String,
+    pub contact_opt_in: bool,
+    pub accepted_consent_policy_version: String,
+}
+
 #[derive(Clone, Deserialize)]
 pub struct EnrollResponse {
     #[serde(alias = "enrollmentId")]
@@ -247,6 +274,16 @@ impl IngestApi {
             platform,
         };
         self.send_idempotent(|| Ok(self.client.post(self.url("/v1/enroll")).json(&request)))
+            .await
+    }
+
+    pub async fn contribution_info(&self) -> Result<ContributionInfo> {
+        self.send_idempotent(|| Ok(self.client.get(self.url("/v1/contribution"))))
+            .await
+    }
+
+    pub async fn register(&self, request: &RegisterRequest) -> Result<EnrollResponse> {
+        self.send_idempotent(|| Ok(self.client.post(self.url("/v1/register")).json(request)))
             .await
     }
 

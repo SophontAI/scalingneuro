@@ -18,6 +18,7 @@ export interface DeviceContext {
   accepted_consent_policy_version: string;
   current_consent_policy_version: string;
   project_name: string;
+  upload_quota_bytes: number | null;
 }
 
 export type UploadStatus =

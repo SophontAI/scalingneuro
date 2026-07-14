@@ -1,0 +1,14 @@
+{
+  "registration_id": "0190f86f-e0de-7f2a-a24c-0a6abf16ec81",
+  "device_token": "sn_device_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+  "device_name": "scanner-transfer-workstation",
+  "client_version": "0.2.0",
+  "platform": "linux-x64",
+  "contact_email": "researcher@example.edu",
+  "contact_name": "Example Researcher",
+  "institution_name": "Example University",
+  "institution_ror_id": "https://ror.org/03yrm5c26",
+  "lab_name": "Example Neuroimaging Lab",
+  "contact_opt_in": true,
+  "accepted_consent_policy_version": "open-epi-1.0.0"
+}

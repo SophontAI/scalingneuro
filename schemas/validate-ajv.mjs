@@ -12,7 +12,7 @@ const Ajv2020 = requireFromWorker("ajv/dist/2020").default;
 const ajv = new Ajv2020({
   allErrors: true,
   strict: true,
-  formats: { "date-time": true, uri: true, uuid: true },
+  formats: { "date-time": true, email: true, uri: true, uuid: true },
 });
 
 const readJson = (file) => JSON.parse(fs.readFileSync(file, "utf8"));
@@ -28,9 +28,11 @@ for (const name of schemaFiles) {
 const exampleSchemas = {
   "api-error-v1.example.json": "api-error-v1.schema.json",
   "archive-manifest-v1.example.json": "archive-manifest-v1.schema.json",
+  "contribution-info-v1.example.json": "contribution-info-v1.schema.json",
   "enrollment-request-v1.example.json": "enrollment-request-v1.schema.json",
   "enrollment-response-v1.example.json": "enrollment-response-v1.schema.json",
   "local-manifest-v1.example.json": "local-manifest-v1.schema.json",
+  "registration-request-v1.example.json": "registration-request-v1.schema.json",
   "scan-sidecar-v1.example.json": "scan-sidecar-v1.schema.json",
   "upload-complete-v1.example.json": "upload-complete-v1.schema.json",
   "upload-init-v1.example.json": "upload-init-v1.schema.json",

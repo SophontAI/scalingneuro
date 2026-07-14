@@ -74,7 +74,7 @@ jobs:
           tag=$(gh api "repos/${GITHUB_REPOSITORY}/releases?per_page=100" \
             --jq '[.[] | select(.draft == false and (.tag_name | startswith("client-v")))] | sort_by(.published_at) | reverse | .[0].tag_name // ""')
           if [[ -z "$tag" ]]; then
-            echo "No published client release exists; leaving the invite-request download page in place."
+            echo "No published client release exists; leaving the download-unavailable page in place."
             exit 0
           fi
 
@@ -100,7 +100,7 @@ jobs:
           jq --exit-status --arg version "$version" '
             .schema_version == "1.0.0" and
             .version == $version and
-            .channel == "pilot" and
+            (.channel == "pilot" or .channel == "open-beta") and
             .checksums_url == "/downloads/SHA256SUMS" and
             ((.artifacts | keys | sort) == ["linux", "macos", "windows"]) and
             (all(.artifacts[];

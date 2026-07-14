@@ -36,6 +36,7 @@ export async function authenticateDevice(
             d.revoked_at,
             p.consent_policy_version AS current_consent_policy_version,
             p.name AS project_name,
+            p.upload_quota_bytes,
             p.active AS project_active
      FROM devices d
      JOIN projects p ON p.id = d.project_id
@@ -59,7 +60,7 @@ export async function authenticateDevice(
     throw new AppError(
       "CONSENT_POLICY_UPDATE_REQUIRED",
       409,
-      "Project contribution policy has changed; obtain a new enrollment invite",
+      "Project contribution policy has changed; open neuro-sync to review it",
       { consent_policy_version: row.current_consent_policy_version },
     );
   }
@@ -75,6 +76,7 @@ export async function authenticateDevice(
     accepted_consent_policy_version: row.accepted_consent_policy_version,
     current_consent_policy_version: row.current_consent_policy_version,
     project_name: row.project_name,
+    upload_quota_bytes: row.upload_quota_bytes,
   };
 }
 

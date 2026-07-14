@@ -19,8 +19,8 @@ use zeroize::Zeroize;
 use crate::{
     MANIFEST_SCHEMA_VERSION, PINNED_DCM2NIIX_VERSION,
     api::{
-        CompleteUploadRequest, CreateUploadResponse, IngestApi, MultipartObject, has_error_code,
-        normalize_base_url,
+        CompleteUploadRequest, ContributionInfo, CreateUploadResponse, IngestApi, MultipartObject,
+        RegisterRequest, has_error_code, normalize_base_url,
     },
     bundle::{
         BundleRequest, METADATA_POLICY_ID, METADATA_POLICY_VERSION, analyze_converted,
@@ -55,6 +55,28 @@ struct PendingEnrollment {
     device_name: String,
     client_version: String,
     platform: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct ContributorDetails {
+    pub contact_email: String,
+    pub contact_name: String,
+    pub institution_name: String,
+    pub institution_ror_id: Option<String>,
+    pub lab_name: String,
+    pub contact_opt_in: bool,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+struct PendingRegistration {
+    api_origin: String,
+    registration_id: String,
+    device_token: String,
+    device_name: String,
+    client_version: String,
+    platform: String,
+    details: ContributorDetails,
+    accepted_consent_policy_version: String,
 }
 
 #[derive(Clone)]
@@ -160,6 +182,69 @@ impl Runtime {
             Ok(()) => {}
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
             Err(_) => tracing::warn!("could not remove completed pending enrollment state"),
+        }
+        Ok(config)
+    }
+
+    pub async fn contribution_info(&self, api_url: &str) -> Result<ContributionInfo> {
+        let api_origin = normalize_base_url(api_url)?;
+        IngestApi::unauthenticated(&api_origin)?
+            .contribution_info()
+            .await
+    }
+
+    pub async fn register(
+        &self,
+        details: ContributorDetails,
+        accepted_consent_policy_version: String,
+        api_url: &str,
+        device_name: String,
+    ) -> Result<ClientConfig> {
+        let details = normalize_contributor_details(details)?;
+        let api_origin = normalize_base_url(api_url)?;
+        let pending = load_or_create_pending_registration(
+            &self.paths,
+            &api_origin,
+            device_name,
+            details,
+            accepted_consent_policy_version,
+        )?;
+        let request = RegisterRequest {
+            registration_id: pending.registration_id.clone(),
+            device_token: pending.device_token.clone(),
+            device_name: pending.device_name.clone(),
+            client_version: pending.client_version.clone(),
+            platform: pending.platform.clone(),
+            contact_email: pending.details.contact_email.clone(),
+            contact_name: pending.details.contact_name.clone(),
+            institution_name: pending.details.institution_name.clone(),
+            institution_ror_id: pending.details.institution_ror_id.clone(),
+            lab_name: pending.details.lab_name.clone(),
+            contact_opt_in: pending.details.contact_opt_in,
+            accepted_consent_policy_version: pending.accepted_consent_policy_version.clone(),
+        };
+        let response = IngestApi::unauthenticated(&api_origin)?
+            .register(&request)
+            .await?;
+        if response.enrollment_id != pending.registration_id
+            || response.device_token != pending.device_token
+        {
+            bail!("registration response did not return the client-bound device identity");
+        }
+        let config = ClientConfig {
+            api_url: api_origin,
+            device_token: response.device_token,
+            site_id: response.site_id,
+            project_id: response.project_id,
+            project_name: response.project_name,
+            consent_policy_version: response.consent_policy_version,
+            pseudonym_key_b64: response.pseudonym_key_b64,
+        };
+        config.save(&self.paths)?;
+        match fs::remove_file(&self.paths.pending_registration) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(_) => tracing::warn!("could not remove completed pending registration state"),
         }
         Ok(config)
     }
@@ -782,6 +867,131 @@ fn load_or_create_pending_enrollment(
     validate_pending_enrollment(&pending)?;
     write_private_json_atomic(&paths.pending_enrollment, &pending)?;
     Ok(pending)
+}
+
+fn normalize_contributor_details(mut details: ContributorDetails) -> Result<ContributorDetails> {
+    details.contact_email = details.contact_email.trim().to_lowercase();
+    details.contact_name = details.contact_name.trim().to_owned();
+    details.institution_name = details.institution_name.trim().to_owned();
+    details.lab_name = details.lab_name.trim().to_owned();
+    details.institution_ror_id = details
+        .institution_ror_id
+        .take()
+        .map(|value| value.trim().to_lowercase())
+        .filter(|value| !value.is_empty());
+    if !details.contact_email.contains('@')
+        || details.contact_email.len() > 254
+        || details.contact_email.contains(char::is_whitespace)
+        || details.contact_email.contains("..")
+    {
+        bail!("contact email is invalid");
+    }
+    for (name, value, maximum) in [
+        ("contact name", &details.contact_name, 96),
+        ("institution", &details.institution_name, 160),
+        ("lab name", &details.lab_name, 160),
+    ] {
+        if value.is_empty()
+            || value.chars().count() > maximum
+            || value.chars().any(char::is_control)
+        {
+            bail!("{name} is invalid");
+        }
+    }
+    if let Some(ror) = &details.institution_ror_id {
+        let suffix = ror.strip_prefix("https://ror.org/0");
+        if ror.len() != 25
+            || !suffix.is_some_and(|value| {
+                value.len() == 8
+                    && value.bytes().all(|byte| {
+                        byte.is_ascii_digit()
+                            || matches!(byte, b'a'..=b'h' | b'j'..=b'k' | b'm'..=b'n' | b'p'..=b't' | b'v'..=b'z')
+                    })
+            })
+        {
+            bail!("institution ROR ID is invalid");
+        }
+    }
+    Ok(details)
+}
+
+fn load_or_create_pending_registration(
+    paths: &AppPaths,
+    api_origin: &str,
+    device_name: String,
+    details: ContributorDetails,
+    accepted_consent_policy_version: String,
+) -> Result<PendingRegistration> {
+    if paths.pending_registration.is_file() {
+        restrict_private_file(&paths.pending_registration)?;
+        let mut pending: PendingRegistration = serde_json::from_slice(
+            &fs::read(&paths.pending_registration)
+                .context("could not read pending registration state")?,
+        )
+        .context("pending registration state is invalid")?;
+        // The email identifies the human retry. Preserve the entire first
+        // request if they retype another field differently after a lost
+        // response, because the Worker binds replays to that exact request.
+        if pending.api_origin == api_origin
+            && pending.details.contact_email == details.contact_email
+            && pending.accepted_consent_policy_version == accepted_consent_policy_version
+        {
+            validate_pending_registration(&pending)?;
+            let current_platform = format!("{}-{}", std::env::consts::OS, std::env::consts::ARCH);
+            if pending.client_version != crate::CLIENT_VERSION
+                || pending.platform != current_platform
+            {
+                pending.client_version = crate::CLIENT_VERSION.into();
+                pending.platform = current_platform;
+                write_private_json_atomic(&paths.pending_registration, &pending)?;
+            }
+            return Ok(pending);
+        }
+    }
+    let mut token_bytes = [0_u8; 32];
+    rand::rng().fill_bytes(&mut token_bytes);
+    let device_token = format!("sn_device_{}", URL_SAFE_NO_PAD.encode(token_bytes));
+    token_bytes.zeroize();
+    let pending = PendingRegistration {
+        api_origin: api_origin.into(),
+        registration_id: Uuid::new_v4().to_string(),
+        device_token,
+        device_name,
+        client_version: crate::CLIENT_VERSION.into(),
+        platform: format!("{}-{}", std::env::consts::OS, std::env::consts::ARCH),
+        details,
+        accepted_consent_policy_version,
+    };
+    validate_pending_registration(&pending)?;
+    write_private_json_atomic(&paths.pending_registration, &pending)?;
+    Ok(pending)
+}
+
+fn validate_pending_registration(pending: &PendingRegistration) -> Result<()> {
+    let device_token_suffix = pending.device_token.strip_prefix("sn_device_");
+    if normalize_base_url(&pending.api_origin)? != pending.api_origin
+        || Uuid::parse_str(&pending.registration_id)
+            .ok()
+            .and_then(|value| value.get_version())
+            != Some(uuid::Version::Random)
+        || !device_token_suffix.is_some_and(|value| {
+            value.len() == 43
+                && value
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+        })
+        || pending.device_name.trim().is_empty()
+        || pending.device_name.chars().count() > 96
+        || pending.device_name.chars().any(char::is_control)
+        || pending.client_version.is_empty()
+        || pending.platform.is_empty()
+        || pending.accepted_consent_policy_version.is_empty()
+        || pending.accepted_consent_policy_version.len() > 64
+    {
+        bail!("pending registration state is invalid");
+    }
+    normalize_contributor_details(pending.details.clone())?;
+    Ok(())
 }
 
 fn validate_pending_enrollment(pending: &PendingEnrollment) -> Result<()> {
@@ -2029,5 +2239,123 @@ mod tests {
         .unwrap();
         assert_ne!(first.enrollment_id, replacement.enrollment_id);
         assert_ne!(first.device_token, replacement.device_token);
+    }
+
+    #[test]
+    fn pending_public_registration_is_private_and_exactly_replayable() {
+        let directory = tempfile::tempdir().unwrap();
+        let paths = AppPaths::discover(Some(directory.path())).unwrap();
+        paths.initialize().unwrap();
+        let details = ContributorDetails {
+            contact_email: "Researcher@Example.edu".into(),
+            contact_name: "Example Researcher".into(),
+            institution_name: "Example University".into(),
+            institution_ror_id: Some("https://ror.org/03yrm5c26".into()),
+            lab_name: "Example Neuroimaging Lab".into(),
+            contact_opt_in: true,
+        };
+        let normalized = normalize_contributor_details(details).unwrap();
+        let first = load_or_create_pending_registration(
+            &paths,
+            "https://scalingneuro.com",
+            "Fixture workstation".into(),
+            normalized.clone(),
+            "open-epi-1.0.0".into(),
+        )
+        .unwrap();
+        let second = load_or_create_pending_registration(
+            &paths,
+            "https://scalingneuro.com",
+            "Changed workstation".into(),
+            normalized.clone(),
+            "open-epi-1.0.0".into(),
+        )
+        .unwrap();
+        assert_eq!(first.registration_id, second.registration_id);
+        assert_eq!(first.device_token, second.device_token);
+        assert_eq!(second.device_name, "Fixture workstation");
+        assert_eq!(second.details.contact_email, "researcher@example.edu");
+
+        let replacement = load_or_create_pending_registration(
+            &paths,
+            "https://scalingneuro.com",
+            "Fixture workstation".into(),
+            ContributorDetails {
+                contact_email: "other@example.edu".into(),
+                lab_name: "Different Lab".into(),
+                ..normalized
+            },
+            "open-epi-1.0.0".into(),
+        )
+        .unwrap();
+        assert_ne!(first.registration_id, replacement.registration_id);
+        assert_ne!(first.device_token, replacement.device_token);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                fs::metadata(&paths.pending_registration)
+                    .unwrap()
+                    .permissions()
+                    .mode()
+                    & 0o777,
+                0o600
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn public_registration_saves_an_upload_ready_client_configuration() {
+        use axum::{Json, Router, http::StatusCode, routing::post};
+
+        let app = Router::new().route(
+            "/v1/register",
+            post(|Json(body): Json<serde_json::Value>| async move {
+                assert_eq!(body["client_version"], crate::CLIENT_VERSION);
+                assert_eq!(body["contact_email"], "researcher@example.edu");
+                assert_eq!(body["accepted_consent_policy_version"], "open-epi-1.0.0");
+                (
+                    StatusCode::CREATED,
+                    Json(serde_json::json!({
+                        "enrollment_id": body["registration_id"],
+                        "device_token": body["device_token"],
+                        "device_id": "11111111-1111-4111-8111-111111111111",
+                        "site_id": "22222222-2222-4222-8222-222222222222",
+                        "project_id": "33333333-3333-4333-8333-333333333333",
+                        "project_name": "Scaling Neuro public EPI contribution",
+                        "consent_policy_version": "open-epi-1.0.0",
+                        "pseudonym_key_b64": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8="
+                    })),
+                )
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let directory = tempfile::tempdir().unwrap();
+        let runtime = Runtime::initialize(Some(directory.path())).unwrap();
+        let config = runtime
+            .register(
+                ContributorDetails {
+                    contact_email: "Researcher@Example.edu".into(),
+                    contact_name: "Example Researcher".into(),
+                    institution_name: "Example University".into(),
+                    institution_ror_id: None,
+                    lab_name: "Example Lab".into(),
+                    contact_opt_in: false,
+                },
+                "open-epi-1.0.0".into(),
+                &format!("http://{address}"),
+                "Fixture workstation".into(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(config.project_name, "Scaling Neuro public EPI contribution");
+        assert_eq!(
+            ClientConfig::load(&runtime.paths).unwrap().site_id,
+            config.site_id
+        );
+        assert!(!runtime.paths.pending_registration.exists());
+        server.abort();
     }
 }

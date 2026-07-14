@@ -47,10 +47,28 @@ async function post(path, body) {
   process.stdout.write(text.endsWith("\n") ? text : `${text}\n`);
 }
 
+async function get(path) {
+  if (!adminToken) fail("ADMIN_API_TOKEN is required");
+  let response;
+  try {
+    response = await fetch(`${endpoint}${path}`, {
+      headers: { authorization: `Bearer ${adminToken}` },
+    });
+  } catch (error) {
+    fail(`Unable to reach ${endpoint}: ${error instanceof Error ? error.message : "network error"}`);
+  }
+  const text = await response.text();
+  if (!response.ok) fail(`Request failed (${response.status}): ${text.trim()}`);
+  process.stdout.write(text.endsWith("\n") ? text : `${text}\n`);
+}
+
 const [command, ...args] = process.argv.slice(2);
 const values = options(args);
 
 switch (command) {
+  case "registrations":
+    await get("/v1/admin/registrations");
+    break;
   case "invite": {
     const body = {
       site_slug: required(values, "site-slug"),
@@ -77,6 +95,7 @@ switch (command) {
     fail(
       "Usage: admin.mjs invite --site-slug SLUG --site-name NAME --project-slug SLUG " +
         "--project-name NAME --consent-policy-version VERSION [--expires-seconds N] [--max-uses N]\n" +
+        "       admin.mjs registrations\n" +
         "       admin.mjs revoke-invite|revoke-device|withdraw-upload --id UUID",
     );
 }

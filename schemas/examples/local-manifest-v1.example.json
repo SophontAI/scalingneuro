@@ -4,7 +4,7 @@
   "site_id": "0190f870-1111-7f2a-a24c-0a6abf16ec81",
   "project_id": "0190f870-2222-7f2a-a24c-0a6abf16ec81",
   "consent_policy_version": "pilot-2026-07",
-  "client_version": "0.1.1",
+  "client_version": "0.2.0",
   "metadata_policy": {
     "policy_id": "scaling-neuro-epi-default-deny",
     "policy_version": "1.1.0"

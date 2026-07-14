@@ -16,12 +16,15 @@ install -m 0644 \
   "$ROOT_DIR/app.js" \
   "$DIST_DIR/"
 install -m 0644 "$ROOT_DIR/downloads/index.html" "$DIST_DIR/downloads/"
+install -m 0644 "$ROOT_DIR/docs/contribution-policy.html" "$DIST_DIR/docs/"
 
 for schema in \
   common-v1.schema.json \
   scan-sidecar-v1.schema.json \
   metadata-policy-v1.schema.json \
   metadata-policy-v1.json \
+  contribution-info-v1.schema.json \
+  registration-request-v1.schema.json \
   enrollment-request-v1.schema.json \
   enrollment-response-v1.schema.json \
   local-manifest-v1.schema.json \

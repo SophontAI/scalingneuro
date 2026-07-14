@@ -2,7 +2,9 @@ import { authenticateAdmin, authenticateDevice } from "./auth";
 import {
   canonicalJson,
   constantTimeEqual,
+  decryptRegistrationEmail,
   decryptSiteKey,
+  encryptRegistrationEmail,
   encryptSiteKey,
   pseudonymKeyBase64,
   randomBytes,
@@ -37,12 +39,19 @@ import type {
   CompleteUploadRequest,
   CreateUploadRequest,
   EnrollRequest,
+  PublicRegistrationRequest,
   SignPartRequest,
 } from "./validation";
 import packageManifest from "../package.json";
 
 const MINIMUM_CLIENT_VERSION = "0.1.1";
+const MINIMUM_SELF_SERVICE_CLIENT_VERSION = "0.2.0";
 const SERVICE_VERSION = packageManifest.version;
+const PUBLIC_PROJECT_NAME = "Scaling Neuro public EPI contribution";
+const PUBLIC_PROJECT_SLUG = "public-epi";
+const PUBLIC_CONSENT_POLICY_VERSION = "open-epi-1.0.0";
+const PUBLIC_UPLOAD_QUOTA_BYTES = 250 * 1024 ** 3;
+const PUBLIC_REGISTRATIONS_PER_DAY_PER_NETWORK = 5;
 
 function semanticVersion(
   value: string,
@@ -60,9 +69,9 @@ function semanticVersion(
   };
 }
 
-export function clientVersionIsSupported(value: string): boolean {
+function clientVersionAtLeast(value: string, minimumValue: string): boolean {
   const current = semanticVersion(value);
-  const minimum = semanticVersion(MINIMUM_CLIENT_VERSION);
+  const minimum = semanticVersion(minimumValue);
   const firstDifference =
     current === null || minimum === null
       ? -2
@@ -76,13 +85,28 @@ export function clientVersionIsSupported(value: string): boolean {
   );
 }
 
+export function clientVersionIsSupported(value: string): boolean {
+  return clientVersionAtLeast(value, MINIMUM_CLIENT_VERSION);
+}
+
 function requireSupportedClientVersion(value: string): void {
   if (!clientVersionIsSupported(value)) {
     throw new AppError(
       "CLIENT_UPDATE_REQUIRED",
       426,
-      "This client is older than the active privacy contract; install the current pilot release",
+      "This client is older than the active privacy contract; install the current release",
       { minimum_client_version: MINIMUM_CLIENT_VERSION },
+    );
+  }
+}
+
+function requireSelfServiceClientVersion(value: string): void {
+  if (!clientVersionAtLeast(value, MINIMUM_SELF_SERVICE_CLIENT_VERSION)) {
+    throw new AppError(
+      "CLIENT_UPDATE_REQUIRED",
+      426,
+      "Install the current client to use open self-service registration",
+      { minimum_client_version: MINIMUM_SELF_SERVICE_CLIENT_VERSION },
     );
   }
 }
@@ -111,6 +135,25 @@ interface EnrollmentRow {
   project_name: string;
   accepted_consent_policy_version: string;
   pseudonym_key_ciphertext: string;
+}
+
+interface PublicRegistrationRow extends EnrollmentRow {
+  registration_id: string;
+  request_hash: string;
+}
+
+interface ContributorRegistrationRow {
+  id: string;
+  site_id: string;
+  project_id: string;
+  device_id: string;
+  email_ciphertext: string;
+  contact_name: string;
+  institution_name: string;
+  institution_ror_id: string | null;
+  lab_name: string;
+  contact_opt_in: number;
+  created_at: number;
 }
 
 interface SiteRow {
@@ -854,6 +897,350 @@ async function retireUnsupportedActiveUpload(
   }).run();
 }
 
+export function publicContributionInfo(): Record<string, unknown> {
+  return {
+    registration_open: true,
+    project_name: PUBLIC_PROJECT_NAME,
+    consent_policy_version: PUBLIC_CONSENT_POLICY_VERSION,
+    policy_url: "https://scalingneuro.com/docs/contribution-policy.html",
+    self_service_quota_bytes: PUBLIC_UPLOAD_QUOTA_BYTES,
+    minimum_client_version: MINIMUM_SELF_SERVICE_CLIENT_VERSION,
+  };
+}
+
+function publicRegistrationRequestHash(
+  input: PublicRegistrationRequest,
+): Promise<string> {
+  return sha256Hex(
+    canonicalJson({
+      registration_id: input.registration_id,
+      device_name: input.device_name,
+      contact_email: input.contact_email,
+      contact_name: input.contact_name,
+      institution_name: input.institution_name,
+      institution_ror_id: input.institution_ror_id ?? null,
+      lab_name: input.lab_name,
+      contact_opt_in: input.contact_opt_in,
+      accepted_consent_policy_version:
+        input.accepted_consent_policy_version,
+    }),
+  );
+}
+
+async function findPublicRegistrationReplay(
+  env: Env,
+  registrationId: string,
+): Promise<PublicRegistrationRow | null> {
+  return env.DB.prepare(
+    `SELECT r.id AS registration_id,
+            r.request_hash,
+            d.id AS device_id,
+            d.enrollment_id,
+            d.token_hash,
+            d.revoked_at,
+            d.site_id,
+            d.project_id,
+            p.name AS project_name,
+            d.accepted_consent_policy_version,
+            s.pseudonym_key_ciphertext
+     FROM contributor_registrations r
+     JOIN devices d ON d.id = r.device_id
+     JOIN projects p ON p.id = r.project_id
+     JOIN sites s ON s.id = r.site_id
+     WHERE r.id = ?1
+     LIMIT 1`,
+  )
+    .bind(registrationId)
+    .first<PublicRegistrationRow>();
+}
+
+async function publicRegistrationResponse(
+  env: Env,
+  existing: PublicRegistrationRow,
+  input: PublicRegistrationRequest,
+  requestHash: string,
+  deviceTokenHash: string,
+): Promise<Record<string, unknown> | null> {
+  if (
+    existing.revoked_at !== null ||
+    existing.request_hash !== requestHash ||
+    !(await constantTimeEqual(existing.token_hash, deviceTokenHash))
+  ) {
+    return null;
+  }
+  await env.DB.prepare(
+    "UPDATE devices SET client_version = ?1, platform = ?2, last_seen_at = ?3 WHERE id = ?4",
+  )
+    .bind(input.client_version, input.platform, nowSeconds(), existing.device_id)
+    .run();
+  const siteKey = await decryptSiteKey(
+    existing.pseudonym_key_ciphertext,
+    existing.site_id,
+    env.SITE_KEY_ENCRYPTION_KEY_B64,
+  );
+  return {
+    enrollment_id: existing.enrollment_id,
+    device_token: input.device_token,
+    device_id: existing.device_id,
+    site_id: existing.site_id,
+    project_id: existing.project_id,
+    project_name: existing.project_name,
+    consent_policy_version: existing.accepted_consent_policy_version,
+    pseudonym_key_b64: pseudonymKeyBase64(siteKey),
+  };
+}
+
+export async function registerContributor(
+  request: Request,
+  env: Env,
+  input: PublicRegistrationRequest,
+): Promise<Record<string, unknown>> {
+  requireSelfServiceClientVersion(input.client_version);
+  if (
+    input.accepted_consent_policy_version !== PUBLIC_CONSENT_POLICY_VERSION
+  ) {
+    throw new AppError(
+      "CONSENT_POLICY_UPDATE_REQUIRED",
+      409,
+      "Review and accept the current public contribution policy",
+      { consent_policy_version: PUBLIC_CONSENT_POLICY_VERSION },
+    );
+  }
+  const requestHash = await publicRegistrationRequestHash(input);
+  const deviceTokenHash = await sha256Hex(input.device_token);
+  const existing = await findPublicRegistrationReplay(
+    env,
+    input.registration_id,
+  );
+  if (existing) {
+    const response = await publicRegistrationResponse(
+      env,
+      existing,
+      input,
+      requestHash,
+      deviceTokenHash,
+    );
+    if (response) return response;
+    throw new AppError(
+      "CONFLICT",
+      409,
+      "Registration operation conflicts with an existing enrollment",
+    );
+  }
+
+  const requesterAddress = request.headers.get("cf-connecting-ip")?.trim();
+  if (
+    requesterAddress &&
+    requesterAddress.length <= 64 &&
+    /^[A-Fa-f0-9:.]+$/u.test(requesterAddress)
+  ) {
+    const day = Math.floor(nowSeconds() / 86_400);
+    const requesterWindowHash = await sha256Hex(
+      `${env.SITE_KEY_ENCRYPTION_KEY_B64}\0${day}\0${requesterAddress}`,
+    );
+    const limited = await env.DB.prepare(
+      `INSERT INTO contributor_registration_limits
+         (requester_window_hash, attempts, expires_at)
+       VALUES (?1, 1, ?2)
+       ON CONFLICT(requester_window_hash) DO UPDATE
+       SET attempts = attempts + 1
+       WHERE attempts < ?3`,
+    )
+      .bind(
+        requesterWindowHash,
+        (day + 2) * 86_400,
+        PUBLIC_REGISTRATIONS_PER_DAY_PER_NETWORK,
+      )
+      .run();
+    if ((limited.meta.changes ?? 0) !== 1) {
+      throw new AppError(
+        "RATE_LIMITED",
+        429,
+        "Too many new registrations from this network; try again tomorrow or contact Scaling Neuro",
+      );
+    }
+  }
+
+  const timestamp = nowSeconds();
+  const siteId = crypto.randomUUID();
+  const projectId = crypto.randomUUID();
+  const deviceId = crypto.randomUUID();
+  const siteKey = randomBytes(32);
+  const siteKeyCiphertext = await encryptSiteKey(
+    siteKey,
+    siteId,
+    env.SITE_KEY_ENCRYPTION_KEY_B64,
+  );
+  const emailCiphertext = await encryptRegistrationEmail(
+    input.contact_email,
+    input.registration_id,
+    env.SITE_KEY_ENCRYPTION_KEY_B64,
+  );
+  const emailHash = await sha256Hex(input.contact_email);
+  const siteName = `${input.lab_name} — ${input.institution_name}`;
+  const siteSlug = `public-${input.registration_id}`;
+
+  try {
+    await env.DB.batch([
+      env.DB.prepare(
+        `INSERT INTO sites
+           (id, slug, name, pseudonym_key_ciphertext, created_at)
+         VALUES (?1, ?2, ?3, ?4, ?5)`,
+      ).bind(siteId, siteSlug, siteName, siteKeyCiphertext, timestamp),
+      env.DB.prepare(
+        `INSERT INTO projects
+           (id, site_id, slug, name, consent_policy_version, active,
+            upload_quota_bytes, created_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, 1, ?6, ?7)`,
+      ).bind(
+        projectId,
+        siteId,
+        PUBLIC_PROJECT_SLUG,
+        PUBLIC_PROJECT_NAME,
+        PUBLIC_CONSENT_POLICY_VERSION,
+        PUBLIC_UPLOAD_QUOTA_BYTES,
+        timestamp,
+      ),
+      env.DB.prepare(
+        `INSERT INTO devices
+           (id, enrollment_id, invite_id, site_id, project_id, token_hash,
+            device_name, platform, client_version,
+            accepted_consent_policy_version, created_at, last_seen_at)
+         VALUES (?1, ?2, NULL, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?10)`,
+      ).bind(
+        deviceId,
+        input.registration_id,
+        siteId,
+        projectId,
+        deviceTokenHash,
+        input.device_name,
+        input.platform,
+        input.client_version,
+        PUBLIC_CONSENT_POLICY_VERSION,
+        timestamp,
+      ),
+      env.DB.prepare(
+        `INSERT INTO contributor_registrations
+           (id, site_id, project_id, device_id, request_hash, email_hash,
+            email_ciphertext, contact_name, institution_name,
+            institution_ror_id, lab_name, contact_opt_in, created_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)`,
+      ).bind(
+        input.registration_id,
+        siteId,
+        projectId,
+        deviceId,
+        requestHash,
+        emailHash,
+        emailCiphertext,
+        input.contact_name,
+        input.institution_name,
+        input.institution_ror_id ?? null,
+        input.lab_name,
+        input.contact_opt_in ? 1 : 0,
+        timestamp,
+      ),
+      auditStatement(env, "contributor.registered", {
+        siteId,
+        projectId,
+        deviceId,
+        subjectType: "registration",
+        subjectId: input.registration_id,
+        createdAt: timestamp,
+      }),
+    ]);
+  } catch {
+    const raced = await findPublicRegistrationReplay(
+      env,
+      input.registration_id,
+    );
+    if (raced) {
+      const response = await publicRegistrationResponse(
+        env,
+        raced,
+        input,
+        requestHash,
+        deviceTokenHash,
+      );
+      if (response) return response;
+    }
+    throw new AppError("CONFLICT", 409, "Unable to create registration");
+  }
+
+  return {
+    enrollment_id: input.registration_id,
+    device_token: input.device_token,
+    device_id: deviceId,
+    site_id: siteId,
+    project_id: projectId,
+    project_name: PUBLIC_PROJECT_NAME,
+    consent_policy_version: PUBLIC_CONSENT_POLICY_VERSION,
+    pseudonym_key_b64: pseudonymKeyBase64(siteKey),
+  };
+}
+
+export async function listContributorRegistrations(
+  request: Request,
+  env: Env,
+): Promise<Record<string, unknown>> {
+  await authenticateAdmin(request, env);
+  const rows = await env.DB.prepare(
+    `SELECT r.id, r.site_id, r.project_id, r.device_id,
+            r.email_ciphertext, r.contact_name, r.institution_name,
+            r.institution_ror_id, r.lab_name, r.contact_opt_in, r.created_at,
+            d.platform, d.client_version, d.last_seen_at, d.revoked_at,
+            COALESCE(SUM(CASE WHEN u.status = 'committed' THEN u.series_count ELSE 0 END), 0)
+              AS committed_series,
+            COALESCE(SUM(CASE WHEN u.status = 'committed' THEN u.total_bytes ELSE 0 END), 0)
+              AS committed_bytes,
+            COUNT(DISTINCT CASE WHEN u.status = 'committed' THEN u.id END)
+              AS committed_uploads
+     FROM contributor_registrations r
+     JOIN devices d ON d.id = r.device_id
+     LEFT JOIN uploads u ON u.project_id = r.project_id
+     GROUP BY r.id
+     ORDER BY r.created_at DESC
+     LIMIT 200`,
+  ).all<
+    ContributorRegistrationRow & {
+      platform: string;
+      client_version: string;
+      last_seen_at: number;
+      revoked_at: number | null;
+      committed_series: number;
+      committed_bytes: number;
+      committed_uploads: number;
+    }
+  >();
+  const registrations = await Promise.all(
+    rows.results.map(async (row) => ({
+      registration_id: row.id,
+      site_id: row.site_id,
+      project_id: row.project_id,
+      device_id: row.device_id,
+      contact_email: await decryptRegistrationEmail(
+        row.email_ciphertext,
+        row.id,
+        env.SITE_KEY_ENCRYPTION_KEY_B64,
+      ),
+      contact_name: row.contact_name,
+      institution_name: row.institution_name,
+      institution_ror_id: row.institution_ror_id,
+      lab_name: row.lab_name,
+      contact_opt_in: row.contact_opt_in === 1,
+      platform: row.platform,
+      client_version: row.client_version,
+      status: row.revoked_at === null ? "active" : "revoked",
+      created_at: iso(row.created_at),
+      last_seen_at: iso(row.last_seen_at),
+      committed_uploads: row.committed_uploads,
+      committed_series: row.committed_series,
+      committed_bytes: row.committed_bytes,
+    })),
+  );
+  return { registrations };
+}
+
 export async function enroll(
   env: Env,
   input: EnrollRequest,
@@ -1194,6 +1581,29 @@ export async function createUpload(
     (sum, bundle) => sum + bundle.nii.size + bundle.metadata.size,
     0,
   );
+  if (device.upload_quota_bytes !== null) {
+    const usage = await env.DB.prepare(
+      `SELECT COALESCE(SUM(total_bytes), 0) AS used_bytes
+       FROM uploads
+       WHERE project_id = ?1
+         AND status IN ('created', 'uploading', 'committed')`,
+    )
+      .bind(device.project_id)
+      .first<{ used_bytes: number }>();
+    const usedBytes = Number(usage?.used_bytes ?? 0);
+    if (usedBytes + totalBytes > device.upload_quota_bytes) {
+      throw new AppError(
+        "QUOTA_EXCEEDED",
+        413,
+        "This self-service project has reached its upload allowance; contact Scaling Neuro to continue",
+        {
+          quota_bytes: device.upload_quota_bytes,
+          used_bytes: usedBytes,
+          requested_bytes: totalBytes,
+        },
+      );
+    }
+  }
 
   const statements: D1PreparedStatement[] = [
     env.DB.prepare(
@@ -2492,6 +2902,11 @@ export async function withdrawUpload(
 
 export async function cleanupAbandoned(env: Env): Promise<void> {
   const timestamp = nowSeconds();
+  await env.DB.prepare(
+    "DELETE FROM contributor_registration_limits WHERE expires_at <= ?1",
+  )
+    .bind(timestamp)
+    .run();
   const purgeClaims: Array<{ upload: UploadRow; token: string }> = [];
   const activeCandidates = await env.DB.prepare(
     `SELECT id FROM uploads

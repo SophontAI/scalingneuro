@@ -181,7 +181,7 @@ describe("ingestion control plane", () => {
     expect(await staleEnrollment.json()).toMatchObject({
       error: {
         code: "CLIENT_UPDATE_REQUIRED",
-        details: { minimum_client_version: CLIENT_VERSION },
+        details: { minimum_client_version: "0.1.1" },
       },
     });
     const enrollment = await enrollDevice(invite.invite_code as string);
@@ -247,7 +247,7 @@ describe("ingestion control plane", () => {
     expect(await staleAllocation.json()).toMatchObject({
       error: {
         code: "CLIENT_UPDATE_REQUIRED",
-        details: { minimum_client_version: CLIENT_VERSION },
+        details: { minimum_client_version: "0.1.1" },
       },
     });
 

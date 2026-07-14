@@ -10,7 +10,10 @@ import {
   enroll,
   getUploadStatus,
   health,
+  listContributorRegistrations,
+  publicContributionInfo,
   refreshUploadCredentials,
+  registerContributor,
   revokeDevice,
   revokeInvite,
   withdrawUpload,
@@ -21,6 +24,7 @@ import {
   parseCreateUploadRequest,
   parseEnrollRequest,
   parseJsonText,
+  parsePublicRegistrationRequest,
   parseSignPartRequest,
 } from "./validation";
 
@@ -110,9 +114,12 @@ async function requestJson(request: Request): Promise<unknown> {
 function routeLabel(pathname: string): string {
   if (
     pathname === "/health" ||
+    pathname === "/v1/contribution" ||
     pathname === "/v1/enroll" ||
+    pathname === "/v1/register" ||
     pathname === "/v1/uploads" ||
     pathname === "/v1/admin/invites" ||
+    pathname === "/v1/admin/registrations" ||
     pathname === "/v1/admin/cleanup"
   ) {
     return pathname;
@@ -148,6 +155,20 @@ export async function fetchHandler(
     if (request.method === "GET" && path === "/health") {
       const result = await health(env);
       return json(result, requestId);
+    }
+    if (request.method === "GET" && path === "/v1/contribution") {
+      return json(publicContributionInfo(), requestId);
+    }
+    if (request.method === "POST" && path === "/v1/register") {
+      return json(
+        await registerContributor(
+          request,
+          env,
+          parsePublicRegistrationRequest(await requestJson(request)),
+        ),
+        requestId,
+        201,
+      );
     }
     if (request.method === "POST" && path === "/v1/enroll") {
       return json(
@@ -214,6 +235,9 @@ export async function fetchHandler(
         requestId,
         201,
       );
+    }
+    if (request.method === "GET" && path === "/v1/admin/registrations") {
+      return json(await listContributorRegistrations(request, env), requestId);
     }
     if (request.method === "POST" && path === "/v1/admin/cleanup") {
       return json(await adminCleanup(request, env), requestId);

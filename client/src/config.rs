@@ -16,6 +16,7 @@ pub struct AppPaths {
     pub database: PathBuf,
     pub lock: PathBuf,
     pub pending_enrollment: PathBuf,
+    pub pending_registration: PathBuf,
     pub work: PathBuf,
     pub bundles: PathBuf,
     pub reports: PathBuf,
@@ -38,6 +39,7 @@ impl AppPaths {
             database: root.join("state.sqlite3"),
             lock: root.join("instance.lock"),
             pending_enrollment: root.join("pending-enrollment.json"),
+            pending_registration: root.join("pending-registration.json"),
             work: root.join("work"),
             bundles: root.join("bundles"),
             reports: root.join("reports"),
@@ -70,7 +72,7 @@ impl ClientConfig {
     pub fn load(paths: &AppPaths) -> Result<Self> {
         let bytes = fs::read(&paths.config).with_context(|| {
             format!(
-                "this device is not enrolled (missing {}); run `neuro-sync enroll INVITE`",
+                "this device is not registered (missing {}); open neuro-sync to register",
                 paths.config.display()
             )
         })?;

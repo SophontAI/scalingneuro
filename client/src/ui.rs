@@ -13,7 +13,12 @@ use serde::Deserialize;
 use serde_json::json;
 use tower_http::{catch_panic::CatchPanicLayer, limit::RequestBodyLimitLayer};
 
-use crate::{DEFAULT_API_URL, config::ClientConfig, pipeline::Runtime, state::PublicRunStatus};
+use crate::{
+    DEFAULT_API_URL,
+    config::ClientConfig,
+    pipeline::{ContributorDetails, Runtime},
+    state::PublicRunStatus,
+};
 
 #[derive(Clone)]
 struct UiState {
@@ -37,7 +42,7 @@ pub async fn serve(runtime: Runtime) -> anyhow::Result<()> {
         .route("/api/config", get(config))
         .route("/api/resumable", get(resumable))
         .route("/api/pick-folder", post(pick_folder))
-        .route("/api/enroll", post(enroll))
+        .route("/api/register", post(register))
         .route("/api/upload", post(upload))
         .route("/api/status/{run_id}", get(status))
         .route("/api/report/{run_id}", get(report))
@@ -101,10 +106,22 @@ async fn config(
             "consent_policy_version": config.consent_policy_version,
             "api_url": config.api_url,
         }))),
-        Err(_) => Ok(Json(json!({
-            "enrolled": false,
-            "api_url": DEFAULT_API_URL,
-        }))),
+        Err(_) => {
+            let contribution = state
+                .runtime
+                .contribution_info(DEFAULT_API_URL)
+                .await
+                .map_err(UiError::internal)?;
+            Ok(Json(json!({
+                "enrolled": false,
+                "api_url": DEFAULT_API_URL,
+                "registration_open": contribution.registration_open,
+                "project_name": contribution.project_name,
+                "consent_policy_version": contribution.consent_policy_version,
+                "policy_url": contribution.policy_url,
+                "self_service_quota_bytes": contribution.self_service_quota_bytes,
+            })))
+        }
     }
 }
 
@@ -214,39 +231,46 @@ async fn native_folder_selection() -> anyhow::Result<Option<PathBuf>> {
 }
 
 #[derive(Deserialize)]
-struct EnrollBody {
-    invite: String,
-    #[serde(default = "default_server")]
-    server: String,
+struct RegisterBody {
+    contact_email: String,
+    contact_name: String,
+    institution_name: String,
+    #[serde(default)]
+    institution_ror_id: Option<String>,
+    lab_name: String,
+    #[serde(default)]
+    contact_opt_in: bool,
+    accepted_consent_policy_version: String,
 }
 
-async fn enroll(
+async fn register(
     State(state): State<UiState>,
     headers: HeaderMap,
-    Json(body): Json<EnrollBody>,
+    Json(body): Json<RegisterBody>,
 ) -> UiResult<Json<serde_json::Value>> {
     authorize(&state, &headers)?;
-    if body.invite.trim().is_empty() {
-        return Err(UiError::bad_request("invite_required"));
-    }
     let config = state
         .runtime
-        .enroll(
-            body.invite,
-            &body.server,
+        .register(
+            ContributorDetails {
+                contact_email: body.contact_email,
+                contact_name: body.contact_name,
+                institution_name: body.institution_name,
+                institution_ror_id: body.institution_ror_id,
+                lab_name: body.lab_name,
+                contact_opt_in: body.contact_opt_in,
+            },
+            body.accepted_consent_policy_version,
+            DEFAULT_API_URL,
             format!("{} workstation", std::env::consts::OS),
         )
         .await
-        .map_err(UiError::internal)?;
+        .map_err(UiError::registration)?;
     Ok(Json(json!({
         "project_id": config.project_id,
         "project_name": config.project_name,
         "consent_policy_version": config.consent_policy_version,
     })))
-}
-
-fn default_server() -> String {
-    DEFAULT_API_URL.into()
 }
 
 #[derive(Deserialize)]
@@ -398,6 +422,26 @@ impl UiError {
         tracing::warn!(error = %error, "local UI operation failed");
         Self(StatusCode::INTERNAL_SERVER_ERROR, "operation_failed".into())
     }
+
+    fn registration(error: anyhow::Error) -> Self {
+        if let Some(failure) = error.downcast_ref::<crate::api::ApiFailure>() {
+            let status = StatusCode::from_u16(failure.status).unwrap_or(StatusCode::BAD_REQUEST);
+            let code = match failure.code.as_str() {
+                "RATE_LIMITED" => "registration_rate_limited",
+                "CLIENT_UPDATE_REQUIRED" => "client_update_required",
+                "CONSENT_POLICY_UPDATE_REQUIRED" => "policy_update_required",
+                "CONFLICT" => "email_or_registration_already_used",
+                _ => "registration_failed",
+            };
+            tracing::warn!(code = %failure.code, "public registration failed");
+            return Self(status, code.into());
+        }
+        tracing::warn!(error = %error, "public registration validation failed");
+        Self(
+            StatusCode::BAD_REQUEST,
+            "registration_details_invalid".into(),
+        )
+    }
 }
 
 impl IntoResponse for UiError {
@@ -411,20 +455,20 @@ const INDEX_HTML: &str = r#"<!doctype html>
 <title>Scaling Neuro · neuro-sync</title>
 <link rel="icon" href="data:image/svg+xml,&lt;svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'&gt;&lt;text y='.9em' font-size='90'&gt;🧠&lt;/text&gt;&lt;/svg&gt;">
 <style>
-:root{color-scheme:light;--ink:#18233f;--muted:#65708a;--paper:#f6f5f9;--card:#fff;--line:#dcddea;--violet:#6656a5;--sage:#4f7d70;--coral:#c56f63}*{box-sizing:border-box}body{margin:0;background:var(--paper);color:var(--ink);font:15px/1.5 ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}.shell{max-width:820px;margin:0 auto;padding:48px 24px 80px}header{display:flex;justify-content:space-between;align-items:center;margin-bottom:28px}.brand{font:600 20px Georgia,serif;letter-spacing:.02em}.pill{font-size:12px;padding:5px 10px;border:1px solid var(--line);border-radius:99px;color:var(--muted);background:#fff}.card{background:var(--card);border:1px solid var(--line);border-radius:18px;padding:24px;margin:16px 0;box-shadow:0 12px 40px rgba(24,35,63,.05)}h1{font:500 36px/1.1 Georgia,serif;margin:0 0 10px}h2{font-size:16px;margin:0 0 14px}p{color:var(--muted);margin:6px 0 16px}.project{display:grid;grid-template-columns:1fr auto;gap:12px;padding:13px 15px;border-radius:10px;background:#f2f1f7}.project strong,.project small{display:block}.project small{color:var(--muted)}button{appearance:none;border:0;border-radius:10px;padding:12px 17px;font-weight:650;cursor:pointer;background:var(--violet);color:#fff}button.secondary{background:#edf0f6;color:var(--ink)}button:disabled{opacity:.45;cursor:not-allowed}.folder{display:flex;align-items:center;gap:12px}.folder-path{flex:1;padding:11px 13px;background:#f7f7fa;border:1px solid var(--line);border-radius:9px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:var(--muted)}label.confirm{display:flex;gap:10px;margin:18px 0;color:var(--ink)}input[type=checkbox]{width:18px;height:18px;accent-color:var(--violet)}input[type=text],input[type=password]{width:100%;padding:12px;border:1px solid var(--line);border-radius:9px;margin:5px 0 10px}.actions{display:flex;gap:10px}.hidden{display:none!important}.progress{height:8px;background:#ececf2;border-radius:9px;overflow:hidden;margin:18px 0}.progress i{display:block;height:100%;width:20%;background:linear-gradient(90deg,var(--violet),#897bc4);animation:pulse 1.5s infinite alternate}@keyframes pulse{to{transform:translateX(300%)}}.metrics{display:grid;grid-template-columns:repeat(4,1fr);gap:9px}.metric{padding:12px;background:#f7f7fa;border-radius:9px}.metric b{display:block;font-size:21px}.metric span{font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.06em}.ok{color:var(--sage)}.held{color:var(--coral)}.fine{font-size:12px;color:var(--muted);margin-top:18px}@media(max-width:600px){.shell{padding:28px 15px}.folder{align-items:stretch;flex-direction:column}.metrics{grid-template-columns:repeat(2,1fr)}h1{font-size:30px}}
+:root{color-scheme:light;--ink:#18233f;--muted:#65708a;--paper:#f6f5f9;--card:#fff;--line:#dcddea;--violet:#6656a5;--sage:#4f7d70;--coral:#c56f63}*{box-sizing:border-box}body{margin:0;background:var(--paper);color:var(--ink);font:15px/1.5 ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}.shell{max-width:820px;margin:0 auto;padding:48px 24px 80px}header{display:flex;justify-content:space-between;align-items:center;margin-bottom:28px}.brand{font:600 20px Georgia,serif;letter-spacing:.02em}.pill{font-size:12px;padding:5px 10px;border:1px solid var(--line);border-radius:99px;color:var(--muted);background:#fff}.card{background:var(--card);border:1px solid var(--line);border-radius:18px;padding:24px;margin:16px 0;box-shadow:0 12px 40px rgba(24,35,63,.05)}h1{font:500 36px/1.1 Georgia,serif;margin:0 0 10px}h2{font-size:16px;margin:0 0 14px}p{color:var(--muted);margin:6px 0 16px}.project{display:grid;grid-template-columns:1fr auto;gap:12px;padding:13px 15px;border-radius:10px;background:#f2f1f7}.project strong,.project small{display:block}.project small{color:var(--muted)}button{appearance:none;border:0;border-radius:10px;padding:12px 17px;font-weight:650;cursor:pointer;background:var(--violet);color:#fff}button.secondary{background:#edf0f6;color:var(--ink)}button:disabled{opacity:.45;cursor:not-allowed}.folder{display:flex;align-items:center;gap:12px}.folder-path{flex:1;padding:11px 13px;background:#f7f7fa;border:1px solid var(--line);border-radius:9px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:var(--muted)}label.confirm{display:flex;gap:10px;margin:18px 0;color:var(--ink)}label.field{display:block;font-size:13px;font-weight:600}.registration-grid{display:grid;grid-template-columns:1fr 1fr;gap:0 14px}.registration-grid .wide{grid-column:1/-1}input[type=checkbox]{width:18px;height:18px;accent-color:var(--violet)}input[type=text],input[type=email]{width:100%;padding:12px;border:1px solid var(--line);border-radius:9px;margin:5px 0 10px;font:inherit}input:focus{outline:2px solid color-mix(in srgb,var(--violet) 35%,transparent);border-color:var(--violet)}.actions{display:flex;gap:10px}.hidden{display:none!important}.progress{height:8px;background:#ececf2;border-radius:9px;overflow:hidden;margin:18px 0}.progress i{display:block;height:100%;width:20%;background:linear-gradient(90deg,var(--violet),#897bc4);animation:pulse 1.5s infinite alternate}@keyframes pulse{to{transform:translateX(300%)}}.metrics{display:grid;grid-template-columns:repeat(4,1fr);gap:9px}.metric{padding:12px;background:#f7f7fa;border-radius:9px}.metric b{display:block;font-size:21px}.metric span{font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.06em}.ok{color:var(--sage)}.held{color:var(--coral)}.fine{font-size:12px;color:var(--muted);margin-top:18px}@media(max-width:600px){.shell{padding:28px 15px}.folder{align-items:stretch;flex-direction:column}.metrics,.registration-grid{grid-template-columns:1fr}.registration-grid .wide{grid-column:auto}h1{font-size:30px}}
 </style></head><body><main class="shell"><header><div class="brand">Scaling Neuro</div><div class="pill">private local client</div></header>
-<section><h1>Share a completed EPI session.</h1><p>Choose one DICOM folder. neuro-sync identifies functional EPI, converts in native space, preserves approved acquisition metadata, and holds everything uncertain on this machine.</p></section>
-<section class="card hidden" id="enroll"><h2>Enroll this workstation</h2><p>Use the one-time invite supplied by your project administrator. The invite grants institutionally pre-authorized project access; it does not collect participant consent.</p><form id="enrollForm"><input id="invite" type="password" autocomplete="off" placeholder="One-time invite code"><button id="enrollBtn" type="submit">Enroll</button></form></section>
-<section class="card" id="projectCard"><h2>Contribution destination</h2><div class="project"><div><strong id="project">Loading…</strong><small id="policy"></small></div><span class="pill" id="enrollState">checking</span></div></section>
-<section class="card" id="chooseCard"><h2>1 · Choose the DICOM folder</h2><div class="folder"><div class="folder-path" id="folderPath">No folder selected</div><button class="secondary" id="pickBtn">Choose folder…</button></div><label class="confirm"><input type="checkbox" id="approval"><span>I attest that these scans are approved for contribution under the project policy shown above.</span></label><div class="actions"><button id="uploadBtn" disabled>Validate and upload</button><button class="secondary" id="dryBtn" disabled>Local dry run</button></div><div class="fine">This attestation does not collect or substitute for participant consent. Source DICOMs are never modified or uploaded. Structural, diffusion, ASL, field-map, localizer, derived, and ambiguous series stay local.</div></section>
+<section><h1>Share a completed EPI session.</h1><p>Set up once, then choose a DICOM folder. neuro-sync identifies functional EPI, converts in native space, preserves approved acquisition metadata, and holds everything uncertain on this machine.</p></section>
+<section class="card hidden" id="register"><h2>Tell us which lab is contributing</h2><p>This one-time setup creates a private upload identity for your lab. It takes about a minute.</p><form id="registerForm"><div class="registration-grid"><label class="field">Your name<input id="contactName" type="text" autocomplete="name" maxlength="96" required></label><label class="field">Work email<input id="contactEmail" type="email" autocomplete="email" maxlength="254" required></label><label class="field">Institution<input id="institution" type="text" autocomplete="organization" maxlength="160" required></label><label class="field">Lab or research group<input id="labName" type="text" maxlength="160" required></label><label class="field wide">ROR ID <span class="fine">(optional)</span><input id="rorId" type="text" autocomplete="off" placeholder="https://ror.org/…" maxlength="25"></label></div><label class="confirm"><input type="checkbox" id="policyConfirm" required><span>I confirm these scans are approved for research contribution and accept the <a id="policyLink" href="https://scalingneuro.com/docs/contribution-policy.html" target="_blank" rel="noopener">EPI contribution policy</a>.</span></label><label class="confirm"><input type="checkbox" id="contactOptIn"><span>Scaling Neuro may contact me about this contribution or research collaboration.</span></label><button id="registerBtn" type="submit">Continue</button><p class="held" id="setupError" role="alert"></p></form><p class="fine">Your contact email is encrypted at rest. Participant identifiers are not collected by this form.</p></section>
+<section class="card hidden" id="projectCard"><h2>Contribution destination</h2><div class="project"><div><strong id="project">Loading…</strong><small id="policy"></small></div><span class="pill" id="enrollState">checking</span></div></section>
+<section class="card hidden" id="chooseCard"><h2>1 · Choose the DICOM folder</h2><div class="folder"><div class="folder-path" id="folderPath">No folder selected</div><button class="secondary" id="pickBtn">Choose folder…</button></div><label class="confirm"><input type="checkbox" id="approval"><span>I attest that these scans are approved for contribution under the project policy shown above.</span></label><div class="actions"><button id="uploadBtn" disabled>Validate and upload</button><button class="secondary" id="dryBtn" disabled>Local dry run</button></div><div class="fine">This attestation does not collect or substitute for participant consent. Source DICOMs are never modified or uploaded. Structural, diffusion, ASL, field-map, localizer, derived, and ambiguous series stay local.</div></section>
 <section class="card hidden" id="progressCard"><h2 id="stage">Preparing…</h2><div class="progress" id="progress"><i></i></div><div class="metrics"><div class="metric"><b id="dicoms">0</b><span>DICOM files</span></div><div class="metric"><b class="ok" id="accepted">0</b><span>accepted</span></div><div class="metric"><b class="held" id="held">0</b><span>held</span></div><div class="metric"><b id="excluded">0</b><span>excluded</span></div></div><p id="result"></p><button class="secondary hidden" id="resumeBtn">Resume upload</button></section>
 </main><script>
 const fragmentToken=location.hash.slice(1),tokenPattern=/^[a-f0-9]{48}$/;if(tokenPattern.test(fragmentToken))sessionStorage.setItem('neuro-sync-token',fragmentToken);const token=tokenPattern.test(fragmentToken)?fragmentToken:(sessionStorage.getItem('neuro-sync-token')||''),validToken=tokenPattern.test(token);history.replaceState(null,'',location.pathname);let folder=null,runId=null,pollTimer=null,resumeMode='resume';
 async function api(path,options={}){options.headers={...(options.headers||{}),'x-neuro-sync-token':token};if(options.body)options.headers['content-type']='application/json';const r=await fetch(path,options);const j=await r.json().catch(()=>({}));if(!r.ok)throw new Error(j?.error?.code||'operation_failed');return j}
 const $=id=>document.getElementById(id);function err(e){$('result').textContent='Could not continue: '+e.message.replaceAll('_',' ')}
-async function load(){if(!validToken){$('project').textContent='Open neuro-sync from the desktop app';$('enrollState').textContent='locked';$('chooseCard').classList.add('hidden');return}try{const c=await api('/api/config');$('enroll').classList.toggle('hidden',c.enrolled);$('chooseCard').classList.toggle('hidden',!c.enrolled);$('projectCard').classList.toggle('hidden',!c.enrolled);if(c.enrolled){$('project').textContent=c.project_name;$('policy').textContent='Project '+c.project_id+' · contribution policy '+c.consent_policy_version;$('enrollState').textContent='enrolled';await discoverResumable()}}catch(e){err(e)}}
+async function load(){if(!validToken){$('project').textContent='Open neuro-sync from the desktop app';$('enrollState').textContent='locked';$('chooseCard').classList.add('hidden');return}try{const c=await api('/api/config');$('register').classList.toggle('hidden',c.enrolled);$('chooseCard').classList.toggle('hidden',!c.enrolled);$('projectCard').classList.toggle('hidden',!c.enrolled);if(c.enrolled){$('project').textContent=c.project_name;$('policy').textContent='Private lab project · contribution policy '+c.consent_policy_version;$('enrollState').textContent='ready';await discoverResumable()}else{window.policyVersion=c.consent_policy_version;$('policyLink').href=c.policy_url;$('registerBtn').disabled=!c.registration_open;if(!c.registration_open)$('registerBtn').textContent='Registration temporarily paused'}}catch(e){$('register').classList.remove('hidden');$('registerBtn').disabled=true;$('setupError').textContent='Could not reach Scaling Neuro. Check the network and reopen neuro-sync.'}}
 async function discoverResumable(){const pending=await api('/api/resumable');const s=pending.next_run;if(!s)return false;runId=s.id;folder=null;resumeMode=pending.requires_reprepare?'reprepare':'resume';$('folderPath').textContent=pending.active?'An upload is already running':pending.requires_reprepare?'The original private DICOM folder will be revalidated locally':'Resume the interrupted upload before choosing another folder';$('progressCard').classList.remove('hidden');$('pickBtn').disabled=true;$('approval').disabled=true;$('uploadBtn').disabled=true;$('dryBtn').disabled=true;$('dicoms').textContent=s.summary.dicom_files;$('accepted').textContent=s.summary.accepted;$('held').textContent=s.summary.held;$('excluded').textContent=s.summary.excluded;if(pending.active){$('progress').classList.remove('hidden');$('resumeBtn').classList.add('hidden');$('stage').textContent=labels[s.status]||s.status;$('result').textContent='This upload is still running in the local client.';poll()}else{$('progress').classList.add('hidden');$('resumeBtn').classList.remove('hidden');if(pending.requires_reprepare){$('resumeBtn').textContent='Revalidate with current privacy rules';$('stage').textContent='Privacy update required';$('result').textContent='This checkpoint was prepared by an older privacy contract. Revalidate the same private source locally before anything is uploaded.'}else{$('resumeBtn').textContent='Resume upload';$('stage').textContent='Interrupted upload ready to resume';const more=pending.pending_count>1?` ${pending.pending_count} interrupted uploads are queued and will be offered in order.`:'';$('result').textContent='Your prepared files and completed parts are checkpointed locally. Resume to continue without reconverting.'+more}}return true}
-$('enrollForm').onsubmit=async event=>{event.preventDefault();try{await api('/api/enroll',{method:'POST',body:JSON.stringify({invite:$('invite').value})});await load()}catch(e){alert(e.message.replaceAll('_',' '))}};
+$('registerForm').onsubmit=async event=>{event.preventDefault();$('registerBtn').disabled=true;$('setupError').textContent='';try{await api('/api/register',{method:'POST',body:JSON.stringify({contact_email:$('contactEmail').value,contact_name:$('contactName').value,institution_name:$('institution').value,institution_ror_id:$('rorId').value||null,lab_name:$('labName').value,contact_opt_in:$('contactOptIn').checked,accepted_consent_policy_version:window.policyVersion})});await load()}catch(e){$('registerBtn').disabled=false;$('setupError').textContent=e.message.replaceAll('_',' ')}};
 $('pickBtn').onclick=async()=>{try{const r=await api('/api/pick-folder',{method:'POST'});folder=r.path;$('folderPath').textContent=folder;buttons()}catch(e){if(e.message!=='folder_selection_cancelled')err(e)}};$('approval').onchange=buttons;function buttons(){const ready=!!folder&&$('approval').checked;$('uploadBtn').disabled=!ready;$('dryBtn').disabled=!ready}
 async function start(dry){$('uploadBtn').disabled=true;$('dryBtn').disabled=true;$('pickBtn').disabled=true;$('approval').disabled=true;try{$('progressCard').classList.remove('hidden');$('result').textContent='';const r=await api('/api/upload',{method:'POST',body:JSON.stringify({path:folder,dry_run:dry,approval_confirmed:$('approval').checked})});runId=r.run_id;poll()}catch(e){$('pickBtn').disabled=false;$('approval').disabled=false;buttons();err(e)}}$('uploadBtn').onclick=()=>start(false);$('dryBtn').onclick=()=>start(true);
 const labels={discovering:'Reading DICOM headers…',converting:'Converting and checking EPI series…',prepared:'Preparing secure multipart upload…',uploading:'Uploading approved bundles…',upload_failed:'Upload paused',complete:'Upload complete',dry_run_complete:'Local dry run complete',complete_no_eligible_series:'No eligible EPI series found',failed:'Local validation stopped'};
@@ -452,6 +496,9 @@ mod tests {
         assert!(INDEX_HTML.contains("Interrupted upload ready to resume"));
         assert!(!INDEX_HTML.contains("type=\"file\""));
         assert!(INDEX_HTML.contains("approval_confirmed"));
+        assert!(INDEX_HTML.contains("/api/register"));
+        assert!(INDEX_HTML.contains("Tell us which lab is contributing"));
+        assert!(!INDEX_HTML.contains("One-time invite"));
     }
 
     #[tokio::test]

@@ -666,7 +666,7 @@ jobs:
             '{
               schema_version:"1.0.0",
               version:$version,
-              channel:"pilot",
+              channel:"open-beta",
               checksums_url:"/downloads/SHA256SUMS",
               artifacts:{
                 macos:{url:("/downloads/"+$macos_name),sha256:$macos_sha,signed:$macos_signed,notarized:$macos_notarized,sbom_spdx_url:("/downloads/"+$macos_stem+".spdx.json"),sbom_cyclonedx_url:("/downloads/"+$macos_stem+".cdx.json")},
@@ -711,11 +711,11 @@ jobs:
           fail_on_unmatched_files: true
           files: release-assets/*
           body: |
-            Scaling Neuro EPI ingestion client pilot.
+            Scaling Neuro EPI ingestion client open beta.
 
             Verify the selected package against SHA256SUMS before use. Files labeled
-            UNSIGNED-PILOT and CODESIGNED-PILOT are restricted pilot artifacts and are not
-            low-friction general-public releases.
+            UNSIGNED-PILOT and CODESIGNED-PILOT filenames identify beta artifacts that may
+            trigger operating-system trust warnings. Prefer signed and notarized builds.
 
       - name: Set up Node for Pages Worker build
         if: github.ref_type == 'tag' || inputs.publish_release == true
@@ -836,7 +836,7 @@ jobs:
                jq --exit-status --arg version "$EXPECTED_VERSION" '
                  .schema_version == "1.0.0" and
                  .version == $version and
-                 .channel == "pilot" and
+                 .channel == "open-beta" and
                  .checksums_url == "/downloads/SHA256SUMS" and
                  ((.artifacts | keys | sort) == ["linux", "macos", "windows"]) and
                  (all(.artifacts[];

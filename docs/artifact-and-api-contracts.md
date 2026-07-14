@@ -4,6 +4,8 @@
 
 | Artifact | Canonical schema | Purpose |
 |---|---|---|
+| Contribution information | `schemas/contribution-info-v1.schema.json` | Current open-registration state, policy, client floor, and self-service allowance |
+| Registration request | `schemas/registration-request-v1.schema.json` | Client-bound, replay-safe public lab/device registration |
 | Enrollment request | `schemas/enrollment-request-v1.schema.json` | Client-bound, replay-safe invite/device enrollment operation |
 | Enrollment response | `schemas/enrollment-response-v1.schema.json` | Stable result returned for a new or exactly replayed enrollment |
 | Local preparation manifest | `schemas/local-manifest-v1.schema.json` | Owner-only conversion/resume checkpoint; never an upload artifact |
@@ -31,6 +33,8 @@ All JSON endpoints return `content-type: application/json`. Device endpoints use
 | Method and path | Request | Success response |
 |---|---|---|
 | `GET /health` | none | service health/version |
+| `GET /v1/contribution` | none | contribution-information schema |
+| `POST /v1/register` | registration-request schema | enrollment-response schema for a new or exactly replayed public registration |
 | `POST /v1/enroll` | enrollment-request schema | enrollment-response schema: stable operation/device IDs and token, site/project context, contribution-policy version, site pseudonym key |
 | `POST /v1/uploads` | upload-init schema | upload-session schema; committed idempotent replay has an empty multipart plan |
 | `POST /v1/uploads/{id}/credentials` | empty body | deprecated-name compatibility route that refreshes the multipart plan; it returns no credentials |
@@ -38,10 +42,17 @@ All JSON endpoints return `content-type: application/json`. Device endpoints use
 | `POST /v1/uploads/{id}/complete` | upload-complete schema | committed ID/time and manifest key/SHA-256 |
 | `GET /v1/uploads/{id}` | none | upload-status schema |
 | `POST /v1/admin/invites` | site/project names/slugs, consent-policy version, expiry, uses | one-time invite metadata and plaintext invite code |
+| `GET /v1/admin/registrations` | none | latest contributor contacts, device state, and aggregate committed-upload metrics |
 | `POST /v1/admin/devices/{id}/revoke` | empty body | revoked device status |
 | `POST /v1/admin/uploads/{id}/withdraw` | empty body | withdrawn upload status and tombstone audit state |
 
-## Enrollment transaction
+## Public registration transaction
+
+The ordinary researcher path begins with `GET /v1/contribution`, then generates a UUIDv4 `registration_id` and a 256-bit `sn_device_…` token locally. The form details, operation identity, and token are atomically checkpointed in an owner-only file. An exact retry reuses that identity; the Worker returns the same enrollment result rather than creating a duplicate lab, project, or device.
+
+Each registration receives an isolated site, project, site-scoped pseudonym key, revocable device identity, and 250 GiB self-service upload allowance. The Worker stores only the device-token hash. Contact email is normalized, hashed for administrative lookup, and separately encrypted with registration-bound authenticated encryption; contact data is not placed in scan sidecars, manifests, R2 object keys, or operational logs. The optional ROR ID is stored as a canonical public organization identifier. Administrator-issued invites remain a private compatibility route for named projects.
+
+## Invite enrollment transaction
 
 Before the first enrollment request, the client generates a UUIDv4 `enrollment_id` and a 256-bit `sn_device_…` token. It atomically checkpoints those values and the non-secret request metadata in owner-only local state keyed by the SHA-256 of the invite; the plaintext invite is not persisted. The exact pending operation is reused after a timeout, connection loss, process crash, or lost response. It is deleted only after the final enrolled configuration has been saved successfully.
 

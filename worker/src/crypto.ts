@@ -126,6 +126,60 @@ async function importEncryptionKey(base64Key: string): Promise<CryptoKey> {
   ]);
 }
 
+async function encryptBoundText(
+  plaintext: string,
+  binding: string,
+  base64EncryptionKey: string,
+): Promise<string> {
+  const nonce = randomBytes(12);
+  const key = await importEncryptionKey(base64EncryptionKey);
+  const ciphertext = await crypto.subtle.encrypt(
+    {
+      name: "AES-GCM",
+      iv: nonce,
+      additionalData: encoder.encode(binding),
+    },
+    key,
+    encoder.encode(plaintext),
+  );
+  return `v1.${base64Url(nonce)}.${base64Url(new Uint8Array(ciphertext))}`;
+}
+
+async function decryptBoundText(
+  ciphertext: string,
+  binding: string,
+  base64EncryptionKey: string,
+): Promise<string> {
+  const parts = ciphertext.split(".");
+  const version = parts[0];
+  const nonceValue = parts[1];
+  const encryptedValue = parts[2];
+  if (
+    parts.length !== 3 ||
+    version !== "v1" ||
+    !nonceValue ||
+    !encryptedValue
+  ) {
+    throw new AppError("INTERNAL", 500, "Encrypted value is invalid");
+  }
+  try {
+    const key = await importEncryptionKey(base64EncryptionKey);
+    const plaintext = await crypto.subtle.decrypt(
+      {
+        name: "AES-GCM",
+        iv: fromBase64Url(nonceValue),
+        additionalData: encoder.encode(binding),
+      },
+      key,
+      fromBase64Url(encryptedValue),
+    );
+    return decoder.decode(plaintext);
+  } catch (error) {
+    if (error instanceof AppError) throw error;
+    throw new AppError("INTERNAL", 500, "Unable to decrypt protected value");
+  }
+}
+
 export async function encryptSiteKey(
   siteKey: Uint8Array<ArrayBuffer>,
   siteId: string,
@@ -143,6 +197,30 @@ export async function encryptSiteKey(
     siteKey,
   );
   return `v1.${base64Url(nonce)}.${base64Url(new Uint8Array(ciphertext))}`;
+}
+
+export async function encryptRegistrationEmail(
+  email: string,
+  registrationId: string,
+  base64EncryptionKey: string,
+): Promise<string> {
+  return encryptBoundText(
+    email,
+    `scaling-neuro/contributor-registration/v1/${registrationId}`,
+    base64EncryptionKey,
+  );
+}
+
+export async function decryptRegistrationEmail(
+  ciphertext: string,
+  registrationId: string,
+  base64EncryptionKey: string,
+): Promise<string> {
+  return decryptBoundText(
+    ciphertext,
+    `scaling-neuro/contributor-registration/v1/${registrationId}`,
+    base64EncryptionKey,
+  );
 }
 
 export async function decryptSiteKey(

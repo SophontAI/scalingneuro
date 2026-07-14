@@ -1,0 +1,42 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://scalingneuro.com/schemas/contribution-info-v1.schema.json",
+  "title": "Scaling Neuro public contribution information v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "registration_open",
+    "project_name",
+    "consent_policy_version",
+    "policy_url",
+    "self_service_quota_bytes",
+    "minimum_client_version"
+  ],
+  "properties": {
+    "registration_open": { "type": "boolean" },
+    "project_name": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128
+    },
+    "consent_policy_version": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 64,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9.+_-]*$"
+    },
+    "policy_url": {
+      "type": "string",
+      "format": "uri",
+      "pattern": "^https://scalingneuro\\.com/"
+    },
+    "self_service_quota_bytes": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "minimum_client_version": {
+      "type": "string",
+      "pattern": "^(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)(?:-[A-Za-z0-9.-]+)?(?:\\+[A-Za-z0-9.-]+)?$"
+    }
+  }
+}

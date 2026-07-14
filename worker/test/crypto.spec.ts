@@ -1,7 +1,9 @@
 import { describe, expect, it } from "vitest";
 import {
   canonicalJson,
+  decryptRegistrationEmail,
   decryptSiteKey,
+  encryptRegistrationEmail,
   encryptSiteKey,
   randomBytes,
   sha256Hex,
@@ -29,5 +31,24 @@ describe("cryptographic helpers", () => {
     expect(canonicalJson({ z: 1, a: { y: 2, x: [3, 4] } })).toBe(
       '{"a":{"x":[3,4],"y":2},"z":1}',
     );
+  });
+
+  it("encrypts registration email with registration-bound authenticated encryption", async () => {
+    const ciphertext = await encryptRegistrationEmail(
+      "researcher@example.edu",
+      "registration-a",
+      ENCRYPTION_KEY,
+    );
+    expect(ciphertext).not.toContain("researcher@example.edu");
+    expect(
+      await decryptRegistrationEmail(
+        ciphertext,
+        "registration-a",
+        ENCRYPTION_KEY,
+      ),
+    ).toBe("researcher@example.edu");
+    await expect(
+      decryptRegistrationEmail(ciphertext, "registration-b", ENCRYPTION_KEY),
+    ).rejects.toMatchObject({ code: "INTERNAL" });
   });
 });

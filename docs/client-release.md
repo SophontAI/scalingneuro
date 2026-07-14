@@ -1,6 +1,6 @@
 # Client release process
 
-`.github/workflows/release-client.yml` creates traceable, checksum-verified pilot packages. A tag build, or a manual run with **publish release** enabled, also rebuilds the source-matched Pages Worker and static bundle and publishes the packages under `https://scalingneuro.com/downloads/`. Publication is allowed only from the current `main` commit and applies pending D1 migrations before replacing the Pages deployment; it does not mutate R2 archive objects.
+`.github/workflows/release-client.yml` creates traceable, checksum-verified open-beta packages. A tag build, or a manual run with **publish release** enabled, also rebuilds the source-matched Pages Worker and static bundle and publishes the packages under `https://scalingneuro.com/downloads/`. Publication is allowed only from the current `main` commit and applies pending D1 migrations before replacing the Pages deployment; it does not mutate R2 archive objects.
 
 ## Release inputs and outputs
 
@@ -71,6 +71,6 @@ Before sharing a package:
 2. The release workflow must verify the pinned converter and produce SBOMs and `SHA256SUMS`.
 3. Run clean-machine smoke tests for each promised OS: enrollment, native folder selection, dry run, accepted/held separation, upload, forced interruption, resume, commit, and report.
 4. Inspect the stored sidecar and manifest for schema validity, metadata retention, absence of seeded PHI, and exact local/R2 hashes.
-5. Prefer notarized macOS and Authenticode-signed Windows builds for collaborators. Keep `UNSIGNED-PILOT` and `CODESIGNED-PILOT` builds invite-only and explicitly labeled.
+5. Prefer notarized macOS and Authenticode-signed Windows builds for collaborators. Until signing is configured, keep `UNSIGNED-PILOT` and `CODESIGNED-PILOT` filenames and show the operating-system warning explicitly on the public download page.
 
-The workflow can create a GitHub prerelease when requested. Manual builds do not publish unless **publish release** is explicitly enabled; `client-vX.Y.Z` tags publish the corresponding versioned pilot downloads automatically.
+The workflow can create a GitHub prerelease when requested. Manual builds do not publish unless **publish release** is explicitly enabled; `client-vX.Y.Z` tags publish the corresponding versioned open-beta downloads automatically.
