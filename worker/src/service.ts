@@ -902,7 +902,7 @@ export function publicContributionInfo(): Record<string, unknown> {
     registration_open: true,
     project_name: PUBLIC_PROJECT_NAME,
     consent_policy_version: PUBLIC_CONSENT_POLICY_VERSION,
-    policy_url: "https://scalingneuro.com/docs/contribution-policy.html",
+    policy_url: "https://scalingneuro.com/docs/contribution-policy",
     self_service_quota_bytes: PUBLIC_UPLOAD_QUOTA_BYTES,
     minimum_client_version: MINIMUM_SELF_SERVICE_CLIENT_VERSION,
   };

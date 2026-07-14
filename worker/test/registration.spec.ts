@@ -63,7 +63,7 @@ describe("open contributor registration", () => {
       registration_open: true,
       project_name: "Scaling Neuro public EPI contribution",
       consent_policy_version: "open-epi-1.0.0",
-      policy_url: "https://scalingneuro.com/docs/contribution-policy.html",
+      policy_url: "https://scalingneuro.com/docs/contribution-policy",
       self_service_quota_bytes: 268_435_456_000,
       minimum_client_version: "0.2.0",
     });
