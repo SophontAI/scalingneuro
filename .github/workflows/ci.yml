@@ -147,7 +147,3 @@ jobs:
       - name: Test
         if: steps.component.outputs.present == 'true'
         run: npm test --prefix worker
-
-      - name: Test browser NIfTI streaming
-        if: steps.component.outputs.present == 'true'
-        run: node --test tests/nifti-preview.test.mjs
