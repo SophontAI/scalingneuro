@@ -3,133 +3,192 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Download neuro-sync — Scaling Neuro</title>
-  <meta name="description" content="Download neuro-sync for macOS, Windows, or Linux and contribute approved functional EPI scans to Scaling Neuro." />
+  <title>Install neuro-sync — Scaling Neuro</title>
+  <meta name="description" content="Install neuro-sync with one terminal command, then select a DICOM folder to contribute approved functional EPI scans." />
   <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
   <style>
-    :root { color-scheme: light; --paper:#ececf2; --ink:#1d2337; --muted:#626779; --plum:#242238; --sage:#bdd2b2; --line:#cfd0da; }
+    :root { color-scheme:light; --paper:#ececf2; --ink:#1d2337; --muted:#626779; --plum:#242238; --sage:#bdd2b2; --line:#cfd0da; --warn:#7b302a; }
     * { box-sizing:border-box; }
     body { margin:0; background:var(--paper); color:var(--ink); font:18px/1.55 Georgia,serif; }
-    main { width:min(980px,calc(100% - 36px)); margin:0 auto; padding:72px 0 96px; }
-    a { color:inherit; }
-    .brand { display:inline-flex; gap:10px; align-items:center; color:var(--ink); font-weight:700; text-decoration:none; }
-    .eyebrow,.status,.meta,code { font:12px/1.45 ui-monospace,SFMono-Regular,Menlo,monospace; letter-spacing:.06em; }
-    .eyebrow { margin-top:72px; text-transform:uppercase; color:var(--muted); }
-    h1 { max-width:800px; margin:14px 0 18px; font-size:clamp(42px,8vw,76px); line-height:.98; letter-spacing:-.035em; }
-    .lede { max-width:720px; color:#42475a; font-size:22px; }
-    .status { display:inline-block; margin:12px 0 32px; padding:7px 10px; border:1px solid var(--line); border-radius:999px; }
-    .recommended { display:block; width:fit-content; margin:0 0 28px; padding:15px 20px; border-radius:10px; background:var(--plum); color:#fff; text-decoration:none; font:600 14px/1.2 ui-monospace,SFMono-Regular,Menlo,monospace; }
-    .recommended[hidden] { display:none; }
-    .grid { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:14px; margin:28px 0; }
-    .card { min-height:205px; padding:22px; border:1px solid var(--line); border-radius:14px; background:#f5f4f7; display:flex; flex-direction:column; }
-    .card h2 { margin:0; font-size:28px; }
-    .card p { color:var(--muted); font-size:15px; }
-    .artifact-warning { margin:2px 0 14px; padding:9px 10px; border:1px solid #c78378; border-radius:8px; background:#fff5f1; color:#7b302a!important; font:12px/1.45 ui-monospace,SFMono-Regular,Menlo,monospace; }
-    .artifact-warning[hidden] { display:none; }
-    .download { margin-top:auto; display:block; padding:11px 14px; border-radius:8px; background:var(--plum); color:white; text-align:center; text-decoration:none; font:600 13px/1.2 ui-monospace,SFMono-Regular,Menlo,monospace; }
-    .download[aria-disabled="true"] { opacity:.55; pointer-events:none; }
-    .box { margin-top:36px; padding:26px; border-radius:14px; background:var(--plum); color:#f0edf2; }
+    main { width:min(980px,calc(100% - 36px)); margin:0 auto; padding:64px 0 96px; }
+    a { color:inherit; text-underline-offset:3px; }
+    .brand { display:inline-flex; gap:10px; align-items:center; font-weight:700; text-decoration:none; }
+    .eyebrow,.status,.meta,code,button,.badge { font:12px/1.45 ui-monospace,SFMono-Regular,Menlo,monospace; letter-spacing:.04em; }
+    .eyebrow { margin-top:66px; text-transform:uppercase; color:var(--muted); }
+    h1 { max-width:820px; margin:14px 0 18px; font-size:clamp(42px,8vw,76px); line-height:.98; letter-spacing:-.035em; }
+    .lede { max-width:740px; margin-bottom:18px; color:#42475a; font-size:22px; }
+    .status { display:inline-block; margin:0 0 34px; padding:7px 10px; border:1px solid var(--line); border-radius:999px; }
+    .commands { display:grid; grid-template-columns:1fr 1fr; gap:16px; }
+    .command-card { min-width:0; padding:22px; border:1px solid var(--line); border-radius:14px; background:#f6f5f8; }
+    .command-card.is-recommended { border-color:#77728c; box-shadow:0 12px 30px rgba(36,34,56,.09); }
+    .command-head { display:flex; align-items:center; justify-content:space-between; gap:12px; margin-bottom:14px; }
+    .command-head h2 { margin:0; font-size:25px; }
+    .badge { padding:4px 7px; border-radius:999px; background:var(--sage); color:#283027; text-transform:uppercase; }
+    .badge[hidden] { display:none; }
+    .command { display:flex; align-items:stretch; overflow:hidden; border-radius:9px; background:var(--plum); }
+    .command code { flex:1; min-width:0; padding:15px; overflow-x:auto; color:#f0edf2; white-space:nowrap; letter-spacing:0; }
+    .copy { min-width:74px; border:0; border-left:1px solid #4b485e; padding:0 14px; background:#302e45; color:#fff; cursor:pointer; }
+    .copy:hover,.copy:focus-visible { background:#48445f; }
+    .command-card p { margin:14px 0 5px; color:var(--muted); font-size:15px; }
+    .inspect { font:12px/1.4 ui-monospace,SFMono-Regular,Menlo,monospace; }
+    .assurance { display:grid; grid-template-columns:repeat(4,1fr); gap:1px; margin:24px 0 36px; border:1px solid var(--line); background:var(--line); }
+    .assurance span { padding:13px 10px; background:var(--paper); text-align:center; font:12px/1.4 ui-monospace,SFMono-Regular,Menlo,monospace; }
+    .box { padding:26px; border-radius:14px; background:var(--plum); color:#f0edf2; }
     .box h2 { margin-top:0; }
     .box code { color:var(--sage); }
     ol { padding-left:24px; }
     li { margin:12px 0; }
-    .meta { color:var(--muted); margin-top:40px; }
-    .meta a { text-underline-offset:3px; }
-    @media (max-width:720px) { main{padding-top:36px}.eyebrow{margin-top:48px}.grid{grid-template-columns:1fr}.card{min-height:170px} }
+    details.manual { margin-top:32px; border-top:1px solid var(--line); border-bottom:1px solid var(--line); }
+    details.manual > summary { padding:18px 0; cursor:pointer; font-weight:700; }
+    .manual-body { padding:0 0 24px; }
+    .manual-note { max-width:780px; color:var(--muted); font-size:15px; }
+    .grid { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:12px; margin:20px 0; }
+    .card { min-height:180px; padding:18px; border:1px solid var(--line); border-radius:12px; background:#f6f5f8; display:flex; flex-direction:column; }
+    .card h3 { margin:0; font-size:24px; }
+    .card p { color:var(--muted); font-size:14px; }
+    .artifact-warning { margin:0 0 12px!important; padding:8px 9px; border:1px solid #c78378; border-radius:7px; background:#fff5f1; color:var(--warn)!important; font:11px/1.45 ui-monospace,SFMono-Regular,Menlo,monospace; }
+    .artifact-warning[hidden] { display:none; }
+    .download { margin-top:auto; display:block; padding:10px 12px; border-radius:8px; background:var(--plum); color:white; text-align:center; text-decoration:none; font:600 12px/1.2 ui-monospace,SFMono-Regular,Menlo,monospace; }
+    .download[aria-disabled="true"] { opacity:.55; pointer-events:none; }
+    .meta { color:var(--muted); margin-top:34px; }
+    .toast { position:fixed; left:50%; bottom:24px; transform:translate(-50%,20px); padding:10px 14px; border-radius:8px; background:#151424; color:#fff; opacity:0; pointer-events:none; transition:.18s; }
+    .toast.show { opacity:1; transform:translate(-50%,0); }
+    @media (max-width:760px) {
+      main { padding-top:34px; }
+      .eyebrow { margin-top:46px; }
+      .commands,.grid { grid-template-columns:1fr; }
+      .assurance { grid-template-columns:1fr 1fr; }
+      .command-card.is-recommended { order:-1; }
+      .command-head { align-items:flex-start; flex-direction:column; }
+      .command { display:block; }
+      .copy { width:100%; min-height:42px; border-left:0; border-top:1px solid #4b485e; }
+    }
   </style>
 </head>
 <body>
   <main>
     <a class="brand" href="../">🧠 <span>Scaling Neuro</span></a>
     <div class="eyebrow">Open self-service beta · functional EPI only</div>
-    <h1>Choose a folder. The rest is automatic.</h1>
-    <p class="lede">Each download contains one portable tool and its pinned DICOM converter. There is no Python, Docker, FSL, account, or cloud credential to configure.</p>
-    <div class="status" id="releaseStatus">Checking the current release…</div>
-    <a class="recommended" id="recommendedDownload" hidden>Download for this computer</a>
+    <h1>One command. Then choose a folder.</h1>
+    <p class="lede">Paste the command for your computer. It installs neuro-sync in your home directory, verifies the exact release, and opens the private guided flow—no administrator access or dependencies to configure.</p>
+    <div class="status" id="releaseStatus">Checking the current verified release…</div>
 
-    <section class="grid" aria-label="neuro-sync downloads">
-      <article class="card">
-        <h2>macOS</h2>
-        <p>Apple silicon and Intel in one universal bundle.</p>
-        <p class="artifact-warning" data-warning="macos" role="status" hidden></p>
-        <a class="download" data-platform="macos" href="#" aria-disabled="true">Preparing download…</a>
+    <section class="commands" aria-label="Terminal installation commands">
+      <article class="command-card" data-installer="unix">
+        <div class="command-head"><h2>macOS or Linux</h2><span class="badge" hidden>Recommended</span></div>
+        <div class="command">
+          <code>curl -fsSL https://scalingneuro.com/install.sh | sh</code>
+          <button class="copy" type="button" data-copy="curl -fsSL https://scalingneuro.com/install.sh | sh">Copy</button>
+        </div>
+        <p>Uses <code>~/.local</code>, adds <code>neuro-sync</code> to your user PATH, and immediately opens it.</p>
+        <a class="inspect" href="/install.sh">Inspect the installer</a>
       </article>
-      <article class="card">
-        <h2>Windows</h2>
-        <p>64-bit Windows 10 or newer.</p>
-        <p class="artifact-warning" data-warning="windows" role="status" hidden></p>
-        <a class="download" data-platform="windows" href="#" aria-disabled="true">Preparing download…</a>
-      </article>
-      <article class="card">
-        <h2>Linux</h2>
-        <p>64-bit glibc 2.28+ Linux with <code>libwayland-client.so.0</code> and an XDG desktop portal.</p>
-        <a class="download" data-platform="linux" href="#" aria-disabled="true">Preparing download…</a>
+
+      <article class="command-card" data-installer="windows">
+        <div class="command-head"><h2>Windows PowerShell</h2><span class="badge" hidden>Recommended</span></div>
+        <div class="command">
+          <code>irm https://scalingneuro.com/install.ps1 | iex</code>
+          <button class="copy" type="button" data-copy="irm https://scalingneuro.com/install.ps1 | iex">Copy</button>
+        </div>
+        <p>Uses your local application-data folder, updates only your user PATH, and immediately opens it.</p>
+        <a class="inspect" href="/install.ps1">Inspect the installer</a>
       </article>
     </section>
+
+    <div class="assurance" aria-label="Installer properties">
+      <span>No sudo or admin</span><span>SHA-256 verified</span><span>Pinned dcm2niix included</span><span>No installer telemetry</span>
+    </div>
 
     <section class="box">
-      <h2>First run</h2>
+      <h2>What happens next</h2>
       <ol>
-        <li>Extract the complete bundle; keep <code>libexec/dcm2niix</code> beside the app.</li>
-        <li>Open <code>neuro-sync</code> and complete the one-minute lab registration on first launch.</li>
-        <li>Confirm that the scans are covered by your institution’s IRB, participant-consent, and data-use approvals; then select the DICOM export folder.</li>
+        <li>Complete the one-minute lab registration in the local browser window.</li>
+        <li>Confirm that the scans are covered by your institution’s IRB, participant-consent, and data-use approvals.</li>
+        <li>Select the completed DICOM export folder. neuro-sync handles classification, local conversion, metadata minimization, QC, and resumable upload.</li>
       </ol>
-      <p>Source DICOMs never leave the machine. V1 uploads only native-space functional 4D NIfTI, an explicit metadata allowlist, and checksum/provenance manifests. Structural, diffusion, reference, derived, or ambiguous scans stay local.</p>
-      <p>The registration creates a private, revocable upload identity for your lab. It is not evidence of participant consent and cannot authorize an otherwise impermissible upload.</p>
+      <p>Source DICOMs never leave the machine. Only native-space functional 4D NIfTI, approved acquisition metadata, and checksum/provenance manifests upload. Structural, diffusion, reference, derived, and ambiguous scans stay local.</p>
     </section>
 
-    <p class="meta">Every published bundle has <a id="checksumsLink" href="#">SHA-256 checksums</a> and SPDX/CycloneDX SBOMs. Beta packages may still carry <code>UNSIGNED-PILOT</code> or <code>CODESIGNED-PILOT</code> filenames until signing is configured; operating-system warnings are shown before download.</p>
+    <details class="manual">
+      <summary>Manual downloads and release files</summary>
+      <div class="manual-body">
+        <p class="manual-note">Use these only when a lab’s computing policy does not allow terminal bootstrap scripts. Extract the complete archive so <code>libexec/dcm2niix</code> remains beside neuro-sync. Unsigned beta executables can still be blocked by institutional endpoint controls; terminal installation does not override those policies.</p>
+        <section class="grid" aria-label="Direct neuro-sync downloads">
+          <article class="card">
+            <h3>macOS</h3><p>Apple silicon and Intel universal archive.</p>
+            <p class="artifact-warning" data-warning="macos" role="status" hidden></p>
+            <a class="download" data-platform="macos" href="#" aria-disabled="true">Preparing…</a>
+          </article>
+          <article class="card">
+            <h3>Windows</h3><p>64-bit Windows 10 or newer.</p>
+            <p class="artifact-warning" data-warning="windows" role="status" hidden></p>
+            <a class="download" data-platform="windows" href="#" aria-disabled="true">Preparing…</a>
+          </article>
+          <article class="card">
+            <h3>Linux</h3><p>x86_64 glibc 2.28+ with an XDG desktop portal.</p>
+            <a class="download" data-platform="linux" href="#" aria-disabled="true">Preparing…</a>
+          </article>
+        </section>
+        <p class="manual-note">Release evidence: <a id="checksumsLink" href="#">SHA-256 checksums</a> · SPDX/CycloneDX SBOMs are linked in the release index.</p>
+      </div>
+    </details>
+
+    <p class="meta"><a href="/docs/contribution-policy">Contribution policy</a> · The registration creates a private, revocable upload identity; it is not evidence of participant consent or authorization.</p>
   </main>
+  <div class="toast" id="toast" role="status" aria-live="polite"></div>
   <script>
-    const labels = { macos: 'Download for macOS', windows: 'Download for Windows', linux: 'Download for Linux' };
+    const labels = { macos: 'Download macOS archive', windows: 'Download Windows archive', linux: 'Download Linux archive' };
     const safeDownload = (value) => typeof value === 'string' && /^\/downloads\/[A-Za-z0-9._+-]+$/.test(value);
-    const currentPlatform = /Mac/i.test(navigator.userAgent) ? 'macos' : /Windows/i.test(navigator.userAgent) ? 'windows' : /Linux|X11/i.test(navigator.userAgent) ? 'linux' : null;
-    const supportedVersion = (value) => {
-      const match = /^(\d+)\.(\d+)\.(\d+)$/.exec(value || '');
-      if (!match) return false;
-      const parts = match.slice(1).map(Number);
-      return parts[0] > 0 || parts[1] > 2 || (parts[1] === 2 && parts[2] >= 0);
+    const platform = /Windows/i.test(navigator.userAgent) ? 'windows' : /Mac|Linux|X11/i.test(navigator.userAgent) ? 'unix' : null;
+    if (platform) {
+      const card = document.querySelector(`[data-installer="${platform}"]`);
+      card?.classList.add('is-recommended');
+      const badge = card?.querySelector('.badge');
+      if (badge) badge.hidden = false;
+    }
+
+    let toastTimer;
+    const toast = (message) => {
+      const node = document.querySelector('#toast');
+      node.textContent = message;
+      node.classList.add('show');
+      clearTimeout(toastTimer);
+      toastTimer = setTimeout(() => node.classList.remove('show'), 1800);
     };
+    document.querySelectorAll('[data-copy]').forEach((button) => button.addEventListener('click', async () => {
+      try {
+        await navigator.clipboard.writeText(button.dataset.copy);
+        toast('Install command copied');
+      } catch {
+        toast('Copy failed — select the command above');
+      }
+    }));
+
     fetch('./latest.json', { cache: 'no-store' }).then((response) => {
       if (!response.ok) throw new Error('not published');
       return response.json();
     }).then((release) => {
-      if (!supportedVersion(release.version)) throw new Error('self-service release not published');
-      let restricted = false;
-      for (const [platform, artifact] of Object.entries(release.artifacts || {})) {
-        if (!(platform in labels) || !artifact || !safeDownload(artifact.url) || !/^[a-f0-9]{64}$/.test(artifact.sha256 || '')) continue;
-        const link = document.querySelector(`[data-platform="${platform}"]`);
-        if (!link) continue;
+      for (const [name, artifact] of Object.entries(release.artifacts || {})) {
+        if (!(name in labels) || !artifact || !safeDownload(artifact.url) || !/^[a-f0-9]{64}$/.test(artifact.sha256 || '')) continue;
+        const link = document.querySelector(`[data-platform="${name}"]`);
         link.href = artifact.url;
         link.removeAttribute('aria-disabled');
-        link.textContent = labels[platform] || 'Download';
-        const warning = document.querySelector(`[data-warning="${platform}"]`);
-        if (platform === 'macos' && artifact.notarized !== true) {
-          restricted = true;
+        link.textContent = labels[name];
+        const warning = document.querySelector(`[data-warning="${name}"]`);
+        if (name === 'macos' && artifact.notarized !== true) {
           warning.hidden = false;
-          warning.textContent = artifact.signed === true
-            ? 'Beta build: code-signed, but not Apple-notarized. Gatekeeper may warn or block it.'
-            : 'Beta build: not code-signed or Apple-notarized. Gatekeeper will warn or block it.';
-          link.textContent += ' — beta warning';
+          warning.textContent = artifact.signed === true ? 'Code-signed but not Apple-notarized.' : 'Not code-signed or Apple-notarized.';
         }
-        if (platform === 'windows' && artifact.signed !== true) {
-          restricted = true;
+        if (name === 'windows' && artifact.signed !== true) {
           warning.hidden = false;
-          warning.textContent = 'Beta build: no Windows Authenticode signature. SmartScreen will likely warn.';
-          link.textContent += ' — beta warning';
+          warning.textContent = 'No Windows Authenticode signature.';
         }
-      }
-      const recommendedArtifact = currentPlatform && release.artifacts?.[currentPlatform];
-      if (recommendedArtifact && safeDownload(recommendedArtifact.url)) {
-        const recommended = document.querySelector('#recommendedDownload');
-        recommended.href = recommendedArtifact.url;
-        recommended.textContent = labels[currentPlatform];
-        recommended.hidden = false;
       }
       if (safeDownload(release.checksums_url)) document.querySelector('#checksumsLink').href = release.checksums_url;
-      document.querySelector('#releaseStatus').textContent = `${release.version} · ${release.channel || 'open beta'} · SHA-256 verified bundles${restricted ? ' · OS security warnings shown' : ''}`;
+      const installerState = release.installers ? ' · terminal installers verified' : '';
+      document.querySelector('#releaseStatus').textContent = `${release.version} · ${release.channel || 'open beta'} · pinned package hashes${installerState}`;
     }).catch(() => {
-      document.querySelector('#releaseStatus').textContent = 'Self-service 0.2.0 downloads are being prepared';
+      document.querySelector('#releaseStatus').textContent = 'Release lookup unavailable · installer will verify before changing anything';
     });
   </script>
 </body>

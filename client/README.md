@@ -3,8 +3,8 @@
 `neuro-sync` is the local Scaling Neuro contribution client. A researcher enrolls a workstation
 once, opens the application, chooses a completed DICOM folder with the operating system's native
 folder picker, attests that the scans are approved under the displayed project policy, and leaves
-the rest to the client. Enrollment grants institutionally pre-authorized project access; neither
-enrollment nor this per-upload attestation collects or substitutes for participant consent.
+the rest to the client. Registration creates a private, revocable upload identity; neither
+registration nor this per-upload attestation authorizes data sharing or substitutes for participant consent.
 
 The current beta is deliberately EPI-only. It never uploads source DICOMs. It converts eligible
 functional EPI to minimally transformed acquisition-space NIfTI, preserves a strict set of useful
@@ -12,15 +12,25 @@ scanner/acquisition metadata, and uploads only bundles that pass the local defau
 
 ## Researcher workflow
 
-The release archive contains `neuro-sync` (`neuro-sync.exe` on Windows) and the pinned converter at
-`libexec/dcm2niix`.
+The public terminal installer downloads and verifies the platform release, installs it without
+administrator access, and opens the private local interface. The verified bundle contains
+`neuro-sync` (`neuro-sync.exe` on Windows) and the pinned converter at `libexec/dcm2niix`.
+
+```text
+# macOS or Linux
+curl -fsSL https://scalingneuro.com/install.sh | sh
+
+# Windows PowerShell
+irm https://scalingneuro.com/install.ps1 | iex
+```
 
 ```text
 # graphical flow: opens a private loopback UI and native folder chooser
 neuro-sync
 
 # headless/scanner-server flow
-neuro-sync enroll ONE_TIME_INVITE
+neuro-sync register --email researcher@example.edu --name "Researcher Name" \
+  --institution "Example University" --lab "Example Neuroimaging Lab"
 neuro-sync upload /path/to/completed-dicom-folder
 neuro-sync status
 neuro-sync resume
@@ -133,6 +143,11 @@ Release archives are named:
 - `neuro-sync-vVERSION-macos-universal[-UNSIGNED-PILOT].zip`
 - `neuro-sync-vVERSION-windows-x86_64[-UNSIGNED-PILOT].zip`
 - `neuro-sync-vVERSION-linux-x86_64[-UNSIGNED-PILOT].tar.gz`
+
+Each release also contains `install.sh` and `install.ps1` with the exact versioned archive names
+and package SHA-256 values embedded. Their default locations are `~/.local/share/neuro-sync` plus
+`~/.local/bin` on macOS/Linux and `%LOCALAPPDATA%\ScalingNeuro\neuro-sync\bin` on Windows. Direct
+archives remain available for managed environments that do not allow bootstrap scripts.
 
 The binary searches for dcm2niix in this order: `NEURO_SYNC_DCM2NIIX`,
 `<executable>/libexec/dcm2niix[.exe]`, beside the executable, then `PATH`. Production uploads

@@ -1,0 +1,85 @@
+$ErrorActionPreference = "Stop"
+Set-StrictMode -Version Latest
+
+$Version = "@VERSION@"
+$DownloadBase = "@DOWNLOAD_BASE@"
+$Package = "@WINDOWS_PACKAGE@"
+$ExpectedSha256 = "@WINDOWS_SHA256@"
+
+if (-not [Environment]::Is64BitOperatingSystem) {
+  throw "The current neuro-sync Windows release requires a 64-bit machine."
+}
+
+$localAppData = [Environment]::GetFolderPath("LocalApplicationData")
+if (-not $localAppData) { throw "Windows did not provide a local application-data directory." }
+$installRoot = if ($env:NEURO_SYNC_INSTALL_ROOT) { $env:NEURO_SYNC_INSTALL_ROOT } else { Join-Path $localAppData "ScalingNeuro\neuro-sync" }
+$binDir = if ($env:NEURO_SYNC_BIN_DIR) { $env:NEURO_SYNC_BIN_DIR } else { Join-Path $installRoot "bin" }
+$tempRoot = Join-Path ([IO.Path]::GetTempPath()) ("neuro-sync-" + [Guid]::NewGuid().ToString("N"))
+$archive = Join-Path $tempRoot $Package
+$packageUrl = "$DownloadBase/$Package"
+
+New-Item -ItemType Directory -Force -Path $tempRoot | Out-Null
+try {
+  Write-Host "Downloading neuro-sync $Version for Windows…"
+  if ($packageUrl.StartsWith("https://", [StringComparison]::OrdinalIgnoreCase)) {
+    [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+    Invoke-WebRequest -UseBasicParsing -Uri $packageUrl -OutFile $archive
+  } elseif ($packageUrl.StartsWith("file://", [StringComparison]::OrdinalIgnoreCase)) {
+    Copy-Item ([Uri]$packageUrl).LocalPath $archive
+  } else {
+    throw "The release URL must use HTTPS."
+  }
+
+  $actualSha256 = (Get-FileHash -Algorithm SHA256 $archive).Hash.ToLowerInvariant()
+  if ($actualSha256 -ne $ExpectedSha256) {
+    throw "Download verification failed; nothing was installed."
+  }
+
+  $extractDir = Join-Path $tempRoot "extracted"
+  Expand-Archive -Path $archive -DestinationPath $extractDir
+  $packageRoot = Join-Path $extractDir ([IO.Path]::GetFileNameWithoutExtension($Package))
+  if (-not (Test-Path -PathType Leaf (Join-Path $packageRoot "neuro-sync.exe"))) {
+    throw "The verified release is missing neuro-sync.exe."
+  }
+  if (-not (Test-Path -PathType Leaf (Join-Path $packageRoot "libexec\dcm2niix.exe"))) {
+    throw "The verified release is missing its pinned DICOM converter."
+  }
+
+  $stageDir = Join-Path $installRoot (".stage-" + [Guid]::NewGuid().ToString("N"))
+  $backupDir = Join-Path $installRoot (".previous-" + [Guid]::NewGuid().ToString("N"))
+  New-Item -ItemType Directory -Force -Path $installRoot | Out-Null
+  Copy-Item -Recurse $packageRoot $stageDir
+  if (Test-Path $binDir) { Move-Item $binDir $backupDir }
+  try {
+    Move-Item $stageDir $binDir
+  } catch {
+    if (Test-Path $backupDir) { Move-Item $backupDir $binDir }
+    throw
+  }
+  if (Test-Path $backupDir) { Remove-Item -Recurse -Force $backupDir }
+
+  if ($env:NEURO_SYNC_NO_PATH_UPDATE -ne "1") {
+    $userPath = [Environment]::GetEnvironmentVariable("Path", "User")
+    $entries = @($userPath -split ";" | Where-Object { $_ })
+    if (-not ($entries | Where-Object { $_.TrimEnd("\") -ieq $binDir.TrimEnd("\") })) {
+      $newUserPath = (@($entries) + $binDir) -join ";"
+      [Environment]::SetEnvironmentVariable("Path", $newUserPath, "User")
+      Write-Host "Added $binDir to your user PATH."
+    }
+  }
+  if (-not (($env:Path -split ";") | Where-Object { $_.TrimEnd("\") -ieq $binDir.TrimEnd("\") })) {
+    $env:Path = "$binDir;$env:Path"
+  }
+
+  Write-Host ""
+  Write-Host "Installed and verified neuro-sync $Version."
+  Write-Host "Location: $binDir"
+  if ($env:NEURO_SYNC_NO_LAUNCH -eq "1") {
+    Write-Host "Run neuro-sync to begin."
+  } else {
+    Write-Host "Opening the private local setup…"
+    Start-Process (Join-Path $binDir "neuro-sync.exe")
+  }
+} finally {
+  if (Test-Path $tempRoot) { Remove-Item -Recurse -Force $tempRoot }
+}

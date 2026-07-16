@@ -153,11 +153,13 @@ const toast = (msg) => {
 
 /* ---------- copy / download ---------- */
 $('#copyBtn')?.addEventListener('click', async () => {
-  const cmd = './neuro-sync upload ./new_session_dicoms';
-  try { await navigator.clipboard.writeText(cmd); toast('CLI command copied'); }
+  const cmd = /Windows/i.test(navigator.userAgent)
+    ? 'irm https://scalingneuro.com/install.ps1 | iex'
+    : 'curl -fsSL https://scalingneuro.com/install.sh | sh';
+  try { await navigator.clipboard.writeText(cmd); toast('Install command copied'); }
   catch { toast('Copy failed — command shown in the terminal'); }
 });
-$('#dlBtn')?.addEventListener('click', () => toast('Opening downloads'));
+$('#dlBtn')?.addEventListener('click', () => toast('Opening installer'));
 
 /* ==========================================================================
    Scan browser + 3D viewer

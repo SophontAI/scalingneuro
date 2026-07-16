@@ -81,6 +81,31 @@ jobs:
         if: steps.component.outputs.present == 'true'
         run: cargo test --locked --manifest-path client/Cargo.toml --all-features
 
+  installer-unix:
+    name: Terminal installer (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-14]
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v6
+
+      - name: Test verified user-level installation and tamper rejection
+        run: ./scripts/test-installers.sh
+
+  installer-windows:
+    name: Terminal installer (Windows)
+    runs-on: windows-2025
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v6
+
+      - name: Test verified user-level installation and tamper rejection
+        shell: pwsh
+        run: ./scripts/test-installers.ps1
+
   worker:
     name: Cloudflare Worker
     runs-on: ubuntu-latest
@@ -122,3 +147,7 @@ jobs:
       - name: Test
         if: steps.component.outputs.present == 'true'
         run: npm test --prefix worker
+
+      - name: Test browser NIfTI streaming
+        if: steps.component.outputs.present == 'true'
+        run: node --test tests/nifti-preview.test.mjs

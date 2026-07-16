@@ -1,0 +1,140 @@
+#!/bin/sh
+set -eu
+
+VERSION='@VERSION@'
+DOWNLOAD_BASE='@DOWNLOAD_BASE@'
+MACOS_PACKAGE='@MACOS_PACKAGE@'
+MACOS_SHA256='@MACOS_SHA256@'
+LINUX_PACKAGE='@LINUX_PACKAGE@'
+LINUX_SHA256='@LINUX_SHA256@'
+
+fail() {
+  printf 'neuro-sync installer: %s\n' "$*" >&2
+  exit 1
+}
+
+command -v curl >/dev/null 2>&1 || fail 'curl is required'
+
+case "$(uname -s)" in
+  Darwin)
+    package=$MACOS_PACKAGE
+    expected_sha256=$MACOS_SHA256
+    archive_kind=zip
+    command -v unzip >/dev/null 2>&1 || fail 'unzip is required'
+    ;;
+  Linux)
+    case "$(uname -m)" in
+      x86_64|amd64) ;;
+      *) fail 'the current Linux release requires an x86_64 machine' ;;
+    esac
+    package=$LINUX_PACKAGE
+    expected_sha256=$LINUX_SHA256
+    archive_kind=tar
+    command -v tar >/dev/null 2>&1 || fail 'tar is required'
+    ;;
+  *) fail 'this installer supports macOS and x86_64 Linux; use install.ps1 on Windows' ;;
+esac
+
+tmp_dir=$(mktemp -d "${TMPDIR:-/tmp}/neuro-sync.XXXXXX")
+trap 'rm -rf "$tmp_dir"' EXIT HUP INT TERM
+archive="$tmp_dir/$package"
+url="$DOWNLOAD_BASE/$package"
+
+printf 'Downloading neuro-sync %s for %s…\n' "$VERSION" "$(uname -s)"
+case "$url" in
+  https://*) curl --proto '=https' --tlsv1.2 --fail --location --silent --show-error --retry 3 --output "$archive" "$url" ;;
+  file://*) curl --fail --location --silent --show-error --output "$archive" "$url" ;;
+  *) fail 'the release URL must use HTTPS' ;;
+esac
+
+if command -v sha256sum >/dev/null 2>&1; then
+  actual_sha256=$(sha256sum "$archive" | awk '{print $1}')
+elif command -v shasum >/dev/null 2>&1; then
+  actual_sha256=$(shasum -a 256 "$archive" | awk '{print $1}')
+else
+  fail 'sha256sum or shasum is required to verify the download'
+fi
+actual_sha256=$(printf '%s' "$actual_sha256" | tr 'A-F' 'a-f')
+test "$actual_sha256" = "$expected_sha256" || fail 'download verification failed; nothing was installed'
+
+extract_dir="$tmp_dir/extracted"
+mkdir -p "$extract_dir"
+case "$archive_kind" in
+  zip)
+    unzip -q "$archive" -d "$extract_dir"
+    package_root="$extract_dir/${package%.zip}"
+    ;;
+  tar)
+    tar -xzf "$archive" -C "$extract_dir"
+    package_root="$extract_dir/${package%.tar.gz}"
+    ;;
+esac
+test -f "$package_root/neuro-sync" || fail 'verified release is missing neuro-sync'
+test -f "$package_root/libexec/dcm2niix" || fail 'verified release is missing its pinned DICOM converter'
+
+install_root=${NEURO_SYNC_INSTALL_ROOT:-"$HOME/.local/share/neuro-sync"}
+bin_dir=${NEURO_SYNC_BIN_DIR:-"$HOME/.local/bin"}
+versions_dir="$install_root/versions"
+version_dir="$versions_dir/$VERSION"
+stage_dir="$versions_dir/.stage-$VERSION-$$"
+backup_dir="$versions_dir/.previous-$VERSION-$$"
+mkdir -p "$versions_dir" "$bin_dir"
+rm -rf "$stage_dir" "$backup_dir"
+cp -R "$package_root" "$stage_dir"
+chmod 0755 "$stage_dir/neuro-sync" "$stage_dir/libexec/dcm2niix"
+if test -e "$version_dir"; then
+  mv "$version_dir" "$backup_dir"
+fi
+if ! mv "$stage_dir" "$version_dir"; then
+  test ! -e "$backup_dir" || mv "$backup_dir" "$version_dir"
+  fail 'could not activate the verified release'
+fi
+rm -rf "$backup_dir"
+
+shell_quote() {
+  printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"
+}
+
+launcher_tmp="$bin_dir/.neuro-sync-$$"
+{
+  printf '#!/bin/sh\n'
+  printf 'NEURO_SYNC_DCM2NIIX=%s exec %s "$@"\n' \
+    "$(shell_quote "$version_dir/libexec/dcm2niix")" \
+    "$(shell_quote "$version_dir/neuro-sync")"
+} > "$launcher_tmp"
+chmod 0755 "$launcher_tmp"
+mv "$launcher_tmp" "$bin_dir/neuro-sync"
+
+path_note=
+case ":${PATH:-}:" in
+  *":$bin_dir:"*) ;;
+  *)
+    if test "$bin_dir" = "$HOME/.local/bin"; then
+      case "${SHELL:-}" in
+        */zsh) profile="$HOME/.zshrc" ;;
+        */bash)
+          if test "$(uname -s)" = Darwin; then profile="$HOME/.bash_profile"; else profile="$HOME/.bashrc"; fi
+          ;;
+        *) profile="$HOME/.profile" ;;
+      esac
+      touch "$profile"
+      if ! grep -F 'export PATH="$HOME/.local/bin:$PATH"' "$profile" >/dev/null 2>&1; then
+        printf '\n# Added by the Scaling Neuro installer\nexport PATH="$HOME/.local/bin:$PATH"\n' >> "$profile"
+      fi
+      path_note="Configured $bin_dir for new terminal sessions in $profile."
+    else
+      path_note="Add $bin_dir to PATH to run neuro-sync by name."
+    fi
+    ;;
+esac
+
+printf '\nInstalled and verified neuro-sync %s.\n' "$VERSION"
+printf 'Location: %s\n' "$version_dir"
+test -z "$path_note" || printf '%s\n' "$path_note"
+
+if test "${NEURO_SYNC_NO_LAUNCH:-0}" = 1 || ! test -t 1; then
+  printf 'Run %s/neuro-sync to begin.\n' "$bin_dir"
+else
+  printf 'Opening the private local setup…\n\n'
+  "$bin_dir/neuro-sync"
+fi

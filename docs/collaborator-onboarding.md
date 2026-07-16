@@ -15,13 +15,28 @@ Registration creates a private, revocable upload identity for one workstation an
 
 Pilot releases support Apple Silicon and Intel macOS through one universal package, Windows x64, and Linux x64. The Linux package requires glibc 2.28 or newer (for example, Ubuntu 20.04+, Debian 10+, or RHEL 8+), `libwayland-client.so.0`, and a working `xdg-desktop-portal` backend for the folder picker. Scanner compatibility comes from the pinned multi-vendor dcm2niix converter and fail-closed validation; no software can honestly guarantee every historical or malformed scanner export. Unsupported series stay local and appear in the report.
 
-## Graphical flow
+## Install once
 
-1. Download the release for your operating system and verify it using the adjacent `SHA256SUMS` file. Prefer signed builds. A beta file containing `UNSIGNED-PILOT` in its name may trigger operating-system warnings.
-2. Open `neuro-sync`. On first launch, complete the short lab form and review the functional-EPI contribution policy shown by the app.
-3. Choose **Choose folder…**, select the top-level export folder, confirm that the scans are approved for the displayed project, and choose **Validate and upload**.
-4. Leave the app open or close it normally. Relaunching resumes from a compatible local checkpoint; it does not restart completed transfers. If a release tightened the privacy rules, choose **Revalidate with current privacy rules**: the same private source is converted again locally and must reproduce the original scan identities before upload. Large or multi-subject folders are split automatically into sequential, independently committed one-subject sessions.
-5. Wait for **Committed**. Save the run report for the study record. It contains pseudonymous IDs, counts, hashes, QC codes, and held/excluded reasons—never patient names or raw DICOM values.
+Paste the command for your computer. The installer runs without administrator access, downloads the release bundle and pinned converter, verifies the package SHA-256 before installing, adds `neuro-sync` to your user PATH, and opens the guided local interface.
+
+```bash
+# macOS or Linux
+curl -fsSL https://scalingneuro.com/install.sh | sh
+```
+
+```powershell
+# Windows PowerShell
+irm https://scalingneuro.com/install.ps1 | iex
+```
+
+Both scripts are readable at those URLs before use and do not send installer telemetry. Direct release archives and `SHA256SUMS` remain available at [scalingneuro.com/downloads](https://scalingneuro.com/downloads/) for managed environments that prohibit bootstrap scripts. Terminal installation does not override institutional endpoint-security rules; those environments may still require signed executables.
+
+## Guided flow
+
+1. On first launch, complete the short lab form and review the functional-EPI contribution policy shown by the client.
+2. Choose **Choose folder…**, select the top-level export folder, confirm that the scans are approved for the displayed project, and choose **Validate and upload**.
+3. Leave the client open or close it normally. Running `neuro-sync` again resumes from a compatible local checkpoint; it does not restart completed transfers. If a release tightened the privacy rules, choose **Revalidate with current privacy rules**: the same private source is converted again locally and must reproduce the original scan identities before upload. Large or multi-subject folders are split automatically into sequential, independently committed one-subject sessions.
+4. Wait for **Committed**. Save the run report for the study record. It contains pseudonymous IDs, counts, hashes, QC codes, and held/excluded reasons—never patient names or raw DICOM values.
 
 The source folder is read-only. DICOMs are neither modified nor uploaded. Only accepted functional EPI NIfTI/JSON bundles leave the machine. Structural scans, DWI, ASL, fieldmaps, SBRefs, localizers, derived images, and uncertain series stay local.
 
@@ -71,7 +86,7 @@ A successful run shows:
 
 - **Network interruption or expired 15-minute part URL:** choose Resume. Checkpointed multipart pieces are reused and the client requests a new checksum-bound URL only for the next missing part. A crash in the instant before an accepted ETag was saved may safely resend that same part number.
 - **Registration timed out or the app closed before confirmation:** reopen the client and submit the same details. The owner-only pending operation is replayed with the same client-bound token, so a lost response cannot create duplicate lab or device records.
-- **The app was closed or the computer restarted:** reopen the same installation and choose Resume.
+- **The client was closed or the computer restarted:** run `neuro-sync` and choose Resume.
 - **The app says Privacy update required:** choose **Revalidate with current privacy rules**. The old prepared bytes are never uploaded; the source path stays private, and a changed or missing source fails locally so you can select the folder again.
 - **Resume says the registration context changed:** do not bypass it. The prepared run’s site, project, or contribution-policy version no longer matches the current device; review the policy and prepare a new authorized run.
 - **A series is held:** keep the source folder unchanged and share the report. Scaling Neuro can add a compatibility fixture or classifier rule without receiving PHI.

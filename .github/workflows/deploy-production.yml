@@ -103,6 +103,11 @@ jobs:
             (.channel == "pilot" or .channel == "open-beta") and
             .checksums_url == "/downloads/SHA256SUMS" and
             ((.artifacts | keys | sort) == ["linux", "macos", "windows"]) and
+            ((.installers == null and $version == "0.2.0") or
+              (((.installers | keys | sort) == ["unix", "windows"]) and
+               (.installers.unix.url == "/install.sh") and
+               (.installers.windows.url == "/install.ps1") and
+               (all(.installers[]; .sha256 | type == "string" and test("^[0-9a-f]{64}$"))))) and
             (all(.artifacts[];
               (.url | type == "string" and test("^/downloads/[A-Za-z0-9][A-Za-z0-9._+-]*$")) and
               (.sha256 | type == "string" and test("^[0-9a-f]{64}$")) and
@@ -116,6 +121,7 @@ jobs:
           {
             printf '%s\n' SHA256SUMS latest.json
             jq -r '.artifacts[] | [.url, .sbom_spdx_url, .sbom_cyclonedx_url][] | split("/")[-1]' "$asset_dir/latest.json"
+            jq -r '.installers // {} | .[].url | split("/")[-1]' "$asset_dir/latest.json"
           } | LC_ALL=C sort -u > "$expected"
           actual=$(mktemp)
           find "$asset_dir" -mindepth 1 -maxdepth 1 -type f -printf '%f\n' | LC_ALL=C sort > "$actual"
@@ -136,6 +142,10 @@ jobs:
             exit 1
           fi
           install -m 0644 "$asset_dir"/* dist/downloads/
+          if [[ -f "$asset_dir/install.sh" && -f "$asset_dir/install.ps1" ]]; then
+            install -m 0755 "$asset_dir/install.sh" dist/install.sh
+            install -m 0644 "$asset_dir/install.ps1" dist/install.ps1
+          fi
 
       - name: Deploy production
         uses: cloudflare/wrangler-action@v3
@@ -160,3 +170,25 @@ jobs:
           done
           echo "Production did not converge to the deployed source version" >&2
           exit 1
+
+      - name: Verify production terminal installers
+        shell: bash
+        run: |
+          set -euo pipefail
+          verify_dir=$(mktemp -d)
+          trap 'rm -rf "$verify_dir"' EXIT
+          curl --fail --location --silent --show-error --retry 5 --retry-all-errors \
+            --output "$verify_dir/latest.json" https://scalingneuro.com/downloads/latest.json
+          if jq --exit-status '.installers != null' "$verify_dir/latest.json" >/dev/null; then
+            jq -r '.installers[] | [.url, .sha256] | @tsv' "$verify_dir/latest.json" |
+              while IFS=$'\t' read -r url expected_sha; do
+                name=${url##*/}
+                curl --fail --location --silent --show-error --retry 5 --retry-all-errors \
+                  --output "$verify_dir/$name" "https://scalingneuro.com$url"
+                actual_sha=$(sha256sum "$verify_dir/$name" | cut -d' ' -f1)
+                [[ "$actual_sha" == "$expected_sha" ]] || {
+                  echo "Production installer digest mismatch: $name" >&2
+                  exit 1
+                }
+              done
+          fi

@@ -12,13 +12,13 @@ neuro-sync-vX.Y.Z-windows-x86_64.zip
 neuro-sync-vX.Y.Z-linux-x86_64.tar.gz
 ```
 
-If Apple or Windows signing credentials are unavailable, that platform’s filename is changed to include `-UNSIGNED-PILOT` before the extension. Unsigned packages must never be presented as a general public release.
+If Apple or Windows signing credentials are unavailable, that platform’s filename is changed to include `-UNSIGNED-PILOT` before the extension. Unsigned packages remain explicitly labeled beta artifacts and the manual-download surface discloses the applicable operating-system and institutional-policy warning.
 
 A signed but non-notarized macOS archive is named `-CODESIGNED-PILOT.zip`. Only a macOS archive that passes both hardened-runtime signing and Apple notarization receives the suffix-free filename. This keeps “signed” from being mistaken for the lower-friction Gatekeeper experience collaborators expect.
 
-Each package contains the `neuro-sync` executable, the platform converter at `libexec/dcm2niix`, the converter's redistribution notice, the project `LICENSE-MIT` and `LICENSE-APACHE` texts, this onboarding guide, a `RELEASE.json` recording the source commit and converter archive digest, and SPDX and CycloneDX SBOMs. The release also publishes a portable `latest.json` index and a top-level `SHA256SUMS` over the final packages, SBOMs, and index.
+Each package contains the `neuro-sync` executable, the platform converter at `libexec/dcm2niix`, the converter's redistribution notice, the project `LICENSE-MIT` and `LICENSE-APACHE` texts, this onboarding guide, a `RELEASE.json` recording the source commit and converter archive digest, and SPDX and CycloneDX SBOMs. The release also renders `install.sh` and `install.ps1` with the exact archive names and SHA-256 values embedded, publishes a portable `latest.json` index, and produces a top-level `SHA256SUMS` over the packages, installers, SBOMs, and index.
 
-The public release step writes `/downloads/latest.json`, mapping `macos`, `windows`, and `linux` to the exact versioned URL, SHA-256, signing state, and SBOM URLs. The same index is attached to the GitHub release so an ordinary production deploy can restore the current downloads without trusting an older live Pages deployment. Publication refuses any individual asset larger than Cloudflare Pages' 25 MiB file limit. GitHub release attachment is secondary because this repository may be private; the Pages URLs are the collaborator-facing contract.
+The public release step writes `/downloads/latest.json`, mapping `macos`, `windows`, and `linux` to the exact versioned URL, SHA-256, signing state, and SBOM URLs, and mapping the Unix and Windows terminal installers to their own hashes. The same index is attached to the GitHub release so an ordinary production deploy can restore the current downloads and root installer URLs without trusting an older live Pages deployment. Publication refuses any individual asset larger than Cloudflare Pages' 25 MiB file limit. GitHub release attachment is secondary because this repository may be private; the Pages URLs are the collaborator-facing contract.
 
 ## Pinned converter
 
@@ -69,8 +69,9 @@ Before sharing a package:
 
 1. The release workflow's blocking verification job must pass schema/policy consistency, strict Ajv compilation, Rust formatting/clippy/tests, and Worker type/tests.
 2. The release workflow must verify the pinned converter and produce SBOMs and `SHA256SUMS`.
-3. Run clean-machine smoke tests for each promised OS: enrollment, native folder selection, dry run, accepted/held separation, upload, forced interruption, resume, commit, and report.
-4. Inspect the stored sidecar and manifest for schema validity, metadata retention, absence of seeded PHI, and exact local/R2 hashes.
-5. Prefer notarized macOS and Authenticode-signed Windows builds for collaborators. Until signing is configured, keep `UNSIGNED-PILOT` and `CODESIGNED-PILOT` filenames and show the operating-system warning explicitly on the public download page.
+3. The terminal-installer tests must pass on macOS, Linux, and Windows, including a user-level install, bundled-converter presence, repeat installation, and rejection of a tampered archive.
+4. Run clean-machine smoke tests for each promised OS: enrollment, native folder selection, dry run, accepted/held separation, upload, forced interruption, resume, commit, and report.
+5. Inspect the stored sidecar and manifest for schema validity, metadata retention, absence of seeded PHI, and exact local/R2 hashes.
+6. Prefer notarized macOS and Authenticode-signed Windows builds for institution-managed machines. Until signing is configured, keep `UNSIGNED-PILOT` and `CODESIGNED-PILOT` filenames and show the warning beside manual downloads; terminal installation must not claim to override endpoint-security policy.
 
 The workflow can create a GitHub prerelease when requested. Manual builds do not publish unless **publish release** is explicitly enabled; `client-vX.Y.Z` tags publish the corresponding versioned open-beta downloads automatically.

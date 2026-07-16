@@ -18,6 +18,20 @@ install -m 0644 \
 install -m 0644 "$ROOT_DIR/downloads/index.html" "$DIST_DIR/downloads/"
 install -m 0644 "$ROOT_DIR/docs/contribution-policy.html" "$DIST_DIR/docs/"
 
+# Keep the terminal-first route usable during the first source deployment. A
+# published client release replaces these bootstrap scripts with release-matched
+# copies after verifying the same package hashes.
+"$ROOT_DIR/scripts/render-installers.sh" \
+  "$DIST_DIR" \
+  "0.2.0" \
+  "https://scalingneuro.com/downloads" \
+  "neuro-sync-v0.2.0-macos-universal-UNSIGNED-PILOT.zip" \
+  "cdd1d618946d17ebd861430c3427738a6a54443db00c93112f1cb8d69845fd25" \
+  "neuro-sync-v0.2.0-linux-x86_64.tar.gz" \
+  "ab34b5343bca8900a7491177385c71798228d9dfe1e23900d8ee60f44d64ba63" \
+  "neuro-sync-v0.2.0-windows-x86_64-UNSIGNED-PILOT.zip" \
+  "4db12034cfa8c69e6aab77ee3baf17cb4b43b4d78ac88c8ec9ccc9199e56f0d1"
+
 for schema in \
   common-v1.schema.json \
   scan-sidecar-v1.schema.json \

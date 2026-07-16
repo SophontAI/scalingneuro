@@ -147,6 +147,9 @@ jobs:
           cargo clippy --locked --manifest-path client/Cargo.toml --all-targets --all-features -- -D warnings
           cargo test --locked --manifest-path client/Cargo.toml --all-features
 
+      - name: Verify terminal installer on Linux
+        run: ./scripts/test-installers.sh
+
   linux:
     name: Linux x86_64 package
     needs: [metadata, verify]
@@ -322,6 +325,9 @@ jobs:
       - name: Check out source
         uses: actions/checkout@v6
 
+      - name: Verify terminal installer on macOS
+        run: ./scripts/test-installers.sh
+
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
@@ -488,6 +494,10 @@ jobs:
       - name: Check out source
         uses: actions/checkout@v6
 
+      - name: Verify terminal installer on Windows
+        shell: pwsh
+        run: ./scripts/test-installers.ps1
+
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
@@ -618,7 +628,7 @@ jobs:
           path: release-assets
           merge-multiple: true
 
-      - name: Generate portable release index
+      - name: Generate release index and terminal installers
         env:
           VERSION: ${{ needs.metadata.outputs.version }}
         shell: bash
@@ -675,6 +685,28 @@ jobs:
               }
             }' > release-assets/latest.json
 
+          ./scripts/render-installers.sh \
+            release-assets \
+            "$VERSION" \
+            "https://scalingneuro.com/downloads" \
+            "$macos_name" \
+            "$macos_sha" \
+            "$linux_name" \
+            "$linux_sha" \
+            "$windows_name" \
+            "$windows_sha"
+          unix_installer_sha=$(sha256sum release-assets/install.sh | cut -d' ' -f1)
+          windows_installer_sha=$(sha256sum release-assets/install.ps1 | cut -d' ' -f1)
+          jq \
+            --arg unix_sha "$unix_installer_sha" \
+            --arg windows_sha "$windows_installer_sha" \
+            '.installers = {
+              unix:{url:"/install.sh",sha256:$unix_sha,supports:["macos","linux"]},
+              windows:{url:"/install.ps1",sha256:$windows_sha,supports:["windows"]}
+            }' \
+            release-assets/latest.json > release-assets/latest.with-installers.json
+          mv release-assets/latest.with-installers.json release-assets/latest.json
+
       - name: Generate top-level checksums
         shell: bash
         run: |
@@ -713,9 +745,11 @@ jobs:
           body: |
             Scaling Neuro EPI ingestion client open beta.
 
-            Verify the selected package against SHA256SUMS before use. Files labeled
-            UNSIGNED-PILOT and CODESIGNED-PILOT filenames identify beta artifacts that may
-            trigger operating-system trust warnings. Prefer signed and notarized builds.
+            The published terminal installers select the correct package, verify its pinned
+            SHA-256, install without administrator access, and open the guided local flow.
+            Direct packages remain available and can be checked against SHA256SUMS. Files
+            labeled UNSIGNED-PILOT or CODESIGNED-PILOT may trigger operating-system trust
+            warnings; institutional controls may still require signed builds.
 
       - name: Set up Node for Pages Worker build
         if: github.ref_type == 'tag' || inputs.publish_release == true
@@ -739,6 +773,8 @@ jobs:
         run: |
           set -euo pipefail
           cp release-assets/* dist/downloads/
+          install -m 0755 release-assets/install.sh dist/install.sh
+          install -m 0644 release-assets/install.ps1 dist/install.ps1
 
       - name: Upload public Pages bundle
         if: github.ref_type == 'tag' || inputs.publish_release == true
@@ -839,6 +875,10 @@ jobs:
                  .channel == "open-beta" and
                  .checksums_url == "/downloads/SHA256SUMS" and
                  ((.artifacts | keys | sort) == ["linux", "macos", "windows"]) and
+                 ((.installers | keys | sort) == ["unix", "windows"]) and
+                 (.installers.unix.url == "/install.sh") and
+                 (.installers.windows.url == "/install.ps1") and
+                 (all(.installers[]; .sha256 | type == "string" and test("^[0-9a-f]{64}$"))) and
                  (all(.artifacts[];
                    (.url | type == "string" and test("^/downloads/[A-Za-z0-9][A-Za-z0-9._+-]*$")) and
                    (.sha256 | type == "string" and test("^[0-9a-f]{64}$")) and
@@ -873,7 +913,7 @@ jobs:
 
           expected=$(mktemp)
           {
-            printf '%s\n' latest.json
+            printf '%s\n' install.ps1 install.sh latest.json
             jq -r '.artifacts[] | [.url, .sbom_spdx_url, .sbom_cyclonedx_url][] | split("/")[-1]' \
               "$release_dir/latest.json"
           } | LC_ALL=C sort -u > "$expected"
@@ -881,7 +921,7 @@ jobs:
           awk '{print $2}' "$release_dir/SHA256SUMS" | LC_ALL=C sort > "$actual"
           diff -u "$expected" "$actual"
 
-          jq -r '.artifacts[] | [.url, .sbom_spdx_url, .sbom_cyclonedx_url][]' \
+          jq -r '[.artifacts[] | [.url, .sbom_spdx_url, .sbom_cyclonedx_url][]] + [.installers[].url] | .[]' \
             "$release_dir/latest.json" |
             while IFS= read -r url; do
               name=${url##*/}
