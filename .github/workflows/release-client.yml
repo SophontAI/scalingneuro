@@ -897,20 +897,6 @@ jobs:
             exit 1
           fi
 
-          curl --fail --location --silent --show-error \
-            --retry 5 --retry-all-errors \
-            --output "$release_dir/SHA256SUMS" \
-            "https://scalingneuro.com/downloads/SHA256SUMS?release=$EXPECTED_VERSION"
-
-          if ! awk '
-            NF != 2 ||
-            $1 !~ /^[0-9a-f]{64}$/ ||
-            $2 !~ /^[A-Za-z0-9][A-Za-z0-9._+-]*$/ { exit 1 }
-          ' "$release_dir/SHA256SUMS"; then
-            echo "Unsafe or malformed production SHA256SUMS" >&2
-            exit 1
-          fi
-
           expected=$(mktemp)
           {
             printf '%s\n' install.ps1 install.sh latest.json
@@ -918,8 +904,32 @@ jobs:
               "$release_dir/latest.json"
           } | LC_ALL=C sort -u > "$expected"
           actual=$(mktemp)
-          awk '{print $2}' "$release_dir/SHA256SUMS" | LC_ALL=C sort > "$actual"
-          diff -u "$expected" "$actual"
+          inventory_converged=false
+          for attempt in $(seq 1 20); do
+            candidate="$release_dir/SHA256SUMS.candidate"
+            if curl --fail --location --silent --show-error \
+                 --retry 5 --retry-all-errors \
+                 --output "$candidate" \
+                 "https://scalingneuro.com/downloads/SHA256SUMS?release=$EXPECTED_VERSION&commit=$GITHUB_SHA&attempt=$attempt" &&
+               awk '
+                 NF != 2 ||
+                 $1 !~ /^[0-9a-f]{64}$/ ||
+                 $2 !~ /^[A-Za-z0-9][A-Za-z0-9._+-]*$/ { exit 1 }
+               ' "$candidate"; then
+              awk '{print $2}' "$candidate" | LC_ALL=C sort > "$actual"
+              if diff -u "$expected" "$actual" >/dev/null; then
+                mv "$candidate" "$release_dir/SHA256SUMS"
+                inventory_converged=true
+                break
+              fi
+            fi
+            sleep 5
+          done
+          if [[ "$inventory_converged" != true ]]; then
+            echo "Production checksum inventory did not converge" >&2
+            diff -u "$expected" "$actual" >&2 || true
+            exit 1
+          fi
 
           jq -r '[.artifacts[] | [.url, .sbom_spdx_url, .sbom_cyclonedx_url][]] + [.installers[].url] | .[]' \
             "$release_dir/latest.json" |
