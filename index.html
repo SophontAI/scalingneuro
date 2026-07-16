@@ -149,31 +149,58 @@
     <!-- ============ THE NEURAL VAULT ============ -->
     <section class="band band-cream" id="vault">
       <div class="wrap">
-        <div style="max-width:820px;margin-bottom:clamp(36px,5vw,60px)">
-          <span class="label reveal" style="display:block;margin-bottom:20px">02 — The archive</span>
-          <h2 class="h-sec reveal" style="margin-bottom:20px">A raw archive models—and researchers—can trust.</h2>
+        <div style="max-width:880px;margin-bottom:clamp(36px,5vw,60px)">
+          <span class="label reveal" style="display:block;margin-bottom:20px">02 — Explore OpenNeuro</span>
+          <h2 class="h-sec reveal" style="margin-bottom:20px">Preview real public brain scans where they already live.</h2>
           <p class="lede reveal">
-            Every entry is one native-space functional scan, one minimized acquisition sidecar, and one verifiable manifest record.
-            <span class="badge-demo">Synthetic public previews · contributed archive is governed</span>
+            Find a public OpenNeuro dataset, narrow its BIDS files by task or modality, and inspect the first 3D volume without mirroring the raw archive.
+            <span class="badge-demo">Live OpenNeuro snapshots · direct public S3 streaming</span>
           </p>
         </div>
 
-        <div class="access-policy reveal" aria-label="Version one archive policy">
-          <div><span class="policy-icon policy-open">01</span><p><strong>Functional EPI only</strong><small>4D time series that pass local classification and QC.</small></p></div>
-          <div><span class="policy-icon policy-local">02</span><p><strong>Acquisition space</strong><small>No registration, masking, resampling, or lossy transform.</small></p></div>
-          <div><span class="policy-icon policy-view">03</span><p><strong>Default-deny metadata</strong><small>Useful scanner parameters stay; identifiers and free text do not.</small></p></div>
+        <div class="access-policy reveal" aria-label="OpenNeuro preview behavior">
+          <div><span class="policy-icon policy-open">01</span><p><strong>Snapshot pinned</strong><small>Every preview uses the exact S3 object version returned by OpenNeuro.</small></p></div>
+          <div><span class="policy-icon policy-local">02</span><p><strong>Source direct</strong><small>Image bytes travel from OpenNeuro’s public bucket to your browser.</small></p></div>
+          <div><span class="policy-icon policy-view">03</span><p><strong>First volume only</strong><small>The stream stops after one 3D frame instead of downloading a full fMRI run.</small></p></div>
         </div>
 
         <div class="vault-grid reveal">
           <!-- archive browser -->
-          <aside class="vault-left" aria-label="Scan archive">
+          <aside class="vault-left" aria-label="OpenNeuro dataset and file explorer">
             <div class="vault-head">
-              <span class="label" id="archiveRoot">R2 / S3 archive <b>live</b></span>
-              <span class="mchip mchip-sage" id="archiveState">private</span>
+              <span class="label" id="archiveRoot">OpenNeuro <b>live</b></span>
+              <span class="mchip mchip-sage" id="archiveState">public</span>
             </div>
-            <div class="filters" id="filters">
-              <button class="filt is-active" data-filt="all">All</button>
-              <button class="filt" data-filt="bold">EPI</button>
+            <div class="dataset-tools">
+              <label class="explorer-field" for="datasetSearch">
+                <span>Find a dataset</span>
+                <input id="datasetSearch" type="search" placeholder="Title, task, or ds000001" autocomplete="off" role="combobox" aria-autocomplete="list" aria-controls="datasetResults" aria-expanded="false" />
+              </label>
+              <div class="dataset-results" id="datasetResults" role="listbox" hidden></div>
+              <div class="dataset-shortcuts" aria-label="Featured OpenNeuro datasets">
+                <button type="button" data-dataset="ds002748">Resting state</button>
+                <button type="button" data-dataset="ds000228">Movie</button>
+                <button type="button" data-dataset="ds000105">Visual objects</button>
+                <button type="button" data-dataset="ds000001">Risk task</button>
+              </div>
+              <div class="dataset-selection" id="datasetSelection" aria-live="polite">
+                <span class="dataset-selection-id">Connecting…</span>
+                <strong>Loading OpenNeuro</strong>
+              </div>
+            </div>
+            <div class="file-tools">
+              <label class="explorer-field explorer-field-files" for="fileSearch">
+                <span>Find a preview file</span>
+                <input id="fileSearch" type="search" placeholder="Subject, task, run, or filename" autocomplete="off" />
+              </label>
+              <div class="filters" id="filters" aria-label="File modality">
+                <button class="filt" data-filt="all">All</button>
+                <button class="filt is-active" data-filt="bold">BOLD</button>
+                <button class="filt" data-filt="anat">Anatomy</button>
+                <button class="filt" data-filt="dwi">DWI</button>
+                <button class="filt" data-filt="other">Other</button>
+              </div>
+              <div class="file-result-meta"><span id="fileCount">Loading files…</span><span>raw BIDS only</span></div>
             </div>
             <div class="browser-list" id="scanList"><!-- populated by JS --></div>
           </aside>
@@ -181,15 +208,15 @@
           <!-- instant-view viewer -->
           <div class="vault-right">
             <div class="viewer-head" aria-live="polite">
-              <span class="label" id="viewerMode">Instant View · loading</span>
-              <span class="viewer-title" id="viewerTitle">// loading preview</span>
+              <div><span class="label" id="viewerMode">OpenNeuro · first-volume preview</span><span class="viewer-title" id="viewerTitle">// choose a file</span></div>
+              <a class="viewer-source-link" id="openneuroDatasetLink" href="https://openneuro.org" target="_blank" rel="noopener" hidden>Open dataset ↗</a>
             </div>
             <div class="viewer-stage" id="viewerStage" role="img" aria-label="Interactive 3D neuroimaging preview">
               <canvas id="brainCanvas" aria-hidden="true"></canvas>
               <div class="viewer-metaoverlay" id="viewerMeta" hidden></div>
               <div class="viewer-empty" id="viewerEmpty">
                 <svg viewBox="0 0 24 24" width="38" height="38"><use href="#i-cube"/></svg>
-                <p>Select a synthetic functional-EPI bundle preview. The private archive is never fetched by this public page.</p>
+                <p>Choose a public OpenNeuro file. Only its first 3D volume will be streamed for this preview.</p>
               </div>
               <div class="viewer-loading" id="viewerLoading" hidden>
                 <div class="load-ring"></div>
@@ -301,6 +328,6 @@
     <symbol id="i-rotate" viewBox="0 0 24 24"><path d="M20 12a8 8 0 1 1-2.3-5.6M20 4v4h-4" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></symbol>
   </defs></svg>
 
-  <script type="module" src="app.js?v=13"></script>
+  <script type="module" src="app.js?v=15"></script>
 </body>
 </html>

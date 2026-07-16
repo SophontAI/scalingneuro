@@ -1,11 +1,21 @@
 /* ========================================================================== 
-   NeuroScale — interactions + local NIfTI / synthetic 3D viewer
+   NeuroScale — interactions + live OpenNeuro 3D viewer
    ========================================================================== */
+
+import { fetchFirstNiftiVolume } from './nifti-preview.mjs?v=1';
+import {
+  datasetMatches,
+  fetchOpenNeuroDataset,
+  fetchPopularOpenNeuroDatasets,
+} from './openneuro-client.mjs?v=1';
 
 /* ---------- helpers ---------- */
 const $  = (s, r = document) => r.querySelector(s);
 const $$ = (s, r = document) => [...r.querySelectorAll(s)];
 const clamp = (v, a, b) => Math.min(b, Math.max(a, v));
+const escapeHtml = (value) => String(value ?? '').replace(/[&<>'"]/g, (character) => ({
+  '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;',
+})[character]);
 const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
 
 /* ---------- fixed visual palette ---------- */
@@ -165,86 +175,130 @@ $('#dlBtn')?.addEventListener('click', () => toast('Opening installer'));
    Scan browser + 3D viewer
    ========================================================================== */
 
-const LOCAL_NIFTI_ENABLED = ['localhost', '127.0.0.1'].includes(window.location.hostname);
-
-const SCANS = [
-  { pid: 'sub-a3f9', site: 'Princeton (PNI)', scanner: 'Siemens Prisma', field: '3T', ses: 'ses-01',
-    mod: 'bold', title: 'task-rest BOLD', res: '2.0mm', tr: '1.5s', te: '30ms', vols: '480 vol', size: '1.2 GB', seed: 11 },
-  { pid: 'sub-a3f9', site: 'Princeton (PNI)', scanner: 'Siemens Prisma', field: '3T', ses: 'ses-01',
-    mod: 'bold', title: 'task-movie BOLD', res: '1.6mm', tr: '1.0s', te: '28ms', vols: '610 vol', size: '2.1 GB', seed: 12, hires: true },
-  { pid: 'sub-a3f9', site: 'Princeton (PNI)', scanner: 'Siemens Prisma', field: '3T', ses: 'ses-02',
-    mod: 'bold', title: 'task-rest BOLD', res: '2.0mm', tr: '1.5s', te: '30ms', vols: '480 vol', size: '1.2 GB', seed: 14 },
-
-  { pid: 'sub-b7c2', site: 'McGill', scanner: 'Siemens Terra', field: '7T', ses: 'ses-01',
-    mod: 'bold', title: 'movie-watching BOLD', res: '1.2mm', tr: '0.8s', te: '22ms', vols: '900 vol', size: '4.6 GB', seed: 21, hires: true },
-  { pid: 'sub-c1e8', site: 'ENIGMA site 042', scanner: 'GE SIGNA', field: '3T', ses: 'ses-01',
-    mod: 'bold', title: 'resting-state BOLD', res: '2.4mm', tr: '2.0s', te: '35ms', vols: '300 vol', size: '820 MB', seed: 31 },
-
-  { pid: 'sub-e4b6', site: 'Pilot site 018', scanner: 'Philips Achieva', field: '3T', ses: 'ses-01',
-    mod: 'bold', title: 'naturalistic BOLD', res: '2.5mm', tr: '2.0s', te: '30ms', vols: '360 vol', size: '960 MB', seed: 35 },
-
-  { pid: 'sub-d5a1', site: 'Princeton (PNI)', scanner: 'Siemens Prisma', field: '3T', ses: 'ses-01',
-    mod: 'bold', title: 'naturalistic BOLD', res: '1.8mm', tr: '1.2s', te: '30ms', vols: '720 vol', size: '2.8 GB', seed: 41 },
-].filter((scan) => !scan.realNifti || LOCAL_NIFTI_ENABLED);
+let SCANS = [];
+let popularDatasets = [];
+let currentDataset = null;
+let selectedScanId = null;
+let datasetLoadController;
 
 const MOD_META = {
-  bold: { label: 'EPI', dir: 'func', chip: 'mchip-bold', seq: 'BOLD EPI' },
+  bold: { label: 'BOLD', chip: 'mchip-bold' },
+  anat: { label: 'ANAT', chip: 'mchip-sage' },
+  dwi: { label: 'DWI', chip: 'mchip-hi' },
+  fmap: { label: 'FMAP', chip: 'mchip-hi' },
+  other: { label: 'MRI', chip: 'mchip-sage' },
 };
-const fileName = (s) => {
-  if (s.realNifti) return s.source;
-  const folder = MOD_META[s.mod].dir;
-  return `${folder}/${s.title.replace(/\s+/g, '-').toLowerCase()}.nii.gz`;
-};
+const fileName = (scan) => scan.filename || scan.path;
 
-/* ---------- render archive (grouped by participant, file-tree style) ---------- */
+/* ---------- render live OpenNeuro archive ---------- */
 const scanList = $('#scanList');
-let activeFilter = 'all';
+const fileCount = $('#fileCount');
+const fileSearch = $('#fileSearch');
+const datasetSearch = $('#datasetSearch');
+const datasetResults = $('#datasetResults');
+const datasetSelection = $('#datasetSelection');
+const openneuroDatasetLink = $('#openneuroDatasetLink');
+let activeFilter = 'bold';
+let fileQuery = '';
+let visibleFileLimit = 60;
 
 function renderList() {
-  const groups = {};
-  SCANS.forEach((s, i) => { (groups[s.pid] ??= []).push({ ...s, idx: i }); });
+  const query = fileQuery.trim().toLowerCase();
+  const matching = SCANS.filter((scan) => (
+    (activeFilter === 'all' || scan.mod === activeFilter || (activeFilter === 'other' && ['fmap', 'other'].includes(scan.mod))) &&
+    (!query || [scan.path, scan.pid, scan.ses, scan.task, scan.suffix].filter(Boolean).join(' ').toLowerCase().includes(query))
+  ));
   scanList.innerHTML = '';
-  let shown = 0;
+  fileCount.textContent = `${matching.length.toLocaleString()} previewable file${matching.length === 1 ? '' : 's'}`;
 
-  Object.entries(groups).forEach(([pid, scans]) => {
-    const visible = scans.filter((s) => activeFilter === 'all' || s.mod === activeFilter);
-    if (!visible.length) return;
-    const meta = scans[0];
-    const header = document.createElement('div');
-    header.className = 'sc-group';
-    header.textContent = `${pid}/  ·  ${meta.field}  ·  ${meta.scanner}`;
-    scanList.appendChild(header);
-
-    visible.forEach((s) => {
-      shown++;
-      const card = document.createElement('button');
-      card.className = 'scan-card' + (s.realNifti ? ' sc-real' : '');
-      card.dataset.idx = s.idx;
-      const m = MOD_META[s.mod];
-      const hires = s.hires ? '<span class="mchip mchip-hi">↑ hi-res</span>' : '';
-      const safe = s.safe ? `<span class="mchip mchip-sage">${s.safe}</span>` : '';
-      const policy = '<span class="mchip mchip-sage">bundle preview</span>';
-      card.type = 'button';
-      card.setAttribute('aria-label', `${s.pid}, ${s.ses}, ${s.title}, ${s.res}, ${s.size}`);
-      card.setAttribute('aria-pressed', 'false');
-      card.innerHTML = `
-        <div class="sc-row"><span class="sc-name">${fileName(s)}</span><span class="sc-size">${s.size}</span></div>
-        <div class="sc-sub"><span class="mchip ${m.chip}">${m.label}</span><span>${s.ses}</span><span>${s.res}</span><span>TR ${s.tr}</span>${hires}${safe}${policy}</div>`;
-      card.addEventListener('click', () => selectScan(s, card, true));
-      scanList.appendChild(card);
-    });
+  matching.slice(0, visibleFileLimit).forEach((scan) => {
+    const card = document.createElement('button');
+    const meta = MOD_META[scan.mod] || MOD_META.other;
+    card.className = `scan-card sc-real${scan.id === selectedScanId ? ' is-active' : ''}`;
+    card.dataset.scanId = scan.id;
+    card.type = 'button';
+    card.setAttribute('aria-label', `Preview ${scan.path}, ${scan.size}`);
+    card.setAttribute('aria-pressed', String(scan.id === selectedScanId));
+    card.innerHTML = `
+      <div class="sc-row"><span class="sc-name">${escapeHtml(fileName(scan))}</span><span class="sc-size">${escapeHtml(scan.size)}</span></div>
+      <div class="sc-sub"><span class="mchip ${meta.chip}">${meta.label}</span><span>${escapeHtml(scan.pid)}</span><span>${escapeHtml(scan.ses)}</span>${scan.task ? `<span>${escapeHtml(scan.task)}</span>` : ''}</div>`;
+    card.addEventListener('click', () => selectScan(scan, card, true));
+    scanList.appendChild(card);
   });
 
-  if (!shown) scanList.innerHTML = '<p style="padding:22px;color:var(--ink-faint);font-family:var(--mono);font-size:12px">// no scans match this filter</p>';
+  if (!matching.length) {
+    scanList.innerHTML = '<div class="explorer-status"><strong>No matching files</strong>Try another modality or search term.</div>';
+  } else if (matching.length > visibleFileLimit) {
+    const showMore = document.createElement('button');
+    showMore.className = 'show-more-files';
+    showMore.type = 'button';
+    showMore.textContent = `Show ${Math.min(60, matching.length - visibleFileLimit)} more`;
+    showMore.addEventListener('click', () => { visibleFileLimit += 60; renderList(); });
+    scanList.appendChild(showMore);
+  }
 }
 
-$$('.filt').forEach((b) => b.addEventListener('click', () => {
-  $$('.filt').forEach((x) => { x.classList.remove('is-active'); x.setAttribute('aria-pressed', 'false'); });
-  b.classList.add('is-active'); activeFilter = b.dataset.filt; renderList();
-  b.setAttribute('aria-pressed', 'true');
+$$('.filt').forEach((button) => button.addEventListener('click', () => {
+  $$('.filt').forEach((item) => { item.classList.remove('is-active'); item.setAttribute('aria-pressed', 'false'); });
+  button.classList.add('is-active');
+  button.setAttribute('aria-pressed', 'true');
+  activeFilter = button.dataset.filt;
+  visibleFileLimit = 60;
+  renderList();
 }));
-$$('.filt').forEach((b) => b.setAttribute('aria-pressed', String(b.classList.contains('is-active'))));
-renderList();
+$$('.filt').forEach((button) => button.setAttribute('aria-pressed', String(button.classList.contains('is-active'))));
+fileSearch?.addEventListener('input', () => {
+  fileQuery = fileSearch.value;
+  visibleFileLimit = 60;
+  renderList();
+});
+
+function closeDatasetResults() {
+  datasetResults.hidden = true;
+  datasetSearch.setAttribute('aria-expanded', 'false');
+}
+
+function renderDatasetResults() {
+  const query = datasetSearch.value.trim();
+  const exactAccession = /^ds\d{6}$/i.test(query) ? query.toLowerCase() : null;
+  const matches = popularDatasets.filter((dataset) => datasetMatches(dataset, query)).slice(0, 8);
+  if (exactAccession && !matches.some((dataset) => dataset.id === exactAccession)) {
+    matches.unshift({ id: exactAccession, name: 'Load this OpenNeuro accession', tasks: [], size: '' });
+  }
+  datasetResults.innerHTML = '';
+  if (!matches.length) {
+    datasetResults.innerHTML = '<div class="explorer-status"><strong>No featured match</strong>Paste an accession such as ds000001.</div>';
+  } else {
+    matches.forEach((dataset) => {
+      const button = document.createElement('button');
+      button.className = 'dataset-result';
+      button.type = 'button';
+      button.setAttribute('role', 'option');
+      const context = [dataset.id, dataset.tasks?.slice(0, 2).join(' · '), dataset.size].filter(Boolean).join(' · ');
+      button.innerHTML = `<strong>${escapeHtml(dataset.name)}</strong><span>${escapeHtml(context)}</span>`;
+      button.addEventListener('click', () => loadDataset(dataset.id, true));
+      datasetResults.appendChild(button);
+    });
+  }
+  datasetResults.hidden = false;
+  datasetSearch.setAttribute('aria-expanded', 'true');
+}
+
+datasetSearch?.addEventListener('focus', renderDatasetResults);
+datasetSearch?.addEventListener('input', renderDatasetResults);
+datasetSearch?.addEventListener('keydown', (event) => {
+  if (event.key === 'Escape') closeDatasetResults();
+  if (event.key === 'Enter') {
+    event.preventDefault();
+    const accession = datasetSearch.value.match(/ds\d{6}/i)?.[0]?.toLowerCase();
+    const firstMatch = popularDatasets.find((dataset) => datasetMatches(dataset, datasetSearch.value));
+    if (accession || firstMatch) loadDataset(accession || firstMatch.id, true);
+  }
+});
+document.addEventListener('pointerdown', (event) => {
+  if (!event.target.closest('.dataset-tools')) closeDatasetResults();
+});
+$$('.dataset-shortcuts button').forEach((button) => button.addEventListener('click', () => loadDataset(button.dataset.dataset, true)));
 
 /* ---------- viewer elements ---------- */
 const stage = $('#viewerStage');
@@ -262,7 +316,7 @@ const archiveState = $('#archiveState');
 
 let three = null;          // { THREE, OrbitControls } once loaded
 let scene = null, camera = null, renderer = null, controls = null;
-let planes = {}, glass = null, activations = [], volume = null;
+let planes = {}, glass = null, volume = null;
 let N = 64, radii = { x: 1.0, y: 1.22, z: 0.95 };
 let spinning = true, rafId = null, threeFailed = false;
 
@@ -282,75 +336,7 @@ async function ensureThree() {
   }
 }
 
-/* ---------- synthetic MRI volume ---------- */
-function hash3(x, y, z, seed) {
-  let n = (x * 374761393 + y * 668265263 + z * 1013904223 + seed * 6971) | 0;
-  n = (n ^ (n >>> 13)) >>> 0;
-  n = (n * 1274126177) >>> 0;
-  return (n & 0xffffff) / 0x1000000;
-}
-function smooth(t) { return t * t * (3 - 2 * t); }
-function valueNoise(x, y, z, seed) {
-  const xi = Math.floor(x), yi = Math.floor(y), zi = Math.floor(z);
-  const xf = x - xi, yf = y - yi, zf = z - zi;
-  const u = smooth(xf), v = smooth(yf), w = smooth(zf);
-  const c000 = hash3(xi, yi, zi, seed),     c100 = hash3(xi + 1, yi, zi, seed);
-  const c010 = hash3(xi, yi + 1, zi, seed), c110 = hash3(xi + 1, yi + 1, zi, seed);
-  const c001 = hash3(xi, yi, zi + 1, seed),     c101 = hash3(xi + 1, yi, zi + 1, seed);
-  const c011 = hash3(xi, yi + 1, zi + 1, seed), c111 = hash3(xi + 1, yi + 1, zi + 1, seed);
-  const x00 = c000 + (c100 - c000) * u, x10 = c010 + (c110 - c010) * u;
-  const x01 = c001 + (c101 - c001) * u, x11 = c011 + (c111 - c011) * u;
-  const y0 = x00 + (x10 - x00) * v, y1 = x01 + (x11 - x01) * v;
-  return y0 + (y1 - y0) * w;
-}
-function fbm(x, y, z, seed, oct) {
-  let amp = 0.5, freq = 1, sum = 0, norm = 0;
-  for (let i = 0; i < oct; i++) { sum += amp * valueNoise(x * freq, y * freq, z * freq, seed + i * 37); norm += amp; amp *= 0.5; freq *= 2; }
-  return sum / norm;
-}
-
-function buildVolume(scan) {
-  const n = N;
-  const vol = new Float32Array(n * n * n);
-  const seed = scan.seed || 7;
-  // per-modality look
-  const isAnat = scan.mod === 'anat';
-  const isDwi = scan.mod === 'dwi';
-  const freq = isAnat ? 5.5 : (scan.hires ? 4.5 : 3.2);   // EPI = coarser/blurrier
-  const contrast = isAnat ? 1.55 : (isDwi ? 1.2 : 1.35);
-  const c = (n - 1) / 2;
-  for (let z = 0; z < n; z++) {
-    for (let y = 0; y < n; y++) {
-      for (let x = 0; x < n; x++) {
-        // normalized position within ellipsoid (-1..1)
-        const nx = (x - c) / (c * radii.x * 0.98);
-        const ny = (y - c) / (c * radii.y * 0.98);
-        const nz = (z - c) / (c * radii.z * 0.98);
-        const r = Math.sqrt(nx * nx / (radii.x * radii.x) + ny * ny / (radii.y * radii.y) + nz * nz / (radii.z * radii.z));
-        let val = 0;
-        if (r < 1.02) {
-          const base = fbm(x / n * freq, y / n * freq, z / n * freq, seed, isAnat ? 4 : 3);
-          const ribbon = smooth(clamp((r - 0.62) / 0.34, 0, 1));  // brighter cortical ribbon near surface
-          const wm = 1 - ribbon;
-          val = 0.34 * base + 0.42 * ribbon + 0.30 * wm * (0.5 + 0.5 * base);
-          // ventricles: dark near center
-          const cd = Math.sqrt(nx * nx + ny * ny * 0.6 + nz * nz);
-          const vent = Math.exp(-(cd * cd) / 0.06);
-          val *= (1 - 0.7 * vent);
-          // sulci striations for anatomical crispness
-          if (isAnat) val *= 0.75 + 0.25 * Math.sin(base * 22 + r * 8);
-          // edge falloff
-          val *= smooth(clamp((1.02 - r) / 0.12, 0, 1));
-          val = clamp(Math.pow(val, contrast) * 1.12, 0, 1);
-        }
-        vol[x + y * n + z * n * n] = val;
-      }
-    }
-  }
-  return vol;
-}
-
-/* ---------- real local NIfTI-1 volume ---------- */
+/* ---------- streamed OpenNeuro NIfTI-1 volume ---------- */
 const NIFTI_TYPES = {
   2:    { name: 'uint8',   bytes: 1, read: (v, o) => v.getUint8(o) },
   4:    { name: 'int16',   bytes: 2, read: (v, o, le) => v.getInt16(o, le) },
@@ -361,18 +347,6 @@ const NIFTI_TYPES = {
   512:  { name: 'uint16',  bytes: 2, read: (v, o, le) => v.getUint16(o, le) },
   768:  { name: 'uint32',  bytes: 4, read: (v, o, le) => v.getUint32(o, le) },
 };
-
-async function fetchNiftiBuffer(url) {
-  const response = await fetch(url, { cache: 'no-store' });
-  if (!response.ok) throw new Error(`local file returned ${response.status}`);
-  const source = await response.arrayBuffer();
-  const bytes = new Uint8Array(source, 0, Math.min(2, source.byteLength));
-  const gzipped = bytes[0] === 0x1f && bytes[1] === 0x8b;
-  if (!gzipped) return source;
-  if (typeof DecompressionStream === 'undefined') throw new Error('this browser cannot decompress .nii.gz files');
-  const stream = new Blob([source]).stream().pipeThrough(new DecompressionStream('gzip'));
-  return new Response(stream).arrayBuffer();
-}
 
 function percentile(sorted, q) {
   return sorted[Math.min(sorted.length - 1, Math.max(0, Math.floor(q * (sorted.length - 1))))];
@@ -451,8 +425,8 @@ function parseNiftiVolume(buffer, targetSize = 96) {
   return output;
 }
 
-async function loadNiftiVolume(scan) {
-  const buffer = await fetchNiftiBuffer(scan.source);
+async function loadNiftiVolume(scan, signal) {
+  const buffer = await fetchFirstNiftiVolume(scan.source, { signal });
   return parseNiftiVolume(buffer, 96);
 }
 
@@ -570,57 +544,25 @@ function updatePlane(axis, pct) {
   if (axis === 'x') p.position.x = frac * radii.x;   // sagittal along three X
 }
 
-function buildActivations(scan) {
-  const { THREE } = three;
-  activations.forEach((group) => {
-    scene.remove(group);
-    group.children.forEach((mesh) => {
-      mesh.geometry?.dispose();
-      mesh.material?.dispose();
-    });
-  });
-  activations = [];
-  if (scan.mod !== 'bold') return;   // activation hotspots only for functional
-  const colors = [0xe3a0a5, 0xaab7df, 0xe1b475, 0x9bc7b5];
-  const count = 4;
-  for (let i = 0; i < count; i++) {
-    const rnd = (k) => hash3(i * 7 + k, scan.seed, 3, scan.seed) - 0.5;
-    const core = 0.05 + Math.abs(rnd(9)) * 0.045;
-    const grp = new THREE.Group();
-    // bright core + soft additive halo → reads as a glowing activation focus
-    const coreMesh = new THREE.Mesh(
-      new THREE.SphereGeometry(core, 16, 12),
-      new THREE.MeshBasicMaterial({ color: colors[i % colors.length], transparent: true, opacity: 0.92, depthWrite: false }));
-    const halo = new THREE.Mesh(
-      new THREE.SphereGeometry(core * 2.6, 16, 12),
-      new THREE.MeshBasicMaterial({ color: colors[i % colors.length], transparent: true, opacity: 0.16, blending: THREE.AdditiveBlending, depthWrite: false }));
-    grp.add(coreMesh); grp.add(halo);
-    grp.position.set(rnd(1) * 1.1 * radii.x, rnd(2) * 1.0 * radii.z, rnd(3) * 1.1 * radii.y);
-    grp._phase = i * 1.3;
-    scene.add(grp); activations.push(grp);
-  }
-}
-
 function animate() {
   rafId = requestAnimationFrame(animate);
-  const t = performance.now() / 1000;
   controls.autoRotate = spinning;
   controls.update();
-  activations.forEach((b) => {
-    const pulse = 0.5 + 0.5 * Math.sin(t * 2 + b._phase);
-    b.scale.setScalar(0.85 + pulse * 0.35);
-    if (b.children[1]) b.children[1].material.opacity = 0.12 + pulse * 0.22;
-  });
   renderer.render(scene, camera);
 }
 
-/* ---------- select + "stream" a scan ---------- */
+/* ---------- select + stream an OpenNeuro scan ---------- */
 let loadToken = 0;
+let volumeLoadController;
 async function selectScan(scan, card, userInitiated = false) {
+  selectedScanId = scan.id;
   $$('.scan-card').forEach((c) => { c.classList.remove('is-active'); c.setAttribute('aria-pressed', 'false'); });
   card?.classList.add('is-active');
   card?.setAttribute('aria-pressed', 'true');
 
+  volumeLoadController?.abort();
+  const controller = new AbortController();
+  volumeLoadController = controller;
   const token = ++loadToken;
   emptyEl.hidden = true;
   hudEl.hidden = true;
@@ -629,17 +571,10 @@ async function selectScan(scan, card, userInitiated = false) {
   loadingEl.hidden = false;
   loadLog.textContent = '';
 
-  const path = scan.realNifti
-    ? `local://${scan.source}`
-    : `s3://scaling-neuro/archive/v1/<private>/${scan.pid}/${scan.ses}/${fileName(scan)}`;
-  const steps = scan.realNifti ? [
-    `↪ reading local example ${scan.source} …`,
-    `decompressing ${scan.size} NIfTI-1 volume in this browser`,
-  ] : [
-    `↪ rendering a synthetic archive preview …`,
-    `${scan.field} · ${scan.scanner} · ${scan.vols} · ${scan.res}`,
-    `private R2 objects are never fetched by this public page`,
-    `reconstructing ${N}³ preview grid …`,
+  const path = `openneuro://${scan.datasetId}@${scan.snapshot}/${scan.path}`;
+  const steps = [
+    `↪ OpenNeuro ${scan.datasetId} snapshot ${scan.snapshot}`,
+    `streaming only the first 3D volume from the ${scan.size} version-pinned object`,
   ];
   const ok = await ensureThree();
   if (token !== loadToken) return;
@@ -657,27 +592,21 @@ async function selectScan(scan, card, userInitiated = false) {
   if (!scene) initThreeScene();
 
   try {
-    if (scan.realNifti) {
-      N = 96;
-      volume = await loadNiftiVolume(scan);
-      if (token !== loadToken) return;
-      const meta = volume._meta;
-      loadLog.textContent += `\nheader ${meta.dims.join('×')} · ${meta.voxelSize.map((v) => `${v.toFixed(1)}mm`).join(' × ')}`;
-      loadLog.textContent += `\nnormalizing real voxels → ${N}³ interactive grid`;
-      setVolumeGeometry(meta);
-    } else {
-      N = 64;
-      setVolumeGeometry(null);
-      volume = buildVolume(scan);
-    }
+    N = 96;
+    volume = await loadNiftiVolume(scan, controller.signal);
+    if (token !== loadToken) return;
+    const meta = volume._meta;
+    loadLog.textContent += `\nheader ${meta.dims.join('×')} · ${meta.voxelSize.map((v) => `${v.toFixed(1)}mm`).join(' × ')}`;
+    loadLog.textContent += `\nnormalizing real voxels → ${N}³ interactive grid`;
+    setVolumeGeometry(meta);
   } catch (error) {
+    if (error?.name === 'AbortError') return;
     if (token !== loadToken) return;
     showVolumeError(scan, path, error);
     return;
   }
   volume._mod = scan.mod;
   buildPlanes();
-  buildActivations(scan);
   resizeRenderer();
   // reset sliders
   $$('#viewerControls input[type=range]').forEach((s) => { s.value = 50; });
@@ -687,27 +616,21 @@ async function selectScan(scan, card, userInitiated = false) {
   loadingEl.hidden = true;
   hudEl.hidden = false; controlsEl.hidden = false;
   hudPath.textContent = path;
-  viewerTitle.textContent = `${scan.pid} · ${scan.title}`;
-  const m = MOD_META[scan.mod];
-  viewerMode.textContent = scan.realNifti ? 'Instant View · real local NIfTI' : 'Instant View · synthetic';
-  stage.setAttribute('aria-label', `Interactive 3D preview of ${scan.pid}, ${scan.title}`);
-  archiveRoot.innerHTML = scan.realNifti ? 'local://examples/ <b>real file</b>' : 'R2 / S3 archive <b>live</b>';
-  archiveState.textContent = scan.realNifti ? 'same-origin' : 'private';
+  viewerTitle.textContent = fileName(scan);
+  viewerMode.textContent = 'OpenNeuro · first-volume preview';
+  stage.setAttribute('aria-label', `Interactive 3D preview of ${scan.path} from OpenNeuro ${scan.datasetId}`);
+  archiveRoot.innerHTML = 'OpenNeuro <b>live</b>';
+  archiveState.textContent = 'public';
+  openneuroDatasetLink.href = scan.openNeuroUrl;
+  openneuroDatasetLink.hidden = false;
   viewerMeta.hidden = false;
-  if (scan.realNifti) {
-    const meta = volume._meta;
-    viewerMeta.innerHTML =
-      `DIM: ${meta.dims.join(' × ')}<br/>` +
-      `RES: ${meta.voxelSize.map((v) => `${v.toFixed(1)}mm`).join(' × ')}<br/>` +
-      `TYPE: NIfTI-1 · ${meta.datatype}<br/>` +
-      `STATE: REAL_LOCAL_FILE · NOT_SHARED`;
-  } else {
-    viewerMeta.innerHTML =
-      `RES: ${scan.res} ISO<br/>` +
-      `SEQ: ${m.seq}<br/>` +
-      `FIELD: ${scan.field} · TR ${scan.tr}<br/>` +
-      `STATE: SYNTHETIC_PUBLIC_PREVIEW · PRIVATE_ARCHIVE`;
-  }
+  const meta = volume._meta;
+  viewerMeta.innerHTML =
+    `DATASET: ${escapeHtml(scan.datasetId)} · ${escapeHtml(scan.snapshot)}<br/>` +
+    `DIM: ${meta.dims.join(' × ')}<br/>` +
+    `RES: ${meta.voxelSize.map((v) => `${v.toFixed(1)}mm`).join(' × ')}<br/>` +
+    `TYPE: NIfTI-1 · ${escapeHtml(meta.datatype)}<br/>` +
+    `STATE: VERSION_PINNED_S3 · FIRST_VOLUME`;
   if (userInitiated && window.matchMedia('(max-width: 760px)').matches) {
     stage.closest('.vault-right')?.scrollIntoView({ behavior: reducedMotion ? 'auto' : 'smooth', block: 'start' });
   }
@@ -717,8 +640,8 @@ function showThreeFallback(scan, path) {
   loadingEl.hidden = true;
   emptyEl.hidden = false;
   emptyEl.innerHTML = `<svg viewBox="0 0 24 24" width="40" height="40"><use href="#i-cube"/></svg>
-    <p><strong>${scan.pid} · ${scan.title}</strong><br/>The 3D layer needs WebGL and its rendering library.
-    The selected data path is <code style="font-size:11px">${path}</code>.</p>`;
+    <p><strong>${escapeHtml(scan.datasetId)} · ${escapeHtml(fileName(scan))}</strong><br/>The 3D layer needs WebGL and its rendering library.
+    The selected data path is <code style="font-size:11px">${escapeHtml(path)}</code>.</p>`;
 }
 
 function showVolumeError(scan, path, error) {
@@ -728,8 +651,8 @@ function showVolumeError(scan, path, error) {
   controlsEl.hidden = true;
   viewerMeta.hidden = true;
   emptyEl.hidden = false;
-  emptyEl.innerHTML = `<p><strong>${scan.pid} · ${scan.title}</strong><br/>The real local NIfTI could not be decoded.<br/>
-    <code>${String(error.message || error)}</code><br/><small>${path}</small></p>`;
+  emptyEl.innerHTML = `<p><strong>${escapeHtml(scan.datasetId)} · ${escapeHtml(fileName(scan))}</strong><br/>This OpenNeuro NIfTI could not be streamed and decoded.<br/>
+    <code>${escapeHtml(error.message || error)}</code><br/><small>${escapeHtml(path)}</small></p>`;
 }
 
 /* slider + spin controls */
@@ -749,8 +672,69 @@ $('#spinBtn')?.addEventListener('click', () => {
   button.title = spinning ? 'Pause auto-rotate' : 'Resume auto-rotate';
 });
 
-/* Load the first available scan: the real fixture on localhost, a synthetic preview in production. */
-requestAnimationFrame(() => {
-  const firstCard = $('.scan-card[data-idx="0"]');
-  if (firstCard) selectScan(SCANS[0], firstCard);
-});
+async function loadDataset(id, userInitiated = false) {
+  datasetLoadController?.abort();
+  volumeLoadController?.abort();
+  const controller = new AbortController();
+  datasetLoadController = controller;
+  const accession = String(id || '').trim().toLowerCase();
+
+  closeDatasetResults();
+  selectedScanId = null;
+  currentDataset = null;
+  SCANS = [];
+  fileSearch.value = '';
+  fileQuery = '';
+  datasetSearch.value = accession;
+  fileCount.textContent = 'Loading previewable files…';
+  scanList.innerHTML = `<div class="explorer-status is-loading"><strong>Opening ${escapeHtml(accession)}</strong>Reading the latest public snapshot from OpenNeuro…</div>`;
+  datasetSelection.innerHTML = `<strong>${escapeHtml(accession)}</strong><span>OpenNeuro public dataset</span>`;
+  $$('.dataset-shortcuts button').forEach((button) => button.classList.toggle('is-active', button.dataset.dataset === accession));
+  openneuroDatasetLink.hidden = true;
+  loadingEl.hidden = true;
+  hudEl.hidden = true;
+  controlsEl.hidden = true;
+  viewerMeta.hidden = true;
+  emptyEl.hidden = false;
+  emptyEl.innerHTML = '<svg viewBox="0 0 24 24" width="40" height="40"><use href="#i-cube"/></svg><p>Loading preview files from OpenNeuro…</p>';
+
+  try {
+    const dataset = await fetchOpenNeuroDataset(accession, { signal: controller.signal });
+    if (controller.signal.aborted) return;
+    currentDataset = dataset;
+    SCANS = dataset.scans;
+    activeFilter = SCANS.some((scan) => scan.mod === 'bold') ? 'bold' : 'all';
+    visibleFileLimit = 60;
+    $$('.filt').forEach((button) => {
+      const active = button.dataset.filt === activeFilter;
+      button.classList.toggle('is-active', active);
+      button.setAttribute('aria-pressed', String(active));
+    });
+    datasetSearch.value = dataset.id;
+    datasetSelection.innerHTML = `<strong>${escapeHtml(dataset.id)} · ${escapeHtml(dataset.name)}</strong><span>snapshot ${escapeHtml(dataset.snapshot)} · ${SCANS.length.toLocaleString()} previewable NIfTI files · ${escapeHtml(dataset.size)}${dataset.license ? ` · ${escapeHtml(dataset.license)}` : ''}</span>`;
+    openneuroDatasetLink.href = `https://openneuro.org/datasets/${dataset.id}/versions/${dataset.snapshot}`;
+    openneuroDatasetLink.hidden = false;
+    renderList();
+
+    const firstScan = SCANS.find((scan) => activeFilter === 'all' || scan.mod === activeFilter) || SCANS[0];
+    const firstCard = $('.scan-card');
+    if (firstScan && firstCard) await selectScan(firstScan, firstCard, userInitiated);
+  } catch (error) {
+    if (error?.name === 'AbortError' || controller.signal.aborted) return;
+    console.error('OpenNeuro dataset load failed', error);
+    fileCount.textContent = 'Unavailable';
+    scanList.innerHTML = `<div class="explorer-status is-error"><strong>Could not open ${escapeHtml(accession)}</strong>${escapeHtml(error.message || error)}</div>`;
+    datasetSelection.innerHTML = `<strong>${escapeHtml(accession)}</strong><span>Dataset unavailable</span>`;
+    emptyEl.hidden = false;
+    emptyEl.innerHTML = `<p><strong>OpenNeuro dataset unavailable</strong><br/>${escapeHtml(error.message || error)}</p>`;
+  }
+}
+
+fetchPopularOpenNeuroDatasets({ first: 40 })
+  .then((datasets) => {
+    popularDatasets = datasets;
+    if (document.activeElement === datasetSearch) renderDatasetResults();
+  })
+  .catch((error) => console.warn('Popular OpenNeuro datasets unavailable', error));
+
+loadDataset('ds000001');

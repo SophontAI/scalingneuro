@@ -147,3 +147,7 @@ jobs:
       - name: Test
         if: steps.component.outputs.present == 'true'
         run: npm test --prefix worker
+
+      - name: Test browser data streaming
+        if: steps.component.outputs.present == 'true'
+        run: node --test tests/*.test.mjs

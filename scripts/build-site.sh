@@ -14,6 +14,8 @@ install -m 0644 \
   "$ROOT_DIR/favicon.svg" \
   "$ROOT_DIR/styles.css" \
   "$ROOT_DIR/app.js" \
+  "$ROOT_DIR/nifti-preview.mjs" \
+  "$ROOT_DIR/openneuro-client.mjs" \
   "$DIST_DIR/"
 install -m 0644 "$ROOT_DIR/downloads/index.html" "$DIST_DIR/downloads/"
 install -m 0644 "$ROOT_DIR/docs/contribution-policy.html" "$DIST_DIR/docs/"

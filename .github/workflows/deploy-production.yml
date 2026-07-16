@@ -49,6 +49,7 @@ jobs:
           python schemas/validate.py
           node schemas/validate-ajv.mjs
           npm run check --prefix worker
+          node --test tests/*.test.mjs
 
       - name: Enforce fail-closed production and isolated previews
         env:
