@@ -51,11 +51,22 @@ impl MultipartUploader {
             bail!("ingest API returned an incomplete multipart object plan");
         }
         let mut completed = Vec::with_capacity(objects.len());
-        for object in objects {
+        for (index, object) in objects.iter().enumerate() {
             let descriptor = descriptor_map
                 .get(object.key.as_str())
                 .context("ingest API omitted an expected object from the multipart plan")?;
+            tracing::info!(
+                file = index + 1,
+                total_files = objects.len(),
+                bytes = object.size,
+                "Uploading prepared file"
+            );
             completed.push(self.upload_object(object, descriptor).await?);
+            tracing::info!(
+                file = index + 1,
+                total_files = objects.len(),
+                "Prepared file upload complete"
+            );
         }
         Ok(completed)
     }
@@ -125,6 +136,7 @@ impl MultipartUploader {
         let object = object.clone();
         let object_for_tasks = object.clone();
         let part_size = descriptor.part_size;
+        let part_count = expected_part_count as u32;
         let descriptor = descriptor.clone();
         let uploaded = stream::iter(missing)
             .map(move |part_number| {
@@ -133,7 +145,7 @@ impl MultipartUploader {
                 let descriptor = descriptor.clone();
                 async move {
                     uploader
-                        .upload_part_with_retry(&object, &descriptor, part_number)
+                        .upload_part_with_retry(&object, &descriptor, part_number, part_count)
                         .await
                 }
             })
@@ -159,6 +171,7 @@ impl MultipartUploader {
         object: &UploadObjectRecord,
         descriptor: &MultipartObject,
         part_number: u32,
+        part_count: u32,
     ) -> Result<UploadedPart> {
         let offset = u64::from(part_number - 1) * descriptor.part_size;
         let size = (object.size - offset).min(descriptor.part_size);
@@ -231,6 +244,12 @@ impl MultipartUploader {
                     };
                     self.state
                         .save_part(&object.worker_upload_id, &object.key, &part)?;
+                    tracing::info!(
+                        part = part_number,
+                        total_parts = part_count,
+                        bytes = size,
+                        "Uploaded file part"
+                    );
                     return Ok(part);
                 }
                 Ok(response)

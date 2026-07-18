@@ -4,7 +4,7 @@ use std::{
     io::Write,
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use anyhow::{Context, Result, bail};
@@ -29,7 +29,7 @@ use crate::{
     classify::{ConversionSignals, classify_header, refine_after_conversion},
     config::{AppPaths, ClientConfig},
     convert::Converter,
-    dicom::{Discovery, SeriesGroup, discover},
+    dicom::{Discovery, SeriesGroup, discover_with_progress, snapshot_source_with_progress},
     model::{
         Classification, ClassificationDecision, ClassificationEvidence, ExistingArchiveBundle,
         HeldSeries, LocalManifest, ManifestBundle, ReportBundle, RunReport, ScanSidecar,
@@ -44,6 +44,34 @@ const MAX_BUNDLES_PER_UPLOAD: usize = 32;
 const MAX_BYTES_PER_UPLOAD: u64 = 32 * 1024 * 1024 * 1024;
 const MAX_NIFTI_BYTES_PER_BUNDLE: u64 = 5 * 1024 * 1024 * 1024;
 const SOURCE_QUIET_INTERVAL: Duration = Duration::from_secs(2);
+
+struct LocalValidationProgress<'a> {
+    state: &'a StateStore,
+    run_id: &'a str,
+    total_series: usize,
+    last_report: Instant,
+}
+
+impl LocalValidationProgress<'_> {
+    fn checkpoint(&mut self, summary: &SourceSummary, processed_series: usize) -> Result<()> {
+        self.state
+            .update_run(self.run_id, "converting", summary, None)?;
+        if self.last_report.elapsed() >= Duration::from_secs(2)
+            || processed_series == self.total_series
+        {
+            tracing::info!(
+                processed_series,
+                total_series = self.total_series,
+                accepted = summary.accepted,
+                held = summary.held,
+                excluded = summary.excluded,
+                "Local validation progress"
+            );
+            self.last_report = Instant::now();
+        }
+        Ok(())
+    }
+}
 
 #[derive(Clone, Serialize, Deserialize)]
 struct PendingEnrollment {
@@ -676,6 +704,7 @@ impl Runtime {
         if completion_path.is_file() {
             let saved: CompleteUploadRequest =
                 serde_json::from_slice(&fs::read(&completion_path)?)?;
+            tracing::info!("Asking Scaling Neuro to verify and commit the transferred files");
             let status = match api.complete_upload(&worker_upload_id, saved.objects).await {
                 Ok(status) => status,
                 Err(error)
@@ -690,6 +719,7 @@ impl Runtime {
             if status.status == "committed" || status.status == "complete" {
                 self.state
                     .set_chunk_status(run_id, chunk.chunk_index, "committed")?;
+                tracing::info!("Archive verification and commit complete");
                 return Ok(());
             }
             bail!("ingest API did not commit the saved completion request");
@@ -708,6 +738,7 @@ impl Runtime {
         let completed = uploader.upload_all(&objects, &descriptors).await?;
         let request = CompleteUploadRequest { objects: completed };
         write_json(&completion_path, &request)?;
+        tracing::info!("Transfer complete; verifying hashes and committing the archive");
         let status = match api
             .complete_upload(&worker_upload_id, request.objects)
             .await
@@ -725,6 +756,7 @@ impl Runtime {
         }
         self.state
             .set_chunk_status(run_id, chunk.chunk_index, "committed")?;
+        tracing::info!("Archive verification and commit complete");
         Ok(())
     }
 
@@ -1255,15 +1287,34 @@ fn prepare_run(
 ) -> Result<(LocalManifest, RunReport)> {
     let started_at = Utc::now().to_rfc3339();
     state.update_run(run_id, "discovering", &SourceSummary::default(), None)?;
-    let initial_discovery = discover(source)?;
+    tracing::info!("Scanning the selected folder for DICOM headers");
+    let discovery = discover_with_progress(source, |progress| {
+        tracing::info!(
+            files_checked = progress.files_seen,
+            dicom_files = progress.dicom_files,
+            series = progress.series_found,
+            "DICOM discovery progress"
+        );
+    })?;
+    tracing::info!(
+        files_checked = discovery.summary.files_seen,
+        dicom_files = discovery.summary.dicom_files,
+        series = discovery.summary.series_found,
+        "DICOM discovery complete"
+    );
     std::thread::sleep(SOURCE_QUIET_INTERVAL);
-    let discovery = discover(source)?;
     let mut summary = discovery.summary.clone();
     state.update_run(run_id, "converting", &summary, None)?;
     let pseudonymizer = Pseudonymizer::from_base64(&config.pseudonym_key_b64)?;
-    if !initial_discovery
-        .source_snapshot
-        .is_stable_with(&discovery.source_snapshot)
+    tracing::info!("Confirming that the DICOM export has stopped changing");
+    let quiet_snapshot = snapshot_source_with_progress(source, |progress| {
+        tracing::info!(
+            files_checked = progress.files_seen,
+            "Source stability check progress"
+        );
+    })?;
+    if discovery.unreadable_dicom_like_files > 0
+        || !discovery.source_snapshot.is_stable_with(&quiet_snapshot)
     {
         return finish_unstable_preparation(
             paths,
@@ -1275,7 +1326,7 @@ fn prepare_run(
             &pseudonymizer,
         );
     }
-    let source_snapshot = discovery.source_snapshot.clone();
+    let source_snapshot = quiet_snapshot;
     let converter = Converter::discover(&paths.work)?;
     if !dry_run && converter.version != PINNED_DCM2NIIX_VERSION {
         bail!("unvalidated converter builds are allowed only with --dry-run");
@@ -1284,40 +1335,58 @@ fn prepare_run(
     fs::create_dir_all(&bundle_root)?;
     let mut bundles = Vec::new();
     let mut held_series = Vec::new();
+    let series_total = discovery.series.len();
+    let mut local_progress = LocalValidationProgress {
+        state,
+        run_id,
+        total_series: series_total,
+        last_report: Instant::now(),
+    };
 
-    for (index, group) in discovery.series.into_iter().enumerate() {
-        let initial = classify_header(&group);
+    for (index, group) in discovery.series.iter().enumerate() {
+        let initial = classify_header(group);
         match initial.decision {
             ClassificationDecision::Excluded => {
                 summary.excluded += 1;
+                local_progress.checkpoint(&summary, index + 1)?;
                 continue;
             }
             ClassificationDecision::Held => {
                 summary.held += 1;
-                held_series.push(held(&pseudonymizer, &group, index, &initial));
+                held_series.push(held(&pseudonymizer, group, index, &initial));
+                local_progress.checkpoint(&summary, index + 1)?;
                 continue;
             }
             ClassificationDecision::Accepted => {}
         }
-        let converted = match converter.convert(&group, &paths.work) {
+        tracing::info!(
+            series = index + 1,
+            total_series = series_total,
+            dicom_files = group.files.len(),
+            "Converting eligible EPI series"
+        );
+        let converted = match converter.convert(group, &paths.work) {
             Ok(converted) => converted,
             Err(_) => {
                 let classification = coded_hold("conversion_failed", "converter_sidecar");
                 summary.held += 1;
-                held_series.push(held(&pseudonymizer, &group, index, &classification));
+                held_series.push(held(&pseudonymizer, group, index, &classification));
+                local_progress.checkpoint(&summary, index + 1)?;
                 continue;
             }
         };
         if converted.images.is_empty() {
             let classification = refine_after_conversion(initial, &ConversionSignals::default());
             summary.held += 1;
-            held_series.push(held(&pseudonymizer, &group, index, &classification));
+            held_series.push(held(&pseudonymizer, group, index, &classification));
+            local_progress.checkpoint(&summary, index + 1)?;
             continue;
         }
         let Some(echo_labels) = multi_echo_labels(&converted.images) else {
             let classification = coded_hold("conversion_output_ambiguous", "converter_sidecar");
             summary.held += 1;
-            held_series.push(held(&pseudonymizer, &group, index, &classification));
+            held_series.push(held(&pseudonymizer, group, index, &classification));
+            local_progress.checkpoint(&summary, index + 1)?;
             continue;
         };
         let mut prepared = Vec::with_capacity(converted.images.len());
@@ -1325,7 +1394,7 @@ fn prepare_run(
         for (image_index, (image, echo_label)) in
             converted.images.iter().zip(echo_labels).enumerate()
         {
-            let analyzed = match analyze_converted(&group, image, 1) {
+            let analyzed = match analyze_converted(group, image, 1) {
                 Ok(analyzed) => analyzed,
                 Err(_) => {
                     failed_classification =
@@ -1346,14 +1415,15 @@ fn prepare_run(
         }
         if let Some(classification) = failed_classification {
             summary.held += 1;
-            held_series.push(held(&pseudonymizer, &group, index, &classification));
+            held_series.push(held(&pseudonymizer, group, index, &classification));
+            local_progress.checkpoint(&summary, index + 1)?;
             continue;
         }
         let mut created = Vec::with_capacity(prepared.len());
         let mut creation_failed = false;
         for (image_index, echo_label, analyzed, classification) in prepared {
             match create_bundle(BundleRequest {
-                group: &group,
+                group,
                 converted: &converted,
                 image: &converted.images[image_index],
                 analyzed: &analyzed,
@@ -1387,17 +1457,23 @@ fn prepare_run(
                 },
                 "derived",
             );
-            held_series.push(held(&pseudonymizer, &group, index, &classification));
+            held_series.push(held(&pseudonymizer, group, index, &classification));
         } else {
             summary.accepted += 1;
             bundles.extend(created);
         }
-        state.update_run(run_id, "converting", &summary, None)?;
+        local_progress.checkpoint(&summary, index + 1)?;
     }
 
     std::thread::sleep(SOURCE_QUIET_INTERVAL);
-    let final_discovery = discover(source)?;
-    if !source_snapshot.is_stable_with(&final_discovery.source_snapshot) {
+    tracing::info!("Performing final source stability check");
+    let final_snapshot = snapshot_source_with_progress(source, |progress| {
+        tracing::info!(
+            files_checked = progress.files_seen,
+            "Final source stability check progress"
+        );
+    })?;
+    if !source_snapshot.is_stable_with(&final_snapshot) {
         let _ = fs::remove_dir_all(&bundle_root);
         return finish_unstable_preparation(
             paths,
@@ -1405,10 +1481,16 @@ fn prepare_run(
             run_id,
             config,
             started_at,
-            final_discovery,
+            discovery,
             &pseudonymizer,
         );
     }
+    tracing::info!(
+        accepted = summary.accepted,
+        held = summary.held,
+        excluded = summary.excluded,
+        "Local validation complete"
+    );
 
     let mut errors = Vec::new();
     if discovery.unreadable_dicom_like_files > 0 {

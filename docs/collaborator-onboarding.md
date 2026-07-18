@@ -72,6 +72,8 @@ neuro-sync upload /path/to/dicom-export --confirm-authorized
 
 Running `neuro-sync` with no arguments starts the complete guided flow in the current terminal. It does not start a local web server or require a graphical session.
 
+During a large or network-mounted export, the client prints live file, DICOM, series, conversion, multipart-transfer, and archive-verification progress. `Ctrl+C` is safe during local validation: no data reaches R2 until a privacy-checked bundle has been prepared, and interrupted multipart transfers can be continued with `neuro-sync resume`.
+
 ## What success looks like
 
 A successful run shows:

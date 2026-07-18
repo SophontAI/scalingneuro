@@ -166,6 +166,7 @@ pub async fn execute(cli: Cli) -> Result<()> {
                     return Ok(());
                 }
             }
+            println!("\nValidating {}…", folder.display());
             let run_id = runtime.upload(folder, dry_run).await?;
             crate::terminal::print_run_summary(&runtime, &run_id, &mut std::io::stdout())
         }

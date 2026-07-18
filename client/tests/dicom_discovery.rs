@@ -2,7 +2,11 @@ mod support;
 
 use std::{fs::OpenOptions, io::Write};
 
-use neuro_sync::{classify::classify_header, dicom::discover, model::ClassificationDecision};
+use neuro_sync::{
+    classify::classify_header,
+    dicom::{discover, discover_with_progress, snapshot_source_with_progress},
+    model::ClassificationDecision,
+};
 use tempfile::tempdir;
 
 #[test]
@@ -44,10 +48,35 @@ fn source_snapshot_detects_dicom_changed_after_discovery() {
         .unwrap()
         .write_all(b"changed")
         .unwrap();
-    let second = discover(directory.path()).unwrap();
-    assert!(
-        !first
-            .source_snapshot
-            .is_stable_with(&second.source_snapshot)
-    );
+    let second = snapshot_source_with_progress(directory.path(), |_| {}).unwrap();
+    assert!(!first.source_snapshot.is_stable_with(&second));
+}
+
+#[test]
+fn discovery_reports_counts_and_lightweight_snapshots_cover_every_source_file() {
+    let directory = tempdir().unwrap();
+    support::write_functional_epi(&directory.path().join("image-1.dcm"), 1);
+    std::fs::write(directory.path().join("export-note.txt"), b"complete").unwrap();
+
+    let mut discovery_progress = Vec::new();
+    let discovery = discover_with_progress(directory.path(), |progress| {
+        discovery_progress.push(progress)
+    })
+    .unwrap();
+    let final_progress = discovery_progress.last().unwrap();
+    assert_eq!(final_progress.files_seen, 2);
+    assert_eq!(final_progress.dicom_files, 1);
+    assert_eq!(final_progress.series_found, 1);
+
+    let mut snapshot_progress = Vec::new();
+    let stable = snapshot_source_with_progress(directory.path(), |progress| {
+        snapshot_progress.push(progress)
+    })
+    .unwrap();
+    assert_eq!(snapshot_progress.last().unwrap().files_seen, 2);
+    assert!(discovery.source_snapshot.is_stable_with(&stable));
+
+    std::fs::write(directory.path().join("export-note.txt"), b"changed").unwrap();
+    let changed = snapshot_source_with_progress(directory.path(), |_| {}).unwrap();
+    assert!(!stable.is_stable_with(&changed));
 }

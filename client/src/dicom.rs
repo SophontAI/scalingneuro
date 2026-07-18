@@ -3,7 +3,7 @@ use std::{
     fs::File,
     io::Read,
     path::{Path, PathBuf},
-    time::SystemTime,
+    time::{Duration, Instant, SystemTime},
 };
 
 use anyhow::{Context, Result, bail};
@@ -15,6 +15,7 @@ use walkdir::WalkDir;
 use crate::model::SourceSummary;
 
 const PIXEL_DATA: Tag = Tag(0x7FE0, 0x0010);
+const PROGRESS_INTERVAL: Duration = Duration::from_secs(2);
 
 #[derive(Debug, Clone, Default)]
 pub struct DicomHeader {
@@ -101,7 +102,6 @@ pub struct Discovery {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SourceSnapshot {
     files: Vec<FileFingerprint>,
-    unreadable_dicom_like_files: u64,
     changed_while_reading: bool,
 }
 
@@ -114,15 +114,30 @@ struct FileFingerprint {
 
 impl SourceSnapshot {
     pub fn is_stable_with(&self, later: &Self) -> bool {
-        !self.changed_while_reading
-            && !later.changed_while_reading
-            && self.unreadable_dicom_like_files == 0
-            && later.unreadable_dicom_like_files == 0
-            && self.files == later.files
+        !self.changed_while_reading && !later.changed_while_reading && self.files == later.files
     }
 }
 
 pub fn discover(root: &Path) -> Result<Discovery> {
+    discover_with_progress(root, |_| {})
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DiscoveryProgress {
+    pub files_seen: u64,
+    pub dicom_files: u64,
+    pub series_found: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SnapshotProgress {
+    pub files_seen: u64,
+}
+
+pub fn discover_with_progress(
+    root: &Path,
+    mut report: impl FnMut(DiscoveryProgress),
+) -> Result<Discovery> {
     if !root.is_dir() {
         bail!(
             "DICOM folder does not exist or is not a directory: {}",
@@ -135,6 +150,7 @@ pub fn discover(root: &Path) -> Result<Discovery> {
     let mut unreadable_dicom_like_files = 0_u64;
     let mut source_files = Vec::new();
     let mut changed_while_reading = false;
+    let mut last_progress = Instant::now();
 
     for entry in WalkDir::new(root).follow_links(false).into_iter() {
         let entry = entry.context("could not inspect every entry in the selected folder")?;
@@ -146,9 +162,6 @@ pub fn discover(root: &Path) -> Result<Discovery> {
         let before = file_fingerprint(&path)?;
         match read_header(&path) {
             Ok(header) => {
-                let after = file_fingerprint(&path)?;
-                changed_while_reading |= before != after;
-                source_files.push(after);
                 summary.dicom_files += 1;
                 let study_uid = header.study_uid.clone().unwrap_or_default();
                 let series_uid = header.series_uid.clone().unwrap_or_default();
@@ -226,7 +239,7 @@ pub fn discover(root: &Path) -> Result<Discovery> {
                 } else {
                     merge_missing_common(&mut group.representative, &header);
                 }
-                group.files.push(path);
+                group.files.push(path.clone());
             }
             Err(error) => {
                 if looks_like_dicom(&path) {
@@ -234,6 +247,17 @@ pub fn discover(root: &Path) -> Result<Discovery> {
                     tracing::warn!(path = %path.display(), error = %error, "DICOM-like file could not be parsed");
                 }
             }
+        }
+        let after = file_fingerprint(&path)?;
+        changed_while_reading |= before != after;
+        source_files.push(after);
+        if last_progress.elapsed() >= PROGRESS_INTERVAL {
+            report(DiscoveryProgress {
+                files_seen: summary.files_seen,
+                dicom_files: summary.dicom_files,
+                series_found: groups.len() as u64,
+            });
+            last_progress = Instant::now();
         }
     }
 
@@ -248,15 +272,60 @@ pub fn discover(root: &Path) -> Result<Discovery> {
             .then(a.series_uid.cmp(&b.series_uid))
     });
     summary.series_found = series.len() as u64;
+    report(DiscoveryProgress {
+        files_seen: summary.files_seen,
+        dicom_files: summary.dicom_files,
+        series_found: summary.series_found,
+    });
     Ok(Discovery {
         series,
         summary,
         unreadable_dicom_like_files,
         source_snapshot: SourceSnapshot {
             files: source_files,
-            unreadable_dicom_like_files,
             changed_while_reading,
         },
+    })
+}
+
+pub fn snapshot_source_with_progress(
+    root: &Path,
+    mut report: impl FnMut(SnapshotProgress),
+) -> Result<SourceSnapshot> {
+    if !root.is_dir() {
+        bail!(
+            "DICOM folder does not exist or is not a directory: {}",
+            root.display()
+        );
+    }
+
+    let mut files = Vec::new();
+    let mut changed_while_reading = false;
+    let mut last_progress = Instant::now();
+    for entry in WalkDir::new(root).follow_links(false).into_iter() {
+        let entry = entry.context("could not inspect every entry in the selected folder")?;
+        if !entry.file_type().is_file() {
+            continue;
+        }
+        let path = entry.into_path();
+        let before = file_fingerprint(&path)?;
+        let after = file_fingerprint(&path)?;
+        changed_while_reading |= before != after;
+        files.push(after);
+        if last_progress.elapsed() >= PROGRESS_INTERVAL {
+            report(SnapshotProgress {
+                files_seen: files.len() as u64,
+            });
+            last_progress = Instant::now();
+        }
+    }
+    files.sort_by(|left, right| left.path.cmp(&right.path));
+    report(SnapshotProgress {
+        files_seen: files.len() as u64,
+    });
+    Ok(SourceSnapshot {
+        files,
+        changed_while_reading,
     })
 }
 

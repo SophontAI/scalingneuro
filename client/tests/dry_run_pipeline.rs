@@ -59,6 +59,7 @@ cp "$NEURO_SYNC_FAKE_JSON" "$out/series.json"
         .env("NEURO_SYNC_DCM2NIIX", &converter)
         .env("NEURO_SYNC_FAKE_NIFTI", &nifti)
         .env("NEURO_SYNC_FAKE_JSON", &metadata)
+        .env_remove("RUST_LOG")
         .output()
         .unwrap();
     assert!(
@@ -67,6 +68,17 @@ cp "$NEURO_SYNC_FAKE_JSON" "$out/series.json"
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let progress_output = format!("{stdout}\n{stderr}");
+    assert!(stdout.contains("Validating"));
+    assert!(
+        progress_output.contains("DICOM discovery complete"),
+        "output={progress_output}"
+    );
+    assert!(progress_output.contains("Source stability check progress"));
+    assert!(progress_output.contains("Local validation progress"));
+    assert!(progress_output.contains("Local validation complete"));
     let reports = fs::read_dir(state.join("reports"))
         .unwrap()
         .filter_map(Result::ok)
