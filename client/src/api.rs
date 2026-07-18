@@ -10,10 +10,12 @@ use crate::{
 };
 
 #[derive(Debug, thiserror::Error)]
-#[error("ingest API request failed ({code})")]
+#[error("ingest API request failed ({code}): {message}")]
 pub struct ApiFailure {
     pub code: String,
     pub status: u16,
+    pub message: String,
+    pub request_id: Option<String>,
     retry_after: Option<Duration>,
     duplicate_reason: Option<String>,
     existing_bundles: Vec<ExistingArchiveBundle>,
@@ -201,7 +203,7 @@ pub struct PartUploadHeaders {
     pub content_sha256: String,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CompleteUploadRequest {
     pub objects: Vec<CompletedObject>,
 }
@@ -229,6 +231,14 @@ pub struct UploadStatus {
     pub object_prefix: Option<String>,
     #[serde(default)]
     pub objects: Vec<serde_json::Value>,
+    #[serde(default)]
+    pub verification: Option<VerificationProgress>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct VerificationProgress {
+    pub verified_series: u32,
+    pub total_series: u32,
 }
 
 impl IngestApi {
@@ -454,11 +464,13 @@ async fn decode<T: DeserializeOwned>(response: Response) -> Result<T> {
     let retry_after = parse_retry_after(response.headers());
     let bytes = response.bytes().await?;
     if !status.is_success() {
-        let code = error_code(&bytes).unwrap_or_else(|| format!("http_{}", status.as_u16()));
+        let (code, message, request_id) = error_details(&bytes);
         let (duplicate_reason, existing_bundles) = duplicate_details(&bytes);
         return Err(ApiFailure {
-            code,
+            code: code.unwrap_or_else(|| format!("http_{}", status.as_u16())),
             status: status.as_u16(),
+            message: message.unwrap_or_else(|| "request was rejected".into()),
+            request_id,
             retry_after,
             duplicate_reason,
             existing_bundles,
@@ -486,12 +498,18 @@ async fn control_retry_delay(attempt: u32, retry_after: Option<Duration>) {
     tokio::time::sleep(retry_after.unwrap_or(exponential).max(exponential)).await;
 }
 
-fn error_code(bytes: &[u8]) -> Option<String> {
-    let json: serde_json::Value = serde_json::from_slice(bytes).ok()?;
-    json.pointer("/error/code")
-        .or_else(|| json.get("code"))?
-        .as_str()
-        .map(str::to_owned)
+fn error_details(bytes: &[u8]) -> (Option<String>, Option<String>, Option<String>) {
+    let Ok(json) = serde_json::from_slice::<serde_json::Value>(bytes) else {
+        return (None, None, None);
+    };
+    let error = json.get("error").unwrap_or(&json);
+    let string = |field: &str| {
+        error
+            .get(field)
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_owned)
+    };
+    (string("code"), string("message"), string("request_id"))
 }
 
 fn duplicate_details(bytes: &[u8]) -> (Option<String>, Vec<ExistingArchiveBundle>) {
@@ -524,7 +542,7 @@ mod tests {
     use crate::model::{Classification, ClassificationDecision, ManifestObject, QcResult};
     use axum::{
         Router,
-        http::{StatusCode, header::LOCATION},
+        http::{Response as HttpResponse, StatusCode, header::LOCATION},
         routing::{any, post},
     };
     use std::sync::{
@@ -589,6 +607,8 @@ mod tests {
         let deterministic = ApiFailure {
             code: "INVALID_REQUEST".into(),
             status: 400,
+            message: "invalid".into(),
+            request_id: None,
             retry_after: None,
             duplicate_reason: None,
             existing_bundles: Vec::new(),
@@ -597,6 +617,8 @@ mod tests {
         let unavailable = ApiFailure {
             code: "STORAGE_UNAVAILABLE".into(),
             status: 503,
+            message: "unavailable".into(),
+            request_id: None,
             retry_after: Some(Duration::from_secs(2)),
             duplicate_reason: None,
             existing_bundles: Vec::new(),
@@ -606,6 +628,8 @@ mod tests {
         let busy = ApiFailure {
             code: "CONFLICT".into(),
             status: 409,
+            message: "busy".into(),
+            request_id: None,
             retry_after: None,
             duplicate_reason: None,
             existing_bundles: Vec::new(),
@@ -639,6 +663,32 @@ mod tests {
         assert_eq!(reason.as_deref(), Some("active_exact_match"));
         assert_eq!(bundles.len(), 1);
         assert_eq!(bundles[0].bundle_id, "a".repeat(24));
+    }
+
+    #[tokio::test]
+    async fn api_failure_displays_the_safe_server_message_and_keeps_request_id() {
+        let response = reqwest::Response::from(
+            HttpResponse::builder()
+                .status(409)
+                .body(
+                    serde_json::to_vec(&serde_json::json!({
+                        "error": {
+                            "code": "CONFLICT",
+                            "message": "Upload verification is already in progress",
+                            "request_id": "request-123"
+                        }
+                    }))
+                    .unwrap(),
+                )
+                .unwrap(),
+        );
+        let error = decode::<serde_json::Value>(response).await.unwrap_err();
+        let failure = error.downcast_ref::<ApiFailure>().unwrap();
+        assert_eq!(failure.request_id.as_deref(), Some("request-123"));
+        assert_eq!(
+            error.to_string(),
+            "ingest API request failed (CONFLICT): Upload verification is already in progress"
+        );
     }
 
     #[test]

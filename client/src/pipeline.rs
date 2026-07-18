@@ -19,8 +19,8 @@ use zeroize::Zeroize;
 use crate::{
     MANIFEST_SCHEMA_VERSION, PINNED_DCM2NIIX_VERSION,
     api::{
-        CompleteUploadRequest, ContributionInfo, CreateUploadResponse, IngestApi, MultipartObject,
-        RegisterRequest, has_error_code, normalize_base_url,
+        CompleteUploadRequest, CompletedObject, ContributionInfo, CreateUploadResponse, IngestApi,
+        MultipartObject, RegisterRequest, UploadStatus, has_error_code, normalize_base_url,
     },
     bundle::{
         BundleRequest, METADATA_POLICY_ID, METADATA_POLICY_VERSION, analyze_converted,
@@ -44,6 +44,7 @@ const MAX_BUNDLES_PER_UPLOAD: usize = 32;
 const MAX_BYTES_PER_UPLOAD: u64 = 32 * 1024 * 1024 * 1024;
 const MAX_NIFTI_BYTES_PER_BUNDLE: u64 = 5 * 1024 * 1024 * 1024;
 const SOURCE_QUIET_INTERVAL: Duration = Duration::from_secs(2);
+const ARCHIVE_VERIFICATION_WAIT: Duration = Duration::from_secs(30 * 60);
 
 struct LocalValidationProgress<'a> {
     state: &'a StateStore,
@@ -705,7 +706,8 @@ impl Runtime {
             let saved: CompleteUploadRequest =
                 serde_json::from_slice(&fs::read(&completion_path)?)?;
             tracing::info!("Asking Scaling Neuro to verify and commit the transferred files");
-            let status = match api.complete_upload(&worker_upload_id, saved.objects).await {
+            let status = match complete_with_recovery(api, &worker_upload_id, &saved.objects).await
+            {
                 Ok(status) => status,
                 Err(error)
                     if reconcile_completion_duplicate(&self.state, run_id, bundles, &error)? =>
@@ -739,10 +741,7 @@ impl Runtime {
         let request = CompleteUploadRequest { objects: completed };
         write_json(&completion_path, &request)?;
         tracing::info!("Transfer complete; verifying hashes and committing the archive");
-        let status = match api
-            .complete_upload(&worker_upload_id, request.objects)
-            .await
-        {
+        let status = match complete_with_recovery(api, &worker_upload_id, &request.objects).await {
             Ok(status) => status,
             Err(error) if reconcile_completion_duplicate(&self.state, run_id, bundles, &error)? => {
                 self.state
@@ -1241,6 +1240,70 @@ fn reconcile_completion_duplicate(
     }
     state.record_existing_bundles(run_id, existing)?;
     Ok(true)
+}
+
+async fn complete_with_recovery(
+    api: &IngestApi,
+    upload_id: &str,
+    objects: &[CompletedObject],
+) -> Result<UploadStatus> {
+    let started = Instant::now();
+    let mut last_progress: Option<(u32, u32)> = None;
+    let mut last_notice = Instant::now() - Duration::from_secs(60);
+    loop {
+        match api.complete_upload(upload_id, objects.to_vec()).await {
+            Ok(status) if matches!(status.status.as_str(), "committed" | "complete") => {
+                return Ok(status);
+            }
+            Ok(status) if matches!(status.status.as_str(), "created" | "uploading") => {
+                log_archive_verification_progress(&status, &mut last_progress, &mut last_notice);
+            }
+            Ok(status) => return Ok(status),
+            Err(error) if has_error_code(&error, "CONFLICT") => {
+                let status = api.status(upload_id).await?;
+                if matches!(status.status.as_str(), "committed" | "complete") {
+                    return Ok(status);
+                }
+                if !matches!(status.status.as_str(), "created" | "uploading") {
+                    return Err(error);
+                }
+                log_archive_verification_progress(&status, &mut last_progress, &mut last_notice);
+            }
+            Err(error) => return Err(error),
+        }
+        if started.elapsed() >= ARCHIVE_VERIFICATION_WAIT {
+            bail!(
+                "archive verification is still pending after 30 minutes; run `neuro-sync resume` to continue without reuploading files"
+            );
+        }
+        tokio::time::sleep(Duration::from_secs(5)).await;
+    }
+}
+
+fn log_archive_verification_progress(
+    status: &UploadStatus,
+    last_progress: &mut Option<(u32, u32)>,
+    last_notice: &mut Instant,
+) {
+    let progress = status
+        .verification
+        .as_ref()
+        .map(|value| (value.verified_series, value.total_series));
+    if progress != *last_progress || last_notice.elapsed() >= Duration::from_secs(30) {
+        if let Some((verified_series, total_series)) = progress {
+            tracing::info!(
+                verified_series,
+                total_series,
+                "Server archive verification progress; transferred files remain checkpointed"
+            );
+        } else {
+            tracing::info!(
+                "Server archive verification is still running; transferred files remain checkpointed"
+            );
+        }
+        *last_progress = progress;
+        *last_notice = Instant::now();
+    }
 }
 
 fn validate_existing_bundles(
@@ -2106,6 +2169,77 @@ mod tests {
             reconcile_completion_duplicate(&state, "run", &[prior_bundle, bundle], &error).unwrap()
         );
         assert_eq!(state.existing_bundles("run").unwrap().len(), 2);
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn completion_waits_through_a_busy_verifier_without_reuploading() {
+        use axum::{
+            Json, Router,
+            http::StatusCode,
+            routing::{get, post},
+        };
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let post_attempts = attempts.clone();
+        let app = Router::new()
+            .route(
+                "/v1/uploads/{upload_id}/complete",
+                post(move || {
+                    let attempt = post_attempts.fetch_add(1, Ordering::SeqCst);
+                    async move {
+                        if attempt < 5 {
+                            (
+                                StatusCode::CONFLICT,
+                                Json(serde_json::json!({
+                                    "error": {
+                                        "code": "CONFLICT",
+                                        "message": "Upload verification is already in progress",
+                                        "request_id": "request-busy"
+                                    }
+                                })),
+                            )
+                        } else {
+                            (
+                                StatusCode::OK,
+                                Json(serde_json::json!({
+                                    "upload_id": "22222222-2222-4222-8222-222222222222",
+                                    "status": "committed"
+                                })),
+                            )
+                        }
+                    }
+                }),
+            )
+            .route(
+                "/v1/uploads/{upload_id}",
+                get(|| async {
+                    Json(serde_json::json!({
+                        "upload_id": "22222222-2222-4222-8222-222222222222",
+                        "status": "uploading",
+                        "verification": {"verified_series": 4, "total_series": 15}
+                    }))
+                }),
+            );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let config = ClientConfig {
+            api_url: format!("http://{address}"),
+            device_token: "sn_device_test".into(),
+            site_id: "site".into(),
+            project_id: "project".into(),
+            project_name: "Project".into(),
+            consent_policy_version: "policy-1".into(),
+            pseudonym_key_b64: "fixture".into(),
+        };
+        let api = IngestApi::from_config(&config).unwrap();
+        let status = complete_with_recovery(&api, "22222222-2222-4222-8222-222222222222", &[])
+            .await
+            .unwrap();
+        assert_eq!(status.status, "committed");
+        assert_eq!(attempts.load(Ordering::SeqCst), 6);
         server.abort();
     }
 

@@ -1,6 +1,6 @@
 # Scaling Neuro
 
-Scaling Neuro is a privacy-first ingestion path for building a scientifically usable, acquisition-space functional MRI archive. The current `0.2.4` open beta is a working EPI-only system: a researcher installs with one terminal command, registers their lab once, enters a folder of newly exported DICOMs, and lets the client classify, convert, quality-check, resume, and commit eligible scans to Cloudflare R2.
+Scaling Neuro is a privacy-first ingestion path for building a scientifically usable, acquisition-space functional MRI archive. The current `0.2.5` open beta is a working EPI-only system: a researcher installs with one terminal command, registers their lab once, enters a folder of newly exported DICOMs, and lets the client classify, convert, quality-check, resume, and commit eligible scans to Cloudflare R2.
 
 This is no longer a static workflow mockup. The repository contains the cross-platform Rust client, Cloudflare control plane, D1 migrations, R2 multipart transport, strict public schemas, release automation, and the Scaling Neuro site. Self-service registration is open to any lab; the tool is not a clinical device or a substitute for IRB, consent, or data-use review.
 
@@ -46,7 +46,7 @@ flowchart LR
   J --> I
 ```
 
-The client never receives a reusable R2 access key. The Worker creates each multipart upload, then signs a 15-minute `UploadPart` URL bound to one full key, multipart ID, part number, byte length, and SHA-256 header. Parts upload sequentially and returned ETags are checkpointed in local SQLite. The Worker alone completes/aborts objects, reads the stored bytes back through SHA-256, validates the sidecar again, and writes a canonical immutable manifest.
+The client never receives a reusable R2 access key. The Worker creates each multipart upload, then signs a 15-minute `UploadPart` URL bound to one full key, multipart ID, part number, byte length, and SHA-256 header. Parts upload sequentially and returned ETags are checkpointed in local SQLite. The Worker alone completes/aborts objects, reads each stored NIfTI through a memory-bounded hash/decompression stream, validates the sidecar again, atomically checkpoints each verified NIfTI/sidecar pair, and writes a canonical immutable manifest. Interrupted final verification resumes from the last verified pair without retransmitting files.
 
 One Worker upload session contains one pseudonymous subject, at most 32 bundles/32 GiB, with a 5 GiB compressed-NIfTI ceiling. The client deterministically splits larger or multi-subject folders into sequential sessions. Pseudonymous subject/session/series/protocol/bundle IDs are 96-bit site-scoped HMACs; raw HMAC inputs never cross the API.
 

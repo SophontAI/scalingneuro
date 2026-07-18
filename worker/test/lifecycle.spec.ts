@@ -420,6 +420,35 @@ describe("ingestion control plane", () => {
         .first<string>("status"),
     ).not.toBe("expired");
 
+    // Reproduce the production recovery shape left by the former verifier:
+    // one small sidecar has an object-completion receipt, but no atomic
+    // NIfTI/sidecar scientific-validation checkpoint. The new verifier must
+    // not mistake that legacy per-object marker for a verified bundle.
+    const completedMetadata = await env.ARCHIVE.head(metadataKey);
+    expect(completedMetadata).not.toBeNull();
+    await env.DB.prepare(
+      `UPDATE upload_objects
+       SET completed_at = ?1, etag = ?2
+       WHERE upload_id = ?3 AND object_key = ?4`,
+    )
+      .bind(
+        Math.floor(Date.now() / 1000),
+        completedMetadata!.etag,
+        uploadId,
+        metadataKey,
+      )
+      .run();
+    const verifyingStatus = await call(
+      "GET",
+      `/v1/uploads/${uploadId}`,
+      undefined,
+      deviceToken,
+    );
+    expect(await verifyingStatus.json()).toMatchObject({
+      status: "uploading",
+      verification: { verified_series: 0, total_series: 1 },
+    });
+
     const resumeSpy = vi
       .spyOn(env.ARCHIVE, "resumeMultipartUpload")
       .mockImplementation(
@@ -462,6 +491,13 @@ describe("ingestion control plane", () => {
         "upload_id",
       ].sort(),
     );
+    expect(
+      await env.DB.prepare(
+        "SELECT COUNT(*) AS count FROM upload_objects WHERE upload_id = ?1 AND verified_at IS NOT NULL",
+      )
+        .bind(uploadId)
+        .first<number>("count"),
+    ).toBe(2);
 
     const raceNiiPart = await env.ARCHIVE.resumeMultipartUpload(
       raceNiiKey,

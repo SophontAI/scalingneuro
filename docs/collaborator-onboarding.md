@@ -73,7 +73,7 @@ neuro-sync upload /path/to/dicom-export --confirm-authorized
 
 Running `neuro-sync` with no arguments starts the complete guided flow in the current terminal. It does not start a local web server or require a graphical session.
 
-During a large or network-mounted export, the client prints live file, DICOM, series, conversion, multipart-transfer, and archive-verification progress. `Ctrl+C` is safe during local validation: no data reaches R2 until a privacy-checked bundle has been prepared, and interrupted multipart transfers can be continued with `neuro-sync resume`.
+During a large or network-mounted export, the client prints live file, DICOM, series, conversion, multipart-transfer, and server archive-verification progress. Final verification is checkpointed per NIfTI/sidecar pair; an interruption resumes from the last verified pair without retransmitting completed files. `Ctrl+C` is safe during local validation: no data reaches R2 until a privacy-checked bundle has been prepared, and interrupted work can be continued with `neuro-sync resume`.
 
 ## What success looks like
 
@@ -91,6 +91,7 @@ A successful run shows:
 ## Recovery and support
 
 - **Network interruption or expired 15-minute part URL:** run `neuro-sync resume`. Checkpointed multipart pieces are reused and the client requests a new checksum-bound URL only for the next missing part. A crash in the instant before an accepted ETag was saved may safely resend that same part number.
+- **Final verification is still running or reports `CONFLICT`:** install the current client and run `neuro-sync resume`. Uploaded parts and verified NIfTI/sidecar pairs are reused; do not select and upload the folder again.
 - **Registration timed out or the command stopped before confirmation:** run `neuro-sync` and submit the same details. The owner-only pending operation is replayed with the same client-bound token, so a lost response cannot create duplicate lab or device records.
 - **The client was closed or the computer restarted:** run `neuro-sync resume`.
 - **Privacy rules changed:** prepare the unchanged private source again with the current client. Old prepared bytes are never uploaded, and a changed or missing source fails locally.

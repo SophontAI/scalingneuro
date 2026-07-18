@@ -10,7 +10,7 @@ import {
   randomBytes,
   randomOpaqueToken,
   sha256Hex,
-  sha256StreamHex,
+  sha256PassThrough,
   utf8Bytes,
   utf8String,
 } from "./crypto";
@@ -234,6 +234,7 @@ interface UploadObjectRow {
   r2_multipart_id: string | null;
   part_size: number | null;
   completed_at: number | null;
+  verified_at: number | null;
   etag: string | null;
 }
 
@@ -261,7 +262,7 @@ class StoredObjectValidationError extends AppError {
 const BASE_PART_SIZE = 64 * 1024 * 1024;
 const PART_SIZE_GRANULARITY = 1024 * 1024;
 const INITIALIZE_LEASE_SECONDS = 5 * 60;
-const VERIFY_LEASE_SECONDS = 60 * 60;
+const VERIFY_LEASE_SECONDS = 10 * 60;
 
 function nowSeconds(): number {
   return Math.floor(Date.now() / 1000);
@@ -519,7 +520,10 @@ async function getUploadForDevice(
   return upload;
 }
 
-function uploadStatusResponse(upload: UploadRow): Record<string, unknown> {
+function uploadStatusResponse(
+  upload: UploadRow,
+  verifiedSeries?: number,
+): Record<string, unknown> {
   const response: Record<string, unknown> = {
     upload_id: upload.id,
     status: upload.status,
@@ -540,7 +544,29 @@ function uploadStatusResponse(upload: UploadRow): Record<string, unknown> {
       sha256: upload.manifest_sha256,
     };
   }
+  if (upload.status === "uploading" && verifiedSeries !== undefined) {
+    response.verification = {
+      verified_series: verifiedSeries,
+      total_series: upload.series_count,
+    };
+  }
   return response;
+}
+
+async function verifiedSeriesCount(env: Env, uploadId: string): Promise<number> {
+  const result = await env.DB.prepare(
+    `SELECT COUNT(*) AS verified_series
+     FROM upload_bundles b
+     WHERE b.upload_id = ?1
+       AND 2 = (
+         SELECT COUNT(*) FROM upload_objects o
+         WHERE o.upload_id = b.upload_id AND o.bundle_id = b.bundle_id
+           AND o.verified_at IS NOT NULL AND o.etag IS NOT NULL
+       )`,
+  )
+    .bind(uploadId)
+    .first<{ verified_series: number }>();
+  return result?.verified_series ?? 0;
 }
 
 async function catalogBundles(
@@ -1774,7 +1800,11 @@ export async function getUploadStatus(
 ): Promise<Record<string, unknown>> {
   const device = await authenticateDevice(request, env);
   const upload = await getUploadForDevice(env, uploadId, device.id);
-  return uploadStatusResponse(upload);
+  const verified =
+    upload.status === "uploading"
+      ? await verifiedSeriesCount(env, upload.id)
+      : undefined;
+  return uploadStatusResponse(upload, verified);
 }
 
 function expectedObjects(
@@ -1894,8 +1924,30 @@ async function verifyObjects(
   }
 
   const verified: VerifiedObject[] = [];
-  for (let start = 0; start < pending.length; start += 4) {
-    const chunk = pending.slice(start, start + 4);
+  for (const bundle of bundles) {
+    const chunk = pending.filter(
+      ({ item }) => item.bundle_id === bundle.bundle_id,
+    );
+    if (chunk.length !== 2) {
+      throw new AppError("INTERNAL", 500, "Bundle object pair is incomplete");
+    }
+    // verified_at represents an atomic NIfTI/sidecar scientific-validation
+    // checkpoint. A retried request can skip already checked bundles without
+    // rereading multi-gigabyte objects from R2. completed_at remains the
+    // distinct multipart-object durability boundary.
+    if (
+      chunk.every(
+        ({ row }) => row.verified_at !== null && row.etag !== null,
+      )
+    ) {
+      verified.push(
+        ...chunk.map(({ item, row }) => ({
+          ...item,
+          etag: row.etag as string,
+        })),
+      );
+      continue;
+    }
     const results = await Promise.all(
       chunk.map(
         async ({ item, clientObject, row }): Promise<VerifiedObject> => {
@@ -2009,13 +2061,15 @@ async function verifyObjects(
                 "NIfTI bundle index is incomplete",
               );
             }
-            const [compressedBody, niftiBody] = stored.body.tee();
+            const hashed = sha256PassThrough(stored.body);
             try {
-              [storedSha256, nifti] = await Promise.all([
-                sha256StreamHex(compressedBody),
-                inspectGzipNifti(niftiBody, bundle.nii_uncompressed_sha256),
-              ]);
+              nifti = await inspectGzipNifti(
+                hashed.body,
+                bundle.nii_uncompressed_sha256,
+              );
+              storedSha256 = await hashed.sha256;
             } catch {
+              void hashed.sha256.catch(() => undefined);
               throw new StoredObjectValidationError(
                 "Stored NIfTI gzip or header is invalid",
                 { key: item.key },
@@ -2063,13 +2117,6 @@ async function verifyObjects(
               throw error;
             }
           }
-          await env.DB.prepare(
-            `UPDATE upload_objects
-           SET completed_at = COALESCE(completed_at, ?1), etag = ?2
-           WHERE upload_id = ?3 AND object_key = ?4`,
-          )
-            .bind(nowSeconds(), head.etag, upload.id, item.key)
-            .run();
           const verifiedObject: VerifiedObject = { ...item, etag: head.etag };
           if (nifti) verifiedObject.nifti = nifti;
           if (sidecar) verifiedObject.sidecar = sidecar;
@@ -2077,20 +2124,9 @@ async function verifyObjects(
         },
       ),
     );
-    verified.push(...results);
-  }
-
-  const sorted = verified.sort((left, right) =>
-    left.key < right.key ? -1 : left.key > right.key ? 1 : 0,
-  );
-  for (const bundle of bundles) {
-    const nifti = sorted.find(
-      (object) =>
-        object.bundle_id === bundle.bundle_id && object.kind === "nii",
-    )?.nifti;
-    const sidecar = sorted.find(
-      (object) =>
-        object.bundle_id === bundle.bundle_id && object.kind === "metadata",
+    const nifti = results.find((object) => object.kind === "nii")?.nifti;
+    const sidecar = results.find(
+      (object) => object.kind === "metadata",
     )?.sidecar;
     if (!nifti || !sidecar) {
       throw new AppError(
@@ -2107,8 +2143,59 @@ async function verifyObjects(
         { bundle_id: bundle.bundle_id },
       );
     }
+
+    // Checkpoint the two objects only after their hashes, NIfTI structure,
+    // minimized sidecar, and cross-file geometry all agree. D1 batch is
+    // atomic, so a terminated invocation can never expose a half-verified
+    // bundle to the next retry.
+    const checkpointedAt = nowSeconds();
+    const checkpointResults = await env.DB.batch([
+      ...results.map((object) =>
+        env.DB.prepare(
+          `UPDATE upload_objects
+           SET completed_at = COALESCE(completed_at, ?1),
+               verified_at = ?1, etag = ?2
+           WHERE upload_id = ?3 AND object_key = ?4
+             AND EXISTS (
+               SELECT 1 FROM uploads
+               WHERE id = ?3 AND operation_token = ?5
+                 AND operation_kind = 'verify'
+             )`,
+        ).bind(
+          checkpointedAt,
+          object.etag,
+          upload.id,
+          object.key,
+          upload.operation_token,
+        ),
+      ),
+      env.DB.prepare(
+        `UPDATE uploads
+         SET updated_at = ?1, operation_expires_at = ?2
+         WHERE id = ?3 AND operation_token = ?4
+           AND operation_kind = 'verify'`,
+      ).bind(
+        checkpointedAt,
+        checkpointedAt + VERIFY_LEASE_SECONDS,
+        upload.id,
+        upload.operation_token,
+      ),
+    ]);
+    if (
+      checkpointResults.some((result) => (result.meta.changes ?? 0) !== 1)
+    ) {
+      throw new AppError(
+        "CONFLICT",
+        409,
+        "Upload verification checkpoint lost its lease",
+      );
+    }
+    verified.push(...results);
   }
-  return sorted;
+
+  return verified.sort((left, right) =>
+    left.key < right.key ? -1 : left.key > right.key ? 1 : 0,
+  );
 }
 
 async function rejectStoredUpload(

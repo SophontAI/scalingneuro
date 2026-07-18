@@ -84,6 +84,40 @@ export async function sha256StreamHex(
   return bytesToHex(new Uint8Array(await digestStream.digest));
 }
 
+/**
+ * Hash a body while forwarding each chunk to one downstream consumer. Unlike
+ * ReadableStream.tee(), this applies backpressure before forwarding the next
+ * chunk, so a fast hash branch cannot buffer an entire MRI object while the
+ * gzip validator is still consuming it.
+ */
+export function sha256PassThrough(body: ReadableStream<Uint8Array>): {
+  body: ReadableStream<Uint8Array>;
+  sha256: Promise<string>;
+} {
+  const workersCrypto = crypto as Crypto & {
+    DigestStream: typeof DigestStream;
+  };
+  const digestStream = new workersCrypto.DigestStream("SHA-256");
+  const writer = digestStream.getWriter();
+  const forwarded = body.pipeThrough(
+    new TransformStream<Uint8Array, Uint8Array>({
+      async transform(chunk, controller) {
+        await writer.write(chunk);
+        controller.enqueue(chunk);
+      },
+      async flush() {
+        await writer.close();
+      },
+    }),
+  );
+  return {
+    body: forwarded,
+    sha256: digestStream.digest.then((digest) =>
+      bytesToHex(new Uint8Array(digest)),
+    ),
+  };
+}
+
 export async function constantTimeEqual(
   left: string,
   right: string,

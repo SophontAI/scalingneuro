@@ -65,6 +65,15 @@
           "$ref": "https://scalingneuro.com/schemas/common-v1.schema.json#/$defs/sha256"
         }
       }
+    },
+    "verification": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["verified_series", "total_series"],
+      "properties": {
+        "verified_series": { "type": "integer", "minimum": 0, "maximum": 32 },
+        "total_series": { "type": "integer", "minimum": 1, "maximum": 32 }
+      }
     }
   },
   "allOf": [
