@@ -72,7 +72,7 @@ impl ClientConfig {
     pub fn load(paths: &AppPaths) -> Result<Self> {
         let bytes = fs::read(&paths.config).with_context(|| {
             format!(
-                "this device is not registered (missing {}); open neuro-sync to register",
+                "this device is not registered (missing {}); run neuro-sync to register",
                 paths.config.display()
             )
         })?;

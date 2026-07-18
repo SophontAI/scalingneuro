@@ -13,11 +13,11 @@ You need:
 
 Registration creates a private, revocable upload identity for one workstation and lab; it is not evidence of participant consent and does not make an otherwise unauthorized scan upload permissible. The uploader remains responsible for confirming that the selected scans are covered by the institution’s IRB, consent, and data-use approvals. The client is a research data-transfer tool, not a clinical device or a substitute for those reviews.
 
-Pilot releases support Apple Silicon and Intel macOS through one universal package, Windows x64, and Linux x64. The Linux package requires glibc 2.28 or newer (for example, Ubuntu 20.04+, Debian 10+, or RHEL 8+), `libwayland-client.so.0`, and a working `xdg-desktop-portal` backend for the folder picker. Scanner compatibility comes from the pinned multi-vendor dcm2niix converter and fail-closed validation; no software can honestly guarantee every historical or malformed scanner export. Unsupported series stay local and appear in the report.
+Pilot releases support Apple Silicon and Intel macOS through one universal package, Windows x64, and Linux x64. The Linux package requires glibc 2.28 or newer (for example, Ubuntu 20.04+, Debian 10+, or RHEL 8+); it does not require X11, Wayland, a desktop portal, or a browser. Scanner compatibility comes from the pinned multi-vendor dcm2niix converter and fail-closed validation; no software can honestly guarantee every historical or malformed scanner export. Unsupported series stay local and appear in the report.
 
 ## Install once
 
-Paste the command for your computer. The installer runs without administrator access, downloads the release bundle and pinned converter, verifies the package SHA-256 before installing, adds `neuro-sync` to your user PATH, and opens the guided local interface.
+Paste the command for your computer. The installer runs without administrator access, downloads the release bundle and pinned converter, verifies the package SHA-256 before installing, adds `neuro-sync` to your user PATH, and continues with guided setup in the same terminal.
 
 ```bash
 # macOS or Linux
@@ -31,22 +31,22 @@ irm https://scalingneuro.com/install.ps1 | iex
 
 Both scripts are readable at those URLs before use and do not send installer telemetry. Direct release archives and `SHA256SUMS` remain available at [scalingneuro.com/downloads](https://scalingneuro.com/downloads/) for managed environments that prohibit bootstrap scripts. Terminal installation does not override institutional endpoint-security rules; those environments may still require signed executables.
 
-## Guided flow
+## Guided terminal flow
 
-1. On first launch, complete the short lab form and review the functional-EPI contribution policy shown by the client.
-2. Choose **Choose folder…**, select the top-level export folder, confirm that the scans are approved for the displayed project, and choose **Validate and upload**.
-3. Leave the client open or close it normally. Running `neuro-sync` again resumes from a compatible local checkpoint; it does not restart completed transfers. If a release tightened the privacy rules, choose **Revalidate with current privacy rules**: the same private source is converted again locally and must reproduce the original scan identities before upload. Large or multi-subject folders are split automatically into sequential, independently committed one-subject sessions.
-4. Wait for **Committed**. Save the run report for the study record. It contains pseudonymous IDs, counts, hashes, QC codes, and held/excluded reasons—never patient names or raw DICOM values.
+1. On first launch, answer the short lab-registration prompts and review the functional-EPI contribution policy summary shown in the terminal. No browser or web form is opened.
+2. Type, paste, or drag the top-level export-folder path into the terminal and confirm that the scans are approved for the displayed project and policy.
+3. Leave the command running. Large or multi-subject folders are split automatically into sequential, independently committed one-subject sessions. If the connection or process is interrupted, run `neuro-sync resume`; compatible prepared work is checkpointed locally.
+4. Wait for status `committed`. Save the run report for the study record. It contains pseudonymous IDs, counts, hashes, QC codes, and held/excluded reasons—never patient names or raw DICOM values.
 
 The source folder is read-only. DICOMs are neither modified nor uploaded. Only accepted functional EPI NIfTI/JSON bundles leave the machine. Structural scans, DWI, ASL, fieldmaps, SBRefs, localizers, derived images, and uncertain series stay local.
 
-## Command-line flow
+## Explicit command flow
 
-The graphical flow and CLI use the same state database and resume logic.
+The guided and explicit terminal flows use the same private state database and resume logic.
 
 ```bash
 neuro-sync register --email researcher@example.edu --name "Researcher Name" \
-  --institution "Example University" --lab "Example Neuroimaging Lab"
+  --institution "Example University" --lab "Example Neuroimaging Lab" --accept-policy
 neuro-sync upload /path/to/dicom-export
 neuro-sync status
 neuro-sync report
@@ -65,9 +65,12 @@ neuro-sync resume RUN_ID
 # Machine-readable status/report for lab automation.
 neuro-sync status --json
 neuro-sync report RUN_ID --json
+
+# Non-interactive transmission after authorization was confirmed out of band.
+neuro-sync upload /path/to/dicom-export --confirm-authorized
 ```
 
-Running `neuro-sync` with no arguments opens the loopback-only interface and native folder picker. The local interface binds only to `127.0.0.1`; it is not exposed to the lab network.
+Running `neuro-sync` with no arguments starts the complete guided flow in the current terminal. It does not start a local web server or require a graphical session.
 
 ## What success looks like
 
@@ -84,10 +87,10 @@ A successful run shows:
 
 ## Recovery and support
 
-- **Network interruption or expired 15-minute part URL:** choose Resume. Checkpointed multipart pieces are reused and the client requests a new checksum-bound URL only for the next missing part. A crash in the instant before an accepted ETag was saved may safely resend that same part number.
-- **Registration timed out or the app closed before confirmation:** reopen the client and submit the same details. The owner-only pending operation is replayed with the same client-bound token, so a lost response cannot create duplicate lab or device records.
-- **The client was closed or the computer restarted:** run `neuro-sync` and choose Resume.
-- **The app says Privacy update required:** choose **Revalidate with current privacy rules**. The old prepared bytes are never uploaded; the source path stays private, and a changed or missing source fails locally so you can select the folder again.
+- **Network interruption or expired 15-minute part URL:** run `neuro-sync resume`. Checkpointed multipart pieces are reused and the client requests a new checksum-bound URL only for the next missing part. A crash in the instant before an accepted ETag was saved may safely resend that same part number.
+- **Registration timed out or the command stopped before confirmation:** run `neuro-sync` and submit the same details. The owner-only pending operation is replayed with the same client-bound token, so a lost response cannot create duplicate lab or device records.
+- **The client was closed or the computer restarted:** run `neuro-sync resume`.
+- **Privacy rules changed:** prepare the unchanged private source again with the current client. Old prepared bytes are never uploaded, and a changed or missing source fails locally.
 - **Resume says the registration context changed:** do not bypass it. The prepared run’s site, project, or contribution-policy version no longer matches the current device; review the policy and prepare a new authorized run.
 - **A series is held:** keep the source folder unchanged and share the report. Scaling Neuro can add a compatibility fixture or classifier rule without receiving PHI.
 - **Consent policy update required:** review and accept the displayed new policy before another upload. Existing committed data is not silently relabeled.

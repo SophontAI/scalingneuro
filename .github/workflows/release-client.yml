@@ -128,9 +128,6 @@ jobs:
           python -m pip install --requirement schemas/requirements.txt
           npm ci --prefix worker
 
-      - name: Install Linux folder-picker build dependencies
-        run: sudo apt-get update && sudo apt-get install --yes libwayland-dev pkg-config
-
       - name: Validate public contracts
         run: |
           python schemas/validate.py
@@ -171,10 +168,8 @@ jobs:
             curl \
             gzip \
             jq \
-            pkgconf-pkg-config \
             tar \
             unzip \
-            wayland-devel \
             zstd
 
       - name: Install Rust toolchain
@@ -257,13 +252,19 @@ jobs:
           client_header=$(readelf --file-header "$STAGE_DIR/neuro-sync")
           converter_header=$(readelf --file-header "$STAGE_DIR/libexec/dcm2niix")
           client_dynamic=$(readelf --dynamic "$STAGE_DIR/neuro-sync")
-          client_features=$(cargo tree --locked --manifest-path client/Cargo.toml \
-            --target x86_64-unknown-linux-gnu --edges features)
+          client_dependencies=$(ldd "$STAGE_DIR/neuro-sync")
+          client_tree=$(cargo tree --locked --manifest-path client/Cargo.toml \
+            --target x86_64-unknown-linux-gnu --edges normal,build)
           grep --quiet 'Machine:.*Advanced Micro Devices X86-64' <<< "$client_header"
           grep --quiet 'Machine:.*Advanced Micro Devices X86-64' <<< "$converter_header"
-          grep --quiet 'Shared library: \[libwayland-client.so.0\]' <<< "$client_dynamic"
-          grep --fixed-strings --quiet 'rfd feature "xdg-portal"' <<< "$client_features"
-          grep --fixed-strings --quiet 'rfd feature "tokio"' <<< "$client_features"
+          if grep --extended-regexp --quiet 'libwayland|libX11|libgtk' <<< "$client_dynamic$client_dependencies"; then
+            echo "neuro-sync unexpectedly depends on a graphical Linux runtime" >&2
+            exit 1
+          fi
+          if grep --extended-regexp --quiet '(^| )rfd v' <<< "$client_tree"; then
+            echo "neuro-sync unexpectedly includes the desktop folder picker" >&2
+            exit 1
+          fi
           assert_glibc_floor "$STAGE_DIR/neuro-sync"
           assert_glibc_floor "$STAGE_DIR/libexec/dcm2niix"
 
@@ -284,7 +285,6 @@ jobs:
             printf '%s\n' "$converter_version" >&2
             exit 1
           fi
-          client_dependencies=$(ldd "$STAGE_DIR/neuro-sync")
           converter_dependencies=$(ldd "$STAGE_DIR/libexec/dcm2niix")
           printf '%s\n%s\n' "$client_dependencies" "$converter_dependencies" >&2
           if grep --quiet 'not found' <<< "$client_dependencies"; then
@@ -746,7 +746,10 @@ jobs:
             Scaling Neuro EPI ingestion client open beta.
 
             The published terminal installers select the correct package, verify its pinned
-            SHA-256, install without administrator access, and open the guided local flow.
+            SHA-256, install without administrator access, and continue with guided terminal setup.
+            Registration, policy confirmation, folder entry, upload, and recovery require no
+            browser or graphical Linux runtime. Non-interactive uploads must explicitly pass
+            `--confirm-authorized` after the lab has confirmed institutional authorization.
             Direct packages remain available and can be checked against SHA256SUMS. Files
             labeled UNSIGNED-PILOT or CODESIGNED-PILOT may trigger operating-system trust
             warnings; institutional controls may still require signed builds.

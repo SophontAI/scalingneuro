@@ -56,6 +56,12 @@ LINUX_PACKAGE="$LINUX_NAME.tar.gz"
   "$LINUX_PACKAGE" "$(digest "$ASSETS/$LINUX_PACKAGE")" \
   "$WINDOWS_NAME" "$(digest "$ASSETS/$WINDOWS_NAME")"
 
+grep -F '"$bin_dir/neuro-sync" </dev/tty' "$OUTPUT/install.sh" >/dev/null
+if grep -F 'Opening the private local setup' "$OUTPUT/install.sh" >/dev/null; then
+  echo "installer still contains the retired browser-first launch copy" >&2
+  exit 1
+fi
+
 HOME_DIR="$TEST_ROOT/home"
 mkdir -p "$HOME_DIR"
 HOME="$HOME_DIR" \

@@ -69,8 +69,8 @@
   <main>
     <a class="brand" href="../">🧠 <span>Scaling Neuro</span></a>
     <div class="eyebrow">Open self-service beta · functional EPI only</div>
-    <h1>One command. Then choose a folder.</h1>
-    <p class="lede">Paste the command for your computer. It installs neuro-sync in your home directory, verifies the exact release, and opens the private guided flow—no administrator access or dependencies to configure.</p>
+    <h1>One command. Then enter a folder.</h1>
+    <p class="lede">Paste the command for your computer. It installs neuro-sync in your home directory, verifies the exact release, and continues setup in that terminal—no browser, administrator access, or dependencies to configure.</p>
     <div class="status" id="releaseStatus">Checking the current verified release…</div>
 
     <section class="commands" aria-label="Terminal installation commands">
@@ -80,7 +80,7 @@
           <code>curl -fsSL https://scalingneuro.com/install.sh | sh</code>
           <button class="copy" type="button" data-copy="curl -fsSL https://scalingneuro.com/install.sh | sh">Copy</button>
         </div>
-        <p>Uses <code>~/.local</code>, adds <code>neuro-sync</code> to your user PATH, and immediately opens it.</p>
+        <p>Uses <code>~/.local</code>, adds <code>neuro-sync</code> to your user PATH, and immediately starts terminal setup.</p>
         <a class="inspect" href="/install.sh">Inspect the installer</a>
       </article>
 
@@ -90,21 +90,21 @@
           <code>irm https://scalingneuro.com/install.ps1 | iex</code>
           <button class="copy" type="button" data-copy="irm https://scalingneuro.com/install.ps1 | iex">Copy</button>
         </div>
-        <p>Uses your local application-data folder, updates only your user PATH, and immediately opens it.</p>
+        <p>Uses your local application-data folder, updates only your user PATH, and immediately starts terminal setup.</p>
         <a class="inspect" href="/install.ps1">Inspect the installer</a>
       </article>
     </section>
 
     <div class="assurance" aria-label="Installer properties">
-      <span>No sudo or admin</span><span>SHA-256 verified</span><span>Pinned dcm2niix included</span><span>No installer telemetry</span>
+      <span>No sudo or admin</span><span>No browser required</span><span>SHA-256 verified</span><span>Pinned dcm2niix included</span>
     </div>
 
     <section class="box">
       <h2>What happens next</h2>
       <ol>
-        <li>Complete the one-minute lab registration in the local browser window.</li>
+        <li>Complete the one-minute lab registration directly in the terminal. Nothing opens in a browser.</li>
         <li>Confirm that the scans are covered by your institution’s IRB, participant-consent, and data-use approvals.</li>
-        <li>Select the completed DICOM export folder. neuro-sync handles classification, local conversion, metadata minimization, QC, and resumable upload.</li>
+        <li>Type, paste, or drag in the completed DICOM export-folder path. neuro-sync handles classification, local conversion, metadata minimization, QC, and resumable upload.</li>
       </ol>
       <p>Source DICOMs never leave the machine. Only native-space functional 4D NIfTI, approved acquisition metadata, and checksum/provenance manifests upload. Structural, diffusion, reference, derived, and ambiguous scans stay local.</p>
     </section>
@@ -125,7 +125,7 @@
             <a class="download" data-platform="windows" href="#" aria-disabled="true">Preparing…</a>
           </article>
           <article class="card">
-            <h3>Linux</h3><p>x86_64 glibc 2.28+ with an XDG desktop portal.</p>
+            <h3>Linux</h3><p>x86_64 glibc 2.28+. No graphical session or desktop portal required.</p>
             <a class="download" data-platform="linux" href="#" aria-disabled="true">Preparing…</a>
           </article>
         </section>

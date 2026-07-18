@@ -1,6 +1,6 @@
 [package]
 name = "neuro-sync"
-version = "0.2.1"
+version = "0.2.2"
 edition = "2024"
 rust-version = "1.85"
 description = "Privacy-first functional MRI contribution client for Scaling Neuro"
@@ -14,7 +14,6 @@ path = "src/main.rs"
 
 [dependencies]
 anyhow = "1.0"
-axum = { version = "0.8", features = ["json"] }
 base64 = "0.22"
 chrono = { version = "0.4", default-features = false, features = ["clock", "serde"] }
 clap = { version = "4.5", features = ["derive", "env"] }
@@ -36,19 +35,15 @@ sha2 = "0.10"
 tempfile = "3.20"
 thiserror = "2.0"
 tokio = { version = "1.47", features = ["full"] }
-tower-http = { version = "0.6", features = ["catch-panic", "limit", "trace"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 url = "2.5"
 uuid = { version = "1.17", features = ["serde", "v4"] }
 walkdir = "2.5"
-webbrowser = "1.0"
 zeroize = { version = "1.8", features = ["derive"] }
 
-[target.'cfg(not(target_os = "macos"))'.dependencies]
-rfd = { version = "0.15", default-features = false, features = ["tokio", "xdg-portal"] }
-
 [dev-dependencies]
+axum = { version = "0.8", features = ["json"] }
 http-body-util = "0.1"
 tower = { version = "0.5", features = ["util"] }
 

@@ -1,9 +1,9 @@
 # neuro-sync
 
-`neuro-sync` is the local Scaling Neuro contribution client. A researcher enrolls a workstation
-once, opens the application, chooses a completed DICOM folder with the operating system's native
-folder picker, attests that the scans are approved under the displayed project policy, and leaves
-the rest to the client. Registration creates a private, revocable upload identity; neither
+`neuro-sync` is the local Scaling Neuro contribution client. A researcher registers a workstation
+once, enters a completed DICOM-folder path in the terminal, attests that the scans are approved
+under the displayed project policy, and leaves the rest to the client. Registration creates a
+private, revocable upload identity; neither
 registration nor this per-upload attestation authorizes data sharing or substitutes for participant consent.
 
 The current beta is deliberately EPI-only. It never uploads source DICOMs. It converts eligible
@@ -13,7 +13,7 @@ scanner/acquisition metadata, and uploads only bundles that pass the local defau
 ## Researcher workflow
 
 The public terminal installer downloads and verifies the platform release, installs it without
-administrator access, and opens the private local interface. The verified bundle contains
+administrator access, and continues setup in the same terminal. It never opens a browser. The verified bundle contains
 `neuro-sync` (`neuro-sync.exe` on Windows) and the pinned converter at `libexec/dcm2niix`.
 
 ```text
@@ -25,12 +25,12 @@ irm https://scalingneuro.com/install.ps1 | iex
 ```
 
 ```text
-# graphical flow: opens a private loopback UI and native folder chooser
+# guided terminal registration and upload flow
 neuro-sync
 
-# headless/scanner-server flow
+# explicit commands for headless or automated scanner-server use
 neuro-sync register --email researcher@example.edu --name "Researcher Name" \
-  --institution "Example University" --lab "Example Neuroimaging Lab"
+  --institution "Example University" --lab "Example Neuroimaging Lab" --accept-policy
 neuro-sync upload /path/to/completed-dicom-folder
 neuro-sync status
 neuro-sync resume
@@ -38,8 +38,9 @@ neuro-sync report
 ```
 
 `run` is retained as an alias for `upload`. `upload --dry-run` performs discovery, conversion,
-privacy filtering, and QC without contacting the ingest service or R2. The graphical flow always
-shows the enrolled project and policy version before enabling upload.
+privacy filtering, and QC without contacting the ingest service or R2. Interactive uploads show
+the enrolled project and policy version and request authorization before transmitting. Automated
+uploads must add `--confirm-authorized` after the lab has independently completed that check.
 
 ## Local decision gate
 
@@ -133,7 +134,7 @@ cargo test --manifest-path client/Cargo.toml
 
 Tests include synthetic non-PHI DICOM Part 10 fixtures, classification exclusions, NIfTI
 scrubbing/geometry/QC, deterministic gzip, published sidecar contract round-tripping, exact
-per-part upload grants and multipart state, native-picker UI guards, and an end-to-end local dry run through a pinned fake
+per-part upload grants and multipart state, terminal prompt guards, and an end-to-end local dry run through a pinned fake
 converter. `../schemas/validate.py` separately validates public examples and metadata-policy paths.
 
 ## Packaging contract

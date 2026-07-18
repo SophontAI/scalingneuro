@@ -10,7 +10,7 @@ pub mod pipeline;
 pub mod pseudonym;
 pub mod s3;
 pub mod state;
-pub mod ui;
+pub mod terminal;
 
 pub const CLIENT_VERSION: &str = env!("CARGO_PKG_VERSION");
 pub const SIDECAR_SCHEMA_VERSION: &str = "1.0.0";

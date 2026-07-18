@@ -26,6 +26,8 @@ pub struct Cli {
 
 #[derive(Subcommand)]
 pub enum Command {
+    /// Run the guided terminal setup and upload flow.
+    Setup,
     /// Register this machine for the open public EPI contribution.
     Register {
         #[arg(long)]
@@ -40,6 +42,9 @@ pub enum Command {
         ror: Option<String>,
         #[arg(long)]
         contact_opt_in: bool,
+        /// Confirm acceptance of the contribution policy reported by the server.
+        #[arg(long)]
+        accept_policy: bool,
         #[arg(long, default_value = DEFAULT_API_URL)]
         server: String,
         #[arg(long)]
@@ -61,6 +66,9 @@ pub enum Command {
         /// Perform every local privacy/QC step but do not contact the ingest service or R2.
         #[arg(long)]
         dry_run: bool,
+        /// Confirm the selected scans are institutionally authorized for contribution.
+        #[arg(long)]
+        confirm_authorized: bool,
     },
     /// Resume interrupted prepared or multipart uploads.
     Resume { run_id: Option<String> },
@@ -81,7 +89,7 @@ pub enum Command {
 pub async fn execute(cli: Cli) -> Result<()> {
     let runtime = Runtime::initialize(cli.state_dir.as_deref())?;
     match cli.command {
-        None => crate::ui::serve(runtime).await,
+        None | Some(Command::Setup) => crate::terminal::run(runtime).await,
         Some(Command::Register {
             email,
             name,
@@ -89,12 +97,20 @@ pub async fn execute(cli: Cli) -> Result<()> {
             lab,
             ror,
             contact_opt_in,
+            accept_policy,
             server,
             device_name,
         }) => {
             let contribution = runtime.contribution_info(&server).await?;
             if !contribution.registration_open {
                 bail!("public contribution registration is temporarily paused");
+            }
+            if !accept_policy {
+                bail!(
+                    "review the {} contribution policy at {} and rerun with --accept-policy to confirm acceptance",
+                    contribution.consent_policy_version,
+                    contribution.policy_url
+                );
             }
             let config = runtime
                 .register(
@@ -129,21 +145,29 @@ pub async fn execute(cli: Cli) -> Result<()> {
             println!("contribution policy: {}", config.consent_policy_version);
             Ok(())
         }
-        Some(Command::Upload { folder, dry_run }) => {
-            let run_id = runtime.upload(folder, dry_run).await?;
-            let run = runtime
-                .run_record(Some(&run_id))?
-                .context("run state is missing")?;
-            println!("run: {run_id}");
-            println!("status: {}", run.status);
-            println!(
-                "series: {} accepted, {} held, {} excluded",
-                run.summary.accepted, run.summary.held, run.summary.excluded
-            );
-            if let Some(report) = run.report_path {
-                println!("report: {report}");
+        Some(Command::Upload {
+            folder,
+            dry_run,
+            confirm_authorized,
+        }) => {
+            let folder = folder
+                .canonicalize()
+                .with_context(|| format!("could not open selected folder: {}", folder.display()))?;
+            if !folder.is_dir() {
+                bail!("selected source is not a folder");
             }
-            Ok(())
+            if !dry_run && !confirm_authorized {
+                let config = crate::config::ClientConfig::load(&runtime.paths)?;
+                if !crate::terminal::confirm_authorized_upload(
+                    &folder,
+                    &config.consent_policy_version,
+                )? {
+                    println!("cancelled; nothing was uploaded");
+                    return Ok(());
+                }
+            }
+            let run_id = runtime.upload(folder, dry_run).await?;
+            crate::terminal::print_run_summary(&runtime, &run_id, &mut std::io::stdout())
         }
         Some(Command::Resume { run_id }) => {
             let completed = runtime.resume(run_id.as_deref()).await?;
@@ -190,7 +214,7 @@ pub async fn execute(cli: Cli) -> Result<()> {
     }
 }
 
-fn default_device_name() -> String {
+pub(crate) fn default_device_name() -> String {
     std::env::var("COMPUTERNAME")
         .or_else(|_| std::env::var("HOSTNAME"))
         .ok()

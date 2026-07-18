@@ -259,16 +259,16 @@
             <button class="term-tab" id="tab-inside" data-tab="inside" role="tab" aria-selected="false" aria-controls="pane-inside" tabindex="-1">What leaves</button>
           </div>
           <div class="term-body">
-            <pre class="term-pane is-active" id="pane-install" data-pane="install" role="tabpanel" aria-labelledby="tab-install"><code><span class="c-com"># macOS or Linux — installs in your home folder and opens neuro-sync</span>
+            <pre class="term-pane is-active" id="pane-install" data-pane="install" role="tabpanel" aria-labelledby="tab-install"><code><span class="c-com"># macOS or Linux — installs and continues in this terminal</span>
 <span class="c-p">$</span> curl -fsSL https://scalingneuro.com/install.sh | sh
 <span class="c-com"># Windows PowerShell: irm https://scalingneuro.com/install.ps1 | iex</span>
 <span class="c-ok">✓</span> Correct client + pinned dcm2niix downloaded and SHA-256 verified
-<span class="c-ok">✓</span> One-minute lab registration on first launch
+<span class="c-ok">✓</span> One-minute lab registration in the terminal; no browser needed
 <span class="c-ok">✓</span> Private upload identity: <span class="c-hi">your lab</span>
-<span class="c-ok">✓</span> Choose the folder containing this session's DICOMs
+<span class="c-ok">✓</span> Paste the folder path containing this session's DICOMs
 <span class="c-ok">✓</span> Discover → convert → minimize metadata → QC → upload
 <span class="c-ok">✓</span> Safe to stop: conversion and multipart upload resume locally</code></pre>
-            <pre class="term-pane" id="pane-run" data-pane="run" role="tabpanel" aria-labelledby="tab-run"><code><span class="c-com"># after the one-time guided lab registration</span>
+            <pre class="term-pane" id="pane-run" data-pane="run" role="tabpanel" aria-labelledby="tab-run"><code><span class="c-com"># after the one-time terminal lab registration</span>
 <span class="c-p">$</span> neuro-sync upload ./new_session_dicoms
 
 <span class="c-dim">[scan]</span>   6 DICOM series discovered

@@ -1,15 +1,15 @@
 # Scaling Neuro
 
-Scaling Neuro is a privacy-first ingestion path for building a scientifically usable, acquisition-space functional MRI archive. The current `0.2.1` open beta is a working EPI-only system: a researcher installs with one terminal command, registers their lab once, chooses a folder of newly exported DICOMs, and lets the client classify, convert, quality-check, resume, and commit eligible scans to Cloudflare R2.
+Scaling Neuro is a privacy-first ingestion path for building a scientifically usable, acquisition-space functional MRI archive. The current `0.2.2` open beta is a working EPI-only system: a researcher installs with one terminal command, registers their lab once, enters a folder of newly exported DICOMs, and lets the client classify, convert, quality-check, resume, and commit eligible scans to Cloudflare R2.
 
 This is no longer a static workflow mockup. The repository contains the cross-platform Rust client, Cloudflare control plane, D1 migrations, R2 multipart transport, strict public schemas, release automation, and the Scaling Neuro site. Self-service registration is open to any lab; the tool is not a clinical device or a substitute for IRB, consent, or data-use review.
 
 ## Researcher experience
 
-1. Paste the installer shown at [scalingneuro.com/downloads](https://scalingneuro.com/downloads/) into Terminal or PowerShell. It selects the correct release, verifies its pinned SHA-256, installs under the user’s home/application-data directory, adds `neuro-sync` to the user PATH, and opens it without administrator access.
-2. Complete the one-minute lab form, review the contribution policy, and confirm that the selected scans are institutionally approved. If the response is lost, reopening with the same details safely recovers the same client-bound registration instead of creating duplicates.
-3. Choose the top-level DICOM export folder and click **Validate and upload**.
-4. Leave the client running. If the network drops or the client closes, run `neuro-sync` and choose **Resume**; completed work is checkpointed locally.
+1. Paste the installer shown at [scalingneuro.com/downloads](https://scalingneuro.com/downloads/) into Terminal or PowerShell. It selects the correct release, verifies its pinned SHA-256, installs under the user’s home/application-data directory, adds `neuro-sync` to the user PATH, and starts setup in that same terminal without administrator access.
+2. Answer the one-time lab-registration prompts, review the policy summary, and confirm authorization in the terminal. No browser or web form is opened. If the response is lost, rerunning with the same details safely recovers the same client-bound registration instead of creating duplicates.
+3. Type, paste, or drag in the top-level DICOM export-folder path and confirm the upload. The client takes over from there.
+4. Leave the command running. If the network drops or the process closes, run `neuro-sync resume`; completed work is checkpointed locally.
 
 Researchers do not install Python, Docker, FSL, an AWS CLI, or Cloudflare credentials. The terminal installer fetches the complete release bundle, including the pinned multi-vendor `dcm2niix v1.0.20260416` converter under `libexec/`. Direct archives remain a secondary fallback for managed environments that prohibit bootstrap scripts.
 
@@ -54,15 +54,18 @@ Scientific identity uses the uncompressed NIfTI SHA-256, not a multipart ETag or
 
 ## Command line
 
-The GUI and CLI use the same local state and resume machinery.
+Running `neuro-sync` with no arguments starts the guided terminal flow. Explicit subcommands support managed and automated deployments.
 
 ```bash
 # Register once. The default server is https://scalingneuro.com.
 neuro-sync register --email researcher@example.edu --name "Researcher Name" \
-  --institution "Example University" --lab "Example Neuroimaging Lab"
+  --institution "Example University" --lab "Example Neuroimaging Lab" --accept-policy
 
 # Validate, convert, and upload one exported folder.
 neuro-sync upload /path/to/dicom-export
+
+# Non-interactive upload after the lab has independently confirmed authorization.
+neuro-sync upload /path/to/dicom-export --confirm-authorized
 
 # Run the complete local privacy/QC path without contacting the API or R2.
 neuro-sync upload /path/to/dicom-export --dry-run
@@ -75,13 +78,13 @@ neuro-sync status --json
 neuro-sync report RUN_ID --json
 ```
 
-`neuro-sync run` remains an alias for `upload`. Running `neuro-sync` without a subcommand opens the local graphical flow. Reports contain pseudonyms, counts, stable codes, hashes, and archive commit IDs—not raw DICOM values or local paths.
+`neuro-sync run` remains an alias for `upload`. Interactive uploads request authorization in the terminal; `--confirm-authorized` is required when standard input is not a terminal. Reports contain pseudonyms, counts, stable codes, hashes, and archive commit IDs—not raw DICOM values or local paths.
 
 ## Repository layout
 
 | Path | Role |
 |---|---|
-| `client/` | Rust 1.85 desktop/CLI client, local SQLite checkpoints, DICOM classification, conversion, QC, and multipart uploader |
+| `client/` | Rust 1.85 terminal client, local SQLite checkpoints, DICOM classification, conversion, QC, and multipart uploader |
 | `worker/` | TypeScript Cloudflare Worker/Pages entrypoint, D1 control plane, R2 lifecycle, admin APIs, and scheduled cleanup |
 | `worker/migrations/` | Ordered D1 schema and concurrency/catalog migrations |
 | `schemas/` | Draft 2020-12 enrollment, local-preparation, sidecar, upload, part-URL, archive-manifest, status/error, and metadata-policy contracts plus examples |
@@ -194,7 +197,7 @@ See [docs/client-release.md](docs/client-release.md) for signing/notarization se
 The implementation is deliberately honest about what remains before broad academic rollout:
 
 - Scanner support comes from dcm2niix plus fail-closed validation, not a claim that every historical or malformed export works. Build a PHI-free compatibility matrix across Siemens classic/enhanced/XA, Philips classic/enhanced, and GE classic/enhanced exports.
-- Complete clean-machine smoke tests on each promised OS, including native folder selection, interruption/resume, commit, report, and operating-system trust prompts.
+- Complete clean-machine smoke tests on each promised OS, including terminal folder entry, interruption/resume, commit, report, and operating-system trust prompts.
 - Run at least one institution-approved fresh scanner export end to end and independently inspect the stored sidecar/manifest, metadata retention, PHI absence, native affine/voxel hashes, withdrawal, and cleanup.
 - Keep the R2 live smoke in the release gate. The deployed implementation has completed an ordinary-client Siemens fixture upload, independently reproduced the compressed/uncompressed/sidecar/manifest hashes after R2 download, and rejected wrong-part, expired, wrong-hash, and wrong same-length payloads. Repeat that evidence for every release and each named collaborator environment.
 - Before any non-public participant data, rotate the current production signer credential and independently verify that the replacement is dedicated to Scaling Neuro with Object Read & Write access to only its archive bucket. The current credential has not yet been verified as dedicated and bucket-scoped; the successful transport smoke does not establish that permission boundary.

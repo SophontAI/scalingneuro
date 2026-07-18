@@ -74,11 +74,12 @@ try {
   Write-Host ""
   Write-Host "Installed and verified neuro-sync $Version."
   Write-Host "Location: $binDir"
-  if ($env:NEURO_SYNC_NO_LAUNCH -eq "1") {
+  if ($env:NEURO_SYNC_NO_LAUNCH -eq "1" -or [Console]::IsOutputRedirected) {
     Write-Host "Run neuro-sync to begin."
   } else {
-    Write-Host "Opening the private local setup…"
-    Start-Process (Join-Path $binDir "neuro-sync.exe")
+    Write-Host "Starting terminal setup…"
+    & (Join-Path $binDir "neuro-sync.exe")
+    if ($LASTEXITCODE -ne 0) { throw "neuro-sync setup exited with status $LASTEXITCODE" }
   }
 } finally {
   if (Test-Path $tempRoot) { Remove-Item -Recurse -Force $tempRoot }

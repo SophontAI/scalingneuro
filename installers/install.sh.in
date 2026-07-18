@@ -134,7 +134,9 @@ test -z "$path_note" || printf '%s\n' "$path_note"
 
 if test "${NEURO_SYNC_NO_LAUNCH:-0}" = 1 || ! test -t 1; then
   printf 'Run %s/neuro-sync to begin.\n' "$bin_dir"
+elif test -r /dev/tty; then
+  printf 'Starting terminal setup…\n\n'
+  "$bin_dir/neuro-sync" </dev/tty
 else
-  printf 'Opening the private local setup…\n\n'
-  "$bin_dir/neuro-sync"
+  printf 'Run %s/neuro-sync from an interactive terminal to begin.\n' "$bin_dir"
 fi

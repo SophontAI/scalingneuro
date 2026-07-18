@@ -28,6 +28,13 @@ try {
     "unused-linux.tar.gz" $unused `
     $package $sha
   if ($LASTEXITCODE -ne 0) { throw "installer rendering failed" }
+  $renderedInstaller = Get-Content -Raw (Join-Path $rendered "install.ps1")
+  if ($renderedInstaller.Contains("Start-Process")) {
+    throw "installer must keep setup in the current terminal"
+  }
+  if (-not $renderedInstaller.Contains("Starting terminal setup")) {
+    throw "installer is missing the terminal setup handoff"
+  }
 
   $env:NEURO_SYNC_INSTALL_ROOT = Join-Path $testRoot "install"
   $env:NEURO_SYNC_BIN_DIR = Join-Path $env:NEURO_SYNC_INSTALL_ROOT "bin"

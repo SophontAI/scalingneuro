@@ -32,7 +32,7 @@ The workflow downloads official `rordenlab/dcm2niix` release assets at tag `v1.0
 
 The macOS converter is already a universal x86_64/arm64 Mach-O. The workflow builds both Rust targets and combines them with `lipo` into a universal `neuro-sync` executable. Windows includes the runtime DLLs shipped in the official converter archive.
 
-The Linux client is built for `x86_64-unknown-linux-gnu` inside the digest-pinned PyPA `manylinux_2_28_x86_64` image. The supported runtime floor is glibc 2.28 (for example, Ubuntu 20.04+, Debian 10+, or RHEL 8+). The workflow inspects imported ELF symbol versions and refuses the package if either `neuro-sync` or the bundled converter requires a newer glibc. It also verifies that `neuro-sync` remains linked to `libwayland-client.so.0` and that the pinned converter reports the expected version. This preserves the native XDG portal folder picker and converter while preventing a future `ubuntu-latest` update from silently raising the compatibility floor. Collaborator machines need `libwayland-client.so.0` plus a working `xdg-desktop-portal` backend; they do not need a compiler toolchain.
+The Linux client is built for `x86_64-unknown-linux-gnu` inside the digest-pinned PyPA `manylinux_2_28_x86_64` image. The supported runtime floor is glibc 2.28 (for example, Ubuntu 20.04+, Debian 10+, or RHEL 8+). The workflow inspects imported ELF symbol versions and refuses the package if either `neuro-sync` or the bundled converter requires a newer glibc. It also rejects graphical runtime links such as Wayland, X11, or GTK and verifies that the pinned converter reports the expected version. This keeps the release usable on headless scanner workstations while preventing a future build-image update from silently raising the compatibility floor. Collaborator machines do not need a graphical session or compiler toolchain.
 
 The build image is currently `quay.io/pypa/manylinux_2_28_x86_64@sha256:b04887b645dde99b9e955aeae3ff4da414992d0bd88259f046295b56361c5614`. Updating it is a reviewed release change and must retain the glibc-symbol gate.
 
@@ -70,7 +70,7 @@ Before sharing a package:
 1. The release workflow's blocking verification job must pass schema/policy consistency, strict Ajv compilation, Rust formatting/clippy/tests, and Worker type/tests.
 2. The release workflow must verify the pinned converter and produce SBOMs and `SHA256SUMS`.
 3. The terminal-installer tests must pass on macOS, Linux, and Windows, including a user-level install, bundled-converter presence, repeat installation, and rejection of a tampered archive.
-4. Run clean-machine smoke tests for each promised OS: enrollment, native folder selection, dry run, accepted/held separation, upload, forced interruption, resume, commit, and report.
+4. Run clean-machine smoke tests for each promised OS: terminal enrollment and folder entry, dry run, accepted/held separation, upload, forced interruption, resume, commit, and report.
 5. Inspect the stored sidecar and manifest for schema validity, metadata retention, absence of seeded PHI, and exact local/R2 hashes.
 6. Prefer notarized macOS and Authenticode-signed Windows builds for institution-managed machines. Until signing is configured, keep `UNSIGNED-PILOT` and `CODESIGNED-PILOT` filenames and show the warning beside manual downloads; terminal installation must not claim to override endpoint-security policy.
 
