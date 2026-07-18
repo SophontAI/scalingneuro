@@ -750,9 +750,9 @@ jobs:
             Registration, policy confirmation, folder entry, upload, and recovery require no
             browser or graphical Linux runtime. Non-interactive uploads must explicitly pass
             `--confirm-authorized` after the lab has confirmed institutional authorization.
-            Direct packages remain available and can be checked against SHA256SUMS. Files
-            labeled UNSIGNED-PILOT or CODESIGNED-PILOT may trigger operating-system trust
-            warnings; institutional controls may still require signed builds.
+            Platform packages are checksum-bound implementation assets selected by the
+            terminal installers. Files labeled UNSIGNED-PILOT or CODESIGNED-PILOT may trigger
+            operating-system trust warnings; institutional controls may still require signed builds.
 
       - name: Set up Node for Pages Worker build
         if: github.ref_type == 'tag' || inputs.publish_release == true

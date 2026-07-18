@@ -12,7 +12,7 @@ neuro-sync-vX.Y.Z-windows-x86_64.zip
 neuro-sync-vX.Y.Z-linux-x86_64.tar.gz
 ```
 
-If Apple or Windows signing credentials are unavailable, that platform’s filename is changed to include `-UNSIGNED-PILOT` before the extension. Unsigned packages remain explicitly labeled beta artifacts and the manual-download surface discloses the applicable operating-system and institutional-policy warning.
+If Apple or Windows signing credentials are unavailable, that platform’s filename is changed to include `-UNSIGNED-PILOT` before the extension. These archives are implementation assets consumed by the verified terminal installers, not a separate collaborator-facing installation path.
 
 A signed but non-notarized macOS archive is named `-CODESIGNED-PILOT.zip`. Only a macOS archive that passes both hardened-runtime signing and Apple notarization receives the suffix-free filename. This keeps “signed” from being mistaken for the lower-friction Gatekeeper experience collaborators expect.
 
@@ -72,6 +72,6 @@ Before sharing a package:
 3. The terminal-installer tests must pass on macOS, Linux, and Windows, including a user-level install, bundled-converter presence, repeat installation, and rejection of a tampered archive.
 4. Run clean-machine smoke tests for each promised OS: terminal enrollment and folder entry, dry run, accepted/held separation, upload, forced interruption, resume, commit, and report.
 5. Inspect the stored sidecar and manifest for schema validity, metadata retention, absence of seeded PHI, and exact local/R2 hashes.
-6. Prefer notarized macOS and Authenticode-signed Windows builds for institution-managed machines. Until signing is configured, keep `UNSIGNED-PILOT` and `CODESIGNED-PILOT` filenames and show the warning beside manual downloads; terminal installation must not claim to override endpoint-security policy.
+6. Prefer notarized macOS and Authenticode-signed Windows builds for institution-managed machines. Until signing is configured, keep `UNSIGNED-PILOT` and `CODESIGNED-PILOT` filenames in release evidence; terminal installation must not claim to override endpoint-security policy.
 
 The workflow can create a GitHub prerelease when requested. Manual builds do not publish unless **publish release** is explicitly enabled; `client-vX.Y.Z` tags publish the corresponding versioned open-beta downloads automatically.

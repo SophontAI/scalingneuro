@@ -7,7 +7,7 @@
   <meta name="description" content="Install neuro-sync with one terminal command, then select a DICOM folder to contribute approved functional EPI scans." />
   <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
   <style>
-    :root { color-scheme:light; --paper:#ececf2; --ink:#1d2337; --muted:#626779; --plum:#242238; --sage:#bdd2b2; --line:#cfd0da; --warn:#7b302a; }
+    :root { color-scheme:light; --paper:#ececf2; --ink:#1d2337; --muted:#626779; --plum:#242238; --sage:#bdd2b2; --line:#cfd0da; }
     * { box-sizing:border-box; }
     body { margin:0; background:var(--paper); color:var(--ink); font:18px/1.55 Georgia,serif; }
     main { width:min(980px,calc(100% - 36px)); margin:0 auto; padding:64px 0 96px; }
@@ -38,25 +38,13 @@
     .box code { color:var(--sage); }
     ol { padding-left:24px; }
     li { margin:12px 0; }
-    details.manual { margin-top:32px; border-top:1px solid var(--line); border-bottom:1px solid var(--line); }
-    details.manual > summary { padding:18px 0; cursor:pointer; font-weight:700; }
-    .manual-body { padding:0 0 24px; }
-    .manual-note { max-width:780px; color:var(--muted); font-size:15px; }
-    .grid { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:12px; margin:20px 0; }
-    .card { min-height:180px; padding:18px; border:1px solid var(--line); border-radius:12px; background:#f6f5f8; display:flex; flex-direction:column; }
-    .card h3 { margin:0; font-size:24px; }
-    .card p { color:var(--muted); font-size:14px; }
-    .artifact-warning { margin:0 0 12px!important; padding:8px 9px; border:1px solid #c78378; border-radius:7px; background:#fff5f1; color:var(--warn)!important; font:11px/1.45 ui-monospace,SFMono-Regular,Menlo,monospace; }
-    .artifact-warning[hidden] { display:none; }
-    .download { margin-top:auto; display:block; padding:10px 12px; border-radius:8px; background:var(--plum); color:white; text-align:center; text-decoration:none; font:600 12px/1.2 ui-monospace,SFMono-Regular,Menlo,monospace; }
-    .download[aria-disabled="true"] { opacity:.55; pointer-events:none; }
     .meta { color:var(--muted); margin-top:34px; }
     .toast { position:fixed; left:50%; bottom:24px; transform:translate(-50%,20px); padding:10px 14px; border-radius:8px; background:#151424; color:#fff; opacity:0; pointer-events:none; transition:.18s; }
     .toast.show { opacity:1; transform:translate(-50%,0); }
     @media (max-width:760px) {
       main { padding-top:34px; }
       .eyebrow { margin-top:46px; }
-      .commands,.grid { grid-template-columns:1fr; }
+      .commands { grid-template-columns:1fr; }
       .assurance { grid-template-columns:1fr 1fr; }
       .command-card.is-recommended { order:-1; }
       .command-head { align-items:flex-start; flex-direction:column; }
@@ -109,36 +97,10 @@
       <p>Source DICOMs never leave the machine. Only native-space functional 4D NIfTI, approved acquisition metadata, and checksum/provenance manifests upload. Structural, diffusion, reference, derived, and ambiguous scans stay local.</p>
     </section>
 
-    <details class="manual">
-      <summary>Manual downloads and release files</summary>
-      <div class="manual-body">
-        <p class="manual-note">Use these only when a lab’s computing policy does not allow terminal bootstrap scripts. Extract the complete archive so <code>libexec/dcm2niix</code> remains beside neuro-sync. Unsigned beta executables can still be blocked by institutional endpoint controls; terminal installation does not override those policies.</p>
-        <section class="grid" aria-label="Direct neuro-sync downloads">
-          <article class="card">
-            <h3>macOS</h3><p>Apple silicon and Intel universal archive.</p>
-            <p class="artifact-warning" data-warning="macos" role="status" hidden></p>
-            <a class="download" data-platform="macos" href="#" aria-disabled="true">Preparing…</a>
-          </article>
-          <article class="card">
-            <h3>Windows</h3><p>64-bit Windows 10 or newer.</p>
-            <p class="artifact-warning" data-warning="windows" role="status" hidden></p>
-            <a class="download" data-platform="windows" href="#" aria-disabled="true">Preparing…</a>
-          </article>
-          <article class="card">
-            <h3>Linux</h3><p>x86_64 glibc 2.28+. No graphical session or desktop portal required.</p>
-            <a class="download" data-platform="linux" href="#" aria-disabled="true">Preparing…</a>
-          </article>
-        </section>
-        <p class="manual-note">Release evidence: <a id="checksumsLink" href="#">SHA-256 checksums</a> · SPDX/CycloneDX SBOMs are linked in the release index.</p>
-      </div>
-    </details>
-
     <p class="meta"><a href="/docs/contribution-policy">Contribution policy</a> · The registration creates a private, revocable upload identity; it is not evidence of participant consent or authorization.</p>
   </main>
   <div class="toast" id="toast" role="status" aria-live="polite"></div>
   <script>
-    const labels = { macos: 'Download macOS archive', windows: 'Download Windows archive', linux: 'Download Linux archive' };
-    const safeDownload = (value) => typeof value === 'string' && /^\/downloads\/[A-Za-z0-9._+-]+$/.test(value);
     const platform = /Windows/i.test(navigator.userAgent) ? 'windows' : /Mac|Linux|X11/i.test(navigator.userAgent) ? 'unix' : null;
     if (platform) {
       const card = document.querySelector(`[data-installer="${platform}"]`);
@@ -168,23 +130,6 @@
       if (!response.ok) throw new Error('not published');
       return response.json();
     }).then((release) => {
-      for (const [name, artifact] of Object.entries(release.artifacts || {})) {
-        if (!(name in labels) || !artifact || !safeDownload(artifact.url) || !/^[a-f0-9]{64}$/.test(artifact.sha256 || '')) continue;
-        const link = document.querySelector(`[data-platform="${name}"]`);
-        link.href = artifact.url;
-        link.removeAttribute('aria-disabled');
-        link.textContent = labels[name];
-        const warning = document.querySelector(`[data-warning="${name}"]`);
-        if (name === 'macos' && artifact.notarized !== true) {
-          warning.hidden = false;
-          warning.textContent = artifact.signed === true ? 'Code-signed but not Apple-notarized.' : 'Not code-signed or Apple-notarized.';
-        }
-        if (name === 'windows' && artifact.signed !== true) {
-          warning.hidden = false;
-          warning.textContent = 'No Windows Authenticode signature.';
-        }
-      }
-      if (safeDownload(release.checksums_url)) document.querySelector('#checksumsLink').href = release.checksums_url;
       const installerState = release.installers ? ' · terminal installers verified' : '';
       document.querySelector('#releaseStatus').textContent = `${release.version} · ${release.channel || 'open beta'} · pinned package hashes${installerState}`;
     }).catch(() => {

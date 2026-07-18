@@ -11,7 +11,7 @@ This is no longer a static workflow mockup. The repository contains the cross-pl
 3. Type, paste, or drag in the top-level DICOM export-folder path and confirm the upload. The client takes over from there.
 4. Leave the command running. If the network drops or the process closes, run `neuro-sync resume`; completed work is checkpointed locally.
 
-Researchers do not install Python, Docker, FSL, an AWS CLI, or Cloudflare credentials. The terminal installer fetches the complete release bundle, including the pinned multi-vendor `dcm2niix v1.0.20260416` converter under `libexec/`. Direct archives remain a secondary fallback for managed environments that prohibit bootstrap scripts.
+Researchers do not install Python, Docker, FSL, an AWS CLI, or Cloudflare credentials. The terminal installer fetches the complete release bundle, including the pinned multi-vendor `dcm2niix v1.0.20260416` converter under `libexec/`.
 
 Registration creates a private, revocable upload identity for a workstation and lab. A lab may register multiple workstations with the same contact details; each machine receives its own device identity. Registration is not evidence of participant consent and cannot authorize an otherwise impermissible upload.
 
@@ -188,7 +188,7 @@ Every push to `main` runs the migration gate, builds the explicit site/schema/do
 
 The non-secret R2 account/access-key IDs, bucket, TTLs, and service version are defined in `worker/wrangler.jsonc`. The parent R2 token must be dedicated to Object Read & Write on only the Scaling Neuro bucket; it never leaves the Worker.
 
-Client packages are produced by `.github/workflows/release-client.yml` from the current `main` commit. It builds Linux x86_64, Windows x86_64, and universal Intel/Apple-silicon macOS artifacts; verifies official converter archive hashes; renders release-bound `install.sh` and `install.ps1`; tests user-level installation and tamper rejection on all three operating systems; emits SPDX/CycloneDX SBOMs, `latest.json`, and `SHA256SUMS`; and enforces the Cloudflare Pages 25 MiB per-file limit. Suffix-free macOS artifacts require both Developer ID signing and accepted Apple notarization. Restricted direct archives remain visibly named `CODESIGNED-PILOT` or `UNSIGNED-PILOT`.
+Client packages are produced by `.github/workflows/release-client.yml` from the current `main` commit. It builds Linux x86_64, Windows x86_64, and universal Intel/Apple-silicon macOS artifacts; verifies official converter archive hashes; renders release-bound `install.sh` and `install.ps1`; tests user-level installation and tamper rejection on all three operating systems; emits SPDX/CycloneDX SBOMs, `latest.json`, and `SHA256SUMS`; and enforces the Cloudflare Pages 25 MiB per-file limit.
 
 See [docs/client-release.md](docs/client-release.md) for signing/notarization secrets and the release checklist.
 
