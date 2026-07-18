@@ -162,7 +162,6 @@ export async function fetchHandler(
     if (request.method === "POST" && path === "/v1/register") {
       return json(
         await registerContributor(
-          request,
           env,
           parsePublicRegistrationRequest(await requestJson(request)),
         ),

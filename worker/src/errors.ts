@@ -13,7 +13,6 @@ export type ErrorCode =
   | "CREDENTIALS_UNAVAILABLE"
   | "STORAGE_UNAVAILABLE"
   | "QUOTA_EXCEEDED"
-  | "RATE_LIMITED"
   | "CONFLICT"
   | "INTERNAL";
 

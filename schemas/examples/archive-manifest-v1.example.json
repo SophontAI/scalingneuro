@@ -32,6 +32,6 @@
     }
   ],
   "control_plane": {
-    "service_version": "0.2.2"
+    "service_version": "0.2.3"
   }
 }

@@ -51,7 +51,6 @@ const PUBLIC_PROJECT_NAME = "Scaling Neuro public EPI contribution";
 const PUBLIC_PROJECT_SLUG = "public-epi";
 const PUBLIC_CONSENT_POLICY_VERSION = "open-epi-1.0.0";
 const PUBLIC_UPLOAD_QUOTA_BYTES = 250 * 1024 ** 3;
-const PUBLIC_REGISTRATIONS_PER_DAY_PER_NETWORK = 5;
 
 function semanticVersion(
   value: string,
@@ -991,7 +990,6 @@ async function publicRegistrationResponse(
 }
 
 export async function registerContributor(
-  request: Request,
   env: Env,
   input: PublicRegistrationRequest,
 ): Promise<Record<string, unknown>> {
@@ -1026,39 +1024,6 @@ export async function registerContributor(
       409,
       "Registration operation conflicts with an existing enrollment",
     );
-  }
-
-  const requesterAddress = request.headers.get("cf-connecting-ip")?.trim();
-  if (
-    requesterAddress &&
-    requesterAddress.length <= 64 &&
-    /^[A-Fa-f0-9:.]+$/u.test(requesterAddress)
-  ) {
-    const day = Math.floor(nowSeconds() / 86_400);
-    const requesterWindowHash = await sha256Hex(
-      `${env.SITE_KEY_ENCRYPTION_KEY_B64}\0${day}\0${requesterAddress}`,
-    );
-    const limited = await env.DB.prepare(
-      `INSERT INTO contributor_registration_limits
-         (requester_window_hash, attempts, expires_at)
-       VALUES (?1, 1, ?2)
-       ON CONFLICT(requester_window_hash) DO UPDATE
-       SET attempts = attempts + 1
-       WHERE attempts < ?3`,
-    )
-      .bind(
-        requesterWindowHash,
-        (day + 2) * 86_400,
-        PUBLIC_REGISTRATIONS_PER_DAY_PER_NETWORK,
-      )
-      .run();
-    if ((limited.meta.changes ?? 0) !== 1) {
-      throw new AppError(
-        "RATE_LIMITED",
-        429,
-        "Too many new registrations from this network; try again tomorrow or contact Scaling Neuro",
-      );
-    }
   }
 
   const timestamp = nowSeconds();
@@ -2902,11 +2867,6 @@ export async function withdrawUpload(
 
 export async function cleanupAbandoned(env: Env): Promise<void> {
   const timestamp = nowSeconds();
-  await env.DB.prepare(
-    "DELETE FROM contributor_registration_limits WHERE expires_at <= ?1",
-  )
-    .bind(timestamp)
-    .run();
   const purgeClaims: Array<{ upload: UploadRow; token: string }> = [];
   const activeCandidates = await env.DB.prepare(
     `SELECT id FROM uploads

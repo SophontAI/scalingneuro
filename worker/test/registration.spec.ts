@@ -257,8 +257,8 @@ describe("open contributor registration", () => {
     });
   });
 
-  it("bounds unauthenticated registration creation by Cloudflare network identity", async () => {
-    for (let attempt = 0; attempt < 5; attempt += 1) {
+  it("allows many workstations to register behind one network address", async () => {
+    for (let attempt = 0; attempt < 8; attempt += 1) {
       const response = await call(
         "POST",
         "/v1/register",
@@ -268,16 +268,5 @@ describe("open contributor registration", () => {
       );
       expect(response.status).toBe(201);
     }
-    const limited = await call(
-      "POST",
-      "/v1/register",
-      registration(),
-      undefined,
-      "192.0.2.10",
-    );
-    expect(limited.status).toBe(429);
-    expect(await limited.json()).toMatchObject({
-      error: { code: "RATE_LIMITED" },
-    });
   });
 });
