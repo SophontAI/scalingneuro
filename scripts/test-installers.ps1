@@ -30,15 +30,17 @@ try {
   if ($LASTEXITCODE -ne 0) { throw "installer rendering failed" }
   $renderedInstaller = Get-Content -Raw (Join-Path $rendered "install.ps1")
   if ($renderedInstaller.Contains("Start-Process")) {
-    throw "installer must keep setup in the current terminal"
+    throw "installer must not start another process"
   }
-  if (-not $renderedInstaller.Contains("Starting terminal setup")) {
-    throw "installer is missing the terminal setup handoff"
+  if ($renderedInstaller.Contains("NEURO_SYNC_NO_LAUNCH") -or $renderedInstaller.Contains("Starting terminal setup") -or $renderedInstaller.Contains('& (Join-Path $binDir "neuro-sync.exe")')) {
+    throw "installer still launches neuro-sync automatically"
+  }
+  if (-not $renderedInstaller.Contains("Installation complete. Find or copy your DICOM folder path, then run:")) {
+    throw "installer is missing the explicit next-step message"
   }
 
   $env:NEURO_SYNC_INSTALL_ROOT = Join-Path $testRoot "install"
   $env:NEURO_SYNC_BIN_DIR = Join-Path $env:NEURO_SYNC_INSTALL_ROOT "bin"
-  $env:NEURO_SYNC_NO_LAUNCH = "1"
   $env:NEURO_SYNC_NO_PATH_UPDATE = "1"
   & (Join-Path $rendered "install.ps1")
 
@@ -65,7 +67,6 @@ try {
 } finally {
   Remove-Item Env:NEURO_SYNC_INSTALL_ROOT -ErrorAction SilentlyContinue
   Remove-Item Env:NEURO_SYNC_BIN_DIR -ErrorAction SilentlyContinue
-  Remove-Item Env:NEURO_SYNC_NO_LAUNCH -ErrorAction SilentlyContinue
   Remove-Item Env:NEURO_SYNC_NO_PATH_UPDATE -ErrorAction SilentlyContinue
   if (Test-Path $testRoot) { Remove-Item -Recurse -Force $testRoot }
 }

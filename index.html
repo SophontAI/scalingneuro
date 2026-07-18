@@ -245,7 +245,7 @@
         <span class="label reveal" style="display:block;margin-bottom:24px">03 — For every new session</span>
         <h2 class="display reveal" style="font-size:clamp(2.4rem,7vw,5rem)">Point it at one folder. Let every future scan count.</h2>
         <p class="hero-para reveal">
-          Keep the scanner workflow. Paste one terminal command once; neuro-sync then finds approved functional EPI scans, converts and checks them locally, and resumes until every verified bundle is committed.
+          Keep the scanner workflow. Install once, return to the shell, and start neuro-sync whenever the export path is ready. It finds approved functional EPI scans, checks them locally, and resumes until every verified bundle is committed.
         </p>
 
         <div class="adoption-line reveal" aria-label="Why a lab should adopt the tool">
@@ -254,15 +254,17 @@
 
         <div class="terminal reveal">
           <div class="term-tabs" role="tablist" aria-label="Script walkthrough">
-            <button class="term-tab is-active" id="tab-install" data-tab="install" role="tab" aria-selected="true" aria-controls="pane-install">1 · First launch</button>
+            <button class="term-tab is-active" id="tab-install" data-tab="install" role="tab" aria-selected="true" aria-controls="pane-install">1 · Install</button>
             <button class="term-tab" id="tab-run" data-tab="run" role="tab" aria-selected="false" aria-controls="pane-run" tabindex="-1">2 · CLI</button>
             <button class="term-tab" id="tab-inside" data-tab="inside" role="tab" aria-selected="false" aria-controls="pane-inside" tabindex="-1">What leaves</button>
           </div>
           <div class="term-body">
-            <pre class="term-pane is-active" id="pane-install" data-pane="install" role="tabpanel" aria-labelledby="tab-install"><code><span class="c-com"># macOS or Linux — installs and continues in this terminal</span>
+            <pre class="term-pane is-active" id="pane-install" data-pane="install" role="tabpanel" aria-labelledby="tab-install"><code><span class="c-com"># macOS or Linux — installs, verifies, then returns to your shell</span>
 <span class="c-p">$</span> curl -fsSL https://scalingneuro.com/install.sh | sh
 <span class="c-com"># Windows PowerShell: irm https://scalingneuro.com/install.ps1 | iex</span>
 <span class="c-ok">✓</span> Correct client + pinned dcm2niix downloaded and SHA-256 verified
+<span class="c-com"># later, after you find or copy the DICOM folder path</span>
+<span class="c-p">$</span> neuro-sync
 <span class="c-ok">✓</span> One-minute lab registration in the terminal; no browser needed
 <span class="c-ok">✓</span> Private upload identity: <span class="c-hi">your lab</span>
 <span class="c-ok">✓</span> Paste the folder path containing this session's DICOMs

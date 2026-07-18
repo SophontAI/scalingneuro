@@ -131,12 +131,5 @@ esac
 printf '\nInstalled and verified neuro-sync %s.\n' "$VERSION"
 printf 'Location: %s\n' "$version_dir"
 test -z "$path_note" || printf '%s\n' "$path_note"
-
-if test "${NEURO_SYNC_NO_LAUNCH:-0}" = 1 || ! test -t 1; then
-  printf 'Run %s/neuro-sync to begin.\n' "$bin_dir"
-elif test -r /dev/tty; then
-  printf 'Starting terminal setup…\n\n'
-  "$bin_dir/neuro-sync" </dev/tty
-else
-  printf 'Run %s/neuro-sync from an interactive terminal to begin.\n' "$bin_dir"
-fi
+printf '\nInstallation complete. Find or copy your DICOM folder path, then run:\n'
+printf '  %s/neuro-sync\n' "$bin_dir"

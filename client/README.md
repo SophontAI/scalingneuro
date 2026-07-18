@@ -13,7 +13,8 @@ scanner/acquisition metadata, and uploads only bundles that pass the local defau
 ## Researcher workflow
 
 The public terminal installer downloads and verifies the platform release, installs it without
-administrator access, and continues setup in the same terminal. It never opens a browser. The verified bundle contains
+administrator access, and returns control to the shell. It never launches setup or opens a browser;
+when the DICOM folder path is ready, run the exact command it prints. The verified bundle contains
 `neuro-sync` (`neuro-sync.exe` on Windows) and the pinned converter at `libexec/dcm2niix`.
 
 ```text

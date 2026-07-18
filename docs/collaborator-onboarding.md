@@ -17,7 +17,7 @@ Pilot releases support Apple Silicon and Intel macOS through one universal packa
 
 ## Install once
 
-Paste the command for your computer. The installer runs without administrator access, downloads the release bundle and pinned converter, verifies the package SHA-256 before installing, adds `neuro-sync` to your user PATH, and continues with guided setup in the same terminal.
+Paste the command for your computer. The installer runs without administrator access, downloads the release bundle and pinned converter, verifies the package SHA-256 before installing, adds `neuro-sync` to your user PATH, and returns control to the shell. It prints the exact command to run when your DICOM folder path is ready.
 
 ```bash
 # macOS or Linux
@@ -29,14 +29,15 @@ curl -fsSL https://scalingneuro.com/install.sh | sh
 irm https://scalingneuro.com/install.ps1 | iex
 ```
 
-Both scripts are readable at those URLs before use and do not send installer telemetry. Direct release archives and `SHA256SUMS` remain available at [scalingneuro.com/downloads](https://scalingneuro.com/downloads/) for managed environments that prohibit bootstrap scripts. Terminal installation does not override institutional endpoint-security rules; those environments may still require signed executables.
+Both scripts are readable at those URLs before use and do not send installer telemetry. Terminal installation does not override institutional endpoint-security rules; those environments may still require locally approved software.
 
 ## Guided terminal flow
 
-1. On first launch, answer the short lab-registration prompts and review the functional-EPI contribution policy summary shown in the terminal. No browser or web form is opened.
-2. Type, paste, or drag the top-level export-folder path into the terminal and confirm that the scans are approved for the displayed project and policy.
-3. Leave the command running. Large or multi-subject folders are split automatically into sequential, independently committed one-subject sessions. If the connection or process is interrupted, run `neuro-sync resume`; compatible prepared work is checkpointed locally.
-4. Wait for status `committed`. Save the run report for the study record. It contains pseudonymous IDs, counts, hashes, QC codes, and held/excluded reasons—never patient names or raw DICOM values.
+1. After installation, find or copy the top-level DICOM export-folder path. The installer has returned control to the shell and has not started setup.
+2. Run the exact command printed by the installer. On first launch, answer the short lab-registration prompts and review the functional-EPI contribution policy summary shown in the terminal. No browser or web form is opened.
+3. Type, paste, or drag the export-folder path into the terminal and confirm that the scans are approved for the displayed project and policy.
+4. Leave the command running. Large or multi-subject folders are split automatically into sequential, independently committed one-subject sessions. If the connection or process is interrupted, run `neuro-sync resume`; compatible prepared work is checkpointed locally.
+5. Wait for status `committed`. Save the run report for the study record. It contains pseudonymous IDs, counts, hashes, QC codes, and held/excluded reasons—never patient names or raw DICOM values.
 
 The source folder is read-only. DICOMs are neither modified nor uploaded. Only accepted functional EPI NIfTI/JSON bundles leave the machine. Structural scans, DWI, ASL, fieldmaps, SBRefs, localizers, derived images, and uncertain series stay local.
 

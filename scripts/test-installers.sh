@@ -18,6 +18,10 @@ make_package() {
   mkdir -p "$root/libexec"
   cat > "$root/neuro-sync" <<'EOF'
 #!/bin/sh
+test "${1:-}" = "--version" || {
+  printf 'installer launched neuro-sync unexpectedly\n' >&2
+  exit 91
+}
 test -x "${NEURO_SYNC_DCM2NIIX:-}" || exit 7
 printf 'neuro-sync 9.8.7\n'
 EOF
@@ -56,7 +60,11 @@ LINUX_PACKAGE="$LINUX_NAME.tar.gz"
   "$LINUX_PACKAGE" "$(digest "$ASSETS/$LINUX_PACKAGE")" \
   "$WINDOWS_NAME" "$(digest "$ASSETS/$WINDOWS_NAME")"
 
-grep -F '"$bin_dir/neuro-sync" </dev/tty' "$OUTPUT/install.sh" >/dev/null
+grep -F 'Installation complete. Find or copy your DICOM folder path, then run:' "$OUTPUT/install.sh" >/dev/null
+if grep -E 'NEURO_SYNC_NO_LAUNCH|Starting terminal setup|"\$bin_dir/neuro-sync" </dev/tty' "$OUTPUT/install.sh" >/dev/null; then
+  echo "installer still launches neuro-sync automatically" >&2
+  exit 1
+fi
 if grep -F 'Opening the private local setup' "$OUTPUT/install.sh" >/dev/null; then
   echo "installer still contains the retired browser-first launch copy" >&2
   exit 1
@@ -64,11 +72,9 @@ fi
 
 HOME_DIR="$TEST_ROOT/home"
 mkdir -p "$HOME_DIR"
-HOME="$HOME_DIR" \
-SHELL=/bin/bash \
-NEURO_SYNC_NO_LAUNCH=1 \
-PATH=/usr/bin:/bin \
-sh "$OUTPUT/install.sh"
+install_output=$(HOME="$HOME_DIR" SHELL=/bin/bash PATH=/usr/bin:/bin sh "$OUTPUT/install.sh")
+printf '%s\n' "$install_output" | grep -F 'Installation complete. Find or copy your DICOM folder path, then run:' >/dev/null
+printf '%s\n' "$install_output" | grep -F "  $HOME_DIR/.local/bin/neuro-sync" >/dev/null
 
 test -x "$HOME_DIR/.local/bin/neuro-sync"
 test -x "$HOME_DIR/.local/share/neuro-sync/versions/$VERSION/neuro-sync"
@@ -77,7 +83,6 @@ test "$(HOME="$HOME_DIR" "$HOME_DIR/.local/bin/neuro-sync" --version)" = "neuro-
 
 HOME="$HOME_DIR" \
 SHELL=/bin/bash \
-NEURO_SYNC_NO_LAUNCH=1 \
 PATH=/usr/bin:/bin \
 sh "$OUTPUT/install.sh"
 if [[ "$(uname -s)" == Darwin ]]; then profile="$HOME_DIR/.bash_profile"; else profile="$HOME_DIR/.bashrc"; fi
@@ -91,7 +96,7 @@ esac
 printf 'tampered\n' >> "$selected_archive"
 BAD_HOME="$TEST_ROOT/bad-home"
 mkdir -p "$BAD_HOME"
-if HOME="$BAD_HOME" SHELL=/bin/bash NEURO_SYNC_NO_LAUNCH=1 PATH=/usr/bin:/bin sh "$OUTPUT/install.sh"; then
+if HOME="$BAD_HOME" SHELL=/bin/bash PATH=/usr/bin:/bin sh "$OUTPUT/install.sh"; then
   echo "tampered package was accepted" >&2
   exit 1
 fi

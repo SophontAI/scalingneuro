@@ -746,7 +746,8 @@ jobs:
             Scaling Neuro EPI ingestion client open beta.
 
             The published terminal installers select the correct package, verify its pinned
-            SHA-256, install without administrator access, and continue with guided terminal setup.
+            SHA-256, install without administrator access, and return control to the shell.
+            Researchers start `neuro-sync` when their completed DICOM export path is ready.
             Registration, policy confirmation, folder entry, upload, and recovery require no
             browser or graphical Linux runtime. Non-interactive uploads must explicitly pass
             `--confirm-authorized` after the lab has confirmed institutional authorization.
