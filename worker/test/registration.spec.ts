@@ -145,6 +145,44 @@ describe("open contributor registration", () => {
     });
   });
 
+  it("allows one lab contact to register multiple workstations", async () => {
+    const first = registration();
+    const second: Record<string, unknown> = {
+      ...registration(),
+      contact_email: first.contact_email,
+      contact_name: first.contact_name,
+      institution_name: first.institution_name,
+      institution_ror_id: first.institution_ror_id,
+      lab_name: first.lab_name,
+    };
+
+    const firstResponse = await call("POST", "/v1/register", first);
+    const secondResponse = await call("POST", "/v1/register", second);
+    expect(firstResponse.status).toBe(201);
+    expect(secondResponse.status).toBe(201);
+
+    const firstEnrollment = await firstResponse.json<Record<string, unknown>>();
+    const secondEnrollment =
+      await secondResponse.json<Record<string, unknown>>();
+    expect(firstEnrollment.enrollment_id).toBe(first.registration_id);
+    expect(secondEnrollment.enrollment_id).toBe(second.registration_id);
+    expect(firstEnrollment.device_id).not.toBe(secondEnrollment.device_id);
+    expect(firstEnrollment.device_token).toBe(first.device_token);
+    expect(secondEnrollment.device_token).toBe(second.device_token);
+
+    const emailHash = await env.DB.prepare(
+      "SELECT email_hash FROM contributor_registrations WHERE id = ?1",
+    )
+      .bind(first.registration_id)
+      .first<string>("email_hash");
+    const registrations = await env.DB.prepare(
+      "SELECT COUNT(*) AS count FROM contributor_registrations WHERE email_hash = ?1",
+    )
+      .bind(emailHash)
+      .first<{ count: number }>();
+    expect(registrations?.count).toBe(2);
+  });
+
   it("rejects stale clients, policy drift, changed replays, and over-quota uploads", async () => {
     const stale = registration();
     stale.client_version = "0.1.1";

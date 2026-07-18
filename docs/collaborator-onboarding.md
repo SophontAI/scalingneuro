@@ -11,7 +11,7 @@ You need:
 - enough local free space for one converted EPI series plus resumable staging; and
 - institutional authorization to contribute the scans under the project’s displayed consent/data-use policy.
 
-Registration creates a private, revocable upload identity for one workstation and lab; it is not evidence of participant consent and does not make an otherwise unauthorized scan upload permissible. The uploader remains responsible for confirming that the selected scans are covered by the institution’s IRB, consent, and data-use approvals. The client is a research data-transfer tool, not a clinical device or a substitute for those reviews.
+Registration creates a private, revocable upload identity for one workstation and lab; the same lab and contact may register each additional workstation separately. Registration is not evidence of participant consent and does not make an otherwise unauthorized scan upload permissible. The uploader remains responsible for confirming that the selected scans are covered by the institution’s IRB, consent, and data-use approvals. The client is a research data-transfer tool, not a clinical device or a substitute for those reviews.
 
 Pilot releases support Apple Silicon and Intel macOS through one universal package, Windows x64, and Linux x64. The Linux package requires glibc 2.28 or newer (for example, Ubuntu 20.04+, Debian 10+, or RHEL 8+); it does not require X11, Wayland, a desktop portal, or a browser. Scanner compatibility comes from the pinned multi-vendor dcm2niix converter and fail-closed validation; no software can honestly guarantee every historical or malformed scanner export. Unsupported series stay local and appear in the report.
 

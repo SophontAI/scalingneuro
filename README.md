@@ -13,7 +13,7 @@ This is no longer a static workflow mockup. The repository contains the cross-pl
 
 Researchers do not install Python, Docker, FSL, an AWS CLI, or Cloudflare credentials. The terminal installer fetches the complete release bundle, including the pinned multi-vendor `dcm2niix v1.0.20260416` converter under `libexec/`. Direct archives remain a secondary fallback for managed environments that prohibit bootstrap scripts.
 
-Registration creates a private, revocable upload identity for a workstation and lab. It is not evidence of participant consent and cannot authorize an otherwise impermissible upload.
+Registration creates a private, revocable upload identity for a workstation and lab. A lab may register multiple workstations with the same contact details; each machine receives its own device identity. Registration is not evidence of participant consent and cannot authorize an otherwise impermissible upload.
 
 ## What the pilot archives
 
