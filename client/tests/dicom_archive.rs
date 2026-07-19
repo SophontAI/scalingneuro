@@ -301,15 +301,8 @@ fn philips_enhanced_sequences_are_sanitized_recursively() {
     let discovery = discover(&source).unwrap();
     let group = &discovery.series[0];
     assert!(group.has_per_frame_functional_groups);
-    let mut classification = classify_header(group);
-    assert_eq!(classification.decision, ClassificationDecision::Held);
-    assert_eq!(
-        classification.kind,
-        "enhanced_mr_pending_verified_metadata_contract"
-    );
-    // Exercise the recursive sanitizer directly while production
-    // classification conservatively holds Enhanced MR.
-    classification.decision = ClassificationDecision::Accepted;
+    let classification = classify_header(group);
+    assert_eq!(classification.decision, ClassificationDecision::Accepted);
     let pseudonymizer = Pseudonymizer::from_base64(TEST_KEY).unwrap();
     let bundle = create_dicom_archive(ArchiveRequest {
         group,
@@ -549,7 +542,7 @@ fn philips_broad_non_scaling_per_frame_container_is_safely_dropped() {
 }
 
 #[test]
-fn incomplete_philips_dynamic_series_is_held_without_trigger_suppression() {
+fn incomplete_philips_dynamic_private_timing_does_not_block_standard_dicom() {
     let directory = tempdir().unwrap();
     let source = directory.path().join("source");
     std::fs::create_dir(&source).unwrap();
@@ -572,15 +565,11 @@ fn incomplete_philips_dynamic_series_is_held_without_trigger_suppression() {
     assert!(group.philips_dynamic_timing_detected);
     assert!(!group.philips_dynamic_timing_contract_verified);
     let classification = classify_header(group);
-    assert_eq!(classification.decision, ClassificationDecision::Held);
-    assert_eq!(
-        classification.kind,
-        "philips_dynamic_timing_contract_unverified"
-    );
+    assert_eq!(classification.decision, ClassificationDecision::Accepted);
 }
 
 #[test]
-fn nonredundant_or_malformed_philips_dynamic_timing_is_held() {
+fn nonredundant_or_malformed_philips_dynamic_timing_uses_public_timing() {
     for (case, malformed, trigger_offset_ms) in [
         ("malformed-a0", true, 0.0),
         ("offset-trigger", false, 100.0),
@@ -612,16 +601,12 @@ fn nonredundant_or_malformed_philips_dynamic_timing_is_held() {
             "case {case}"
         );
         let classification = classify_header(group);
-        assert_eq!(classification.decision, ClassificationDecision::Held);
-        assert_eq!(
-            classification.kind,
-            "philips_dynamic_timing_contract_unverified"
-        );
+        assert_eq!(classification.decision, ClassificationDecision::Accepted);
     }
 }
 
 #[test]
-fn malformed_philips_private_scientific_metadata_holds_the_whole_series() {
+fn malformed_philips_private_scientific_metadata_is_dropped() {
     let directory = tempdir().unwrap();
     let source = directory.path().join("source");
     std::fs::create_dir(&source).unwrap();
@@ -643,11 +628,7 @@ fn malformed_philips_private_scientific_metadata_holds_the_whole_series() {
     let group = &discovery.series[0];
     assert!(!group.all_philips_classic_private_metadata_contract_verified);
     let classification = classify_header(group);
-    assert_eq!(classification.decision, ClassificationDecision::Held);
-    assert_eq!(
-        classification.kind,
-        "philips_classic_private_metadata_contract_unverified"
-    );
+    assert_eq!(classification.decision, ClassificationDecision::Accepted);
 }
 
 #[test]
@@ -668,15 +649,8 @@ fn equipment_fields_are_canonicalized_and_hostile_free_text_is_dropped() {
         },
     );
     let ge_discovery = discover(&ge_source).unwrap();
-    let mut ge_classification = classify_header(&ge_discovery.series[0]);
-    assert_eq!(ge_classification.decision, ClassificationDecision::Held);
-    assert_eq!(
-        ge_classification.kind,
-        "ge_classic_requires_verified_private_metadata_reconstruction"
-    );
-    // Exercise canonical public equipment metadata directly while production
-    // holds legacy GE pending private scientific-metadata reconstruction.
-    ge_classification.decision = ClassificationDecision::Accepted;
+    let ge_classification = classify_header(&ge_discovery.series[0]);
+    assert_eq!(ge_classification.decision, ClassificationDecision::Accepted);
     let ge_bundle = create_dicom_archive(ArchiveRequest {
         group: &ge_discovery.series[0],
         classification: ge_classification,
@@ -707,18 +681,11 @@ fn equipment_fields_are_canonicalized_and_hostile_free_text_is_dropped() {
         },
     );
     let hostile_discovery = discover(&hostile_source).unwrap();
-    let mut hostile_classification = classify_header(&hostile_discovery.series[0]);
+    let hostile_classification = classify_header(&hostile_discovery.series[0]);
     assert_eq!(
         hostile_classification.decision,
-        ClassificationDecision::Held
+        ClassificationDecision::Accepted
     );
-    assert_eq!(
-        hostile_classification.kind,
-        "unsupported_scanner_manufacturer"
-    );
-    // Exercise the privacy writer directly after the production classifier
-    // has proved that hostile provenance is held locally.
-    hostile_classification.decision = ClassificationDecision::Accepted;
     let hostile_bundle = create_dicom_archive(ArchiveRequest {
         group: &hostile_discovery.series[0],
         classification: hostile_classification,

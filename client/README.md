@@ -43,14 +43,15 @@ The source folder is never modified. Before any copy leaves the workstation, the
 
 The policy is [../docs/dicom-deidentification-policy.md](../docs/dicom-deidentification-policy.md).
 
-The 0.3.0 scanner gates are intentionally explicit:
+The `0.3.1` intake boundary is vendor-neutral:
 
-- the verified classic Siemens route is limited to series-wide `Prisma_fit`/`MAGNETOM Prisma_fit` model identity with `syngo MR E11`, mosaic image form, and a successfully rebuilt narrow CSA numeric geometry contract; the measured native and RLE Lossless fixtures retain conversion-equivalent voxels, geometry, timing, phase encoding, and multiband metadata;
-- the verified classic Philips route is limited to series-wide `Achieva dStream` model identity with software `5.1.1`/`5.1.1.0`, the exact reviewed PS3.15 scaling/slice/water-fat values on every instance, and its complete dynamic-series timing contract; redundant scanner `TriggerTime` is suppressed only after all of those gates pass;
-- classic GE MR is held locally pending a separately hostile-tested private-metadata reconstruction contract; and
-- missing, mixed, unknown, other scanner manufacturers, unmeasured Siemens/Philips model or software families, Enhanced MR, Legacy Converted Enhanced MR, and any object using an Extended Offset Table are held locally. They must not be described as supported until real conversion-equivalence gates pass.
+- manufacturer, model, software, and prior fixture status are provenance—not upload eligibility;
+- classic, Enhanced, and Legacy Converted Enhanced MR use the same standard-DICOM EPI, temporal, timing, and privacy predicates;
+- recognized safe make/model/software fields and bounded standard acquisition metadata are retained, while unknown/malformed private metadata is default-dropped;
+- Extended Offset Table metadata may be dropped because Pixel Data is copied and audited as one exact byte span; and
+- a Siemens mosaic is held only when its necessary CSA image geometry cannot be rebuilt as the reviewed numeric-only form.
 
-Unsupported or malformed vendor metadata is never uploaded speculatively. The report names the hold reason so support can be widened with fixtures and tests instead of silently weakening the privacy or scientific-metadata boundary.
+Privacy-unsafe objects are never uploaded speculatively. Scanner-specific conversion fidelity is evaluated asynchronously on the cluster and does not make the workstation re-upload data; the privacy-cleared source remains available for improved processors.
 
 Release-equivalence checks convert raw and privacy-cleared validation fixtures with the same pinned converter. The Siemens native/RLE paths produced the same voxel SHA-256 `7934115b9a6bba2d72f4f60bcfadc3772c3d6de8a286bb542eedb1d322c89c85`; the Philips classic path produced `13eab53cb50d0dfa00d011b8106a9cc9123f0596330454b307bda0d1fb5fc429`. Dimensions, affine, datatype, scaling, TR/TE, and the vendor-specific preprocessing metadata listed above were compared separately rather than inferred from the voxel hash.
 

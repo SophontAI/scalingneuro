@@ -145,22 +145,23 @@ class ArchiveTests(unittest.TestCase):
         self.assertEqual(SCANNER_MODELS, CANONICAL_MODELS)
         self.assertIn("Achieva dStream", SCANNER_MODELS)
 
-    def test_accepts_only_exact_release_routes(self) -> None:
+    def test_accepts_scanner_neutral_release_routes(self) -> None:
         self.assertEqual(self.extract(archive_manifest(self.dicom)).dicom_count, 1)
 
         self.dicom = make_dicom(self.root / "source.dcm")
         self.rewrite_philips_dicom()
         self.assertEqual(self.extract(self.philips_manifest()).dicom_count, 1)
 
-    def test_rejects_siemens_without_mosaic_or_sanitized_csa(self) -> None:
+    def test_requires_sanitized_csa_only_for_siemens_mosaic(self) -> None:
         def remove_mosaic(dataset) -> None:
             dataset.ImageType = [
                 value for value in dataset.ImageType if str(value) != "MOSAIC"
             ]
 
         self.rewrite_dicom(remove_mosaic)
-        with self.assertRaisesRegex(InvalidArchive, "ARCHIVE_SIEMENS_CSA_REQUIRED"):
-            self.extract(archive_manifest(self.dicom))
+        manifest = archive_manifest(self.dicom)
+        manifest["source"]["image_type"].remove("MOSAIC")
+        self.assertEqual(self.extract(manifest).dicom_count, 1)
 
         self.dicom = make_dicom(self.root / "source.dcm")
 
@@ -169,10 +170,12 @@ class ArchiveTests(unittest.TestCase):
             del dataset[0x00291010]
 
         self.rewrite_dicom(remove_csa)
+        manifest = archive_manifest(self.dicom)
+        manifest["deidentification"].pop("safe_private_exceptions")
         with self.assertRaisesRegex(InvalidArchive, "ARCHIVE_SIEMENS_CSA_REQUIRED"):
-            self.extract(archive_manifest(self.dicom))
+            self.extract(manifest)
 
-    def test_rejects_philips_without_every_reviewed_private_field(self) -> None:
+    def test_accepts_philips_without_optional_private_fields(self) -> None:
         private_tags = {
             "scale_intercept": 0x2005100D,
             "scale_slope": 0x2005100E,
@@ -184,10 +187,16 @@ class ArchiveTests(unittest.TestCase):
             with self.subTest(field_name=field_name):
                 self.dicom = make_dicom(self.root / "source.dcm")
                 self.rewrite_philips_dicom(lambda dataset, tag=tag: dataset.pop(tag))
-                with self.assertRaisesRegex(
-                    InvalidArchive, "ARCHIVE_PHILIPS_PRIVATE_METADATA_REQUIRED"
-                ):
-                    self.extract(self.philips_manifest())
+                manifest = self.philips_manifest()
+                if field_name == "number_of_slices":
+                    manifest["deidentification"]["safe_private_exceptions"].remove(
+                        "dicom_ps3.15_philips_number_of_slices"
+                    )
+                elif field_name == "water_fat_shift":
+                    manifest["deidentification"]["safe_private_exceptions"].remove(
+                        "dicom_ps3.15_philips_water_fat_shift"
+                    )
+                self.assertEqual(self.extract(manifest).dicom_count, 1)
 
     def test_rejects_invalid_philips_private_scientific_ranges(self) -> None:
         invalid_values = {
@@ -336,7 +345,7 @@ class ArchiveTests(unittest.TestCase):
 
         self.assert_functional_purpose_rejected(bold_label_without_epi)
 
-    def test_rejects_enhanced_mr_until_separately_validated(self) -> None:
+    def test_accepts_enhanced_mr(self) -> None:
         from pydicom.uid import EnhancedMRImageStorage
 
         def enhanced(dataset) -> None:
@@ -344,8 +353,74 @@ class ArchiveTests(unittest.TestCase):
             dataset.file_meta.MediaStorageSOPClassUID = EnhancedMRImageStorage
 
         self.rewrite_dicom(enhanced)
-        with self.assertRaisesRegex(InvalidArchive, "ARCHIVE_UNSUPPORTED_DICOM_FORM"):
-            self.extract(archive_manifest(self.dicom))
+        self.assertEqual(self.extract(archive_manifest(self.dicom)).dicom_count, 1)
+
+    def test_accepts_enhanced_mr_timing_from_functional_groups(self) -> None:
+        from pydicom.dataset import Dataset
+        from pydicom.sequence import Sequence
+        from pydicom.uid import EnhancedMRImageStorage
+
+        def enhanced(dataset) -> None:
+            dataset.SOPClassUID = EnhancedMRImageStorage
+            dataset.file_meta.MediaStorageSOPClassUID = EnhancedMRImageStorage
+            del dataset.RepetitionTime
+            del dataset.EchoTime
+            timing = Dataset()
+            timing.RepetitionTime = "800"
+            echo = Dataset()
+            echo.EffectiveEchoTime = 30.0
+            second_echo = Dataset()
+            second_echo.EffectiveEchoTime = 12.0
+            shared = Dataset()
+            shared.MRTimingAndRelatedParametersSequence = Sequence([timing])
+            shared.MREchoSequence = Sequence([echo, second_echo])
+            dataset.SharedFunctionalGroupsSequence = Sequence([shared])
+
+        self.rewrite_dicom(enhanced)
+        self.assertEqual(self.extract(archive_manifest(self.dicom)).dicom_count, 1)
+
+    def test_accepts_two_position_short_functional_epi(self) -> None:
+        def short_run(dataset) -> None:
+            dataset.NumberOfTemporalPositions = 2
+
+        self.rewrite_dicom(short_run)
+        self.assertEqual(self.extract(archive_manifest(self.dicom)).dicom_count, 1)
+
+    def test_accepts_missing_scanner_provenance(self) -> None:
+        def remove_scanner_provenance(dataset) -> None:
+            del dataset.Manufacturer
+            del dataset.ManufacturerModelName
+            del dataset.SoftwareVersions
+
+        self.rewrite_dicom(remove_scanner_provenance)
+        manifest = archive_manifest(self.dicom)
+        manifest["source"].pop("manufacturer")
+        manifest["source"].pop("model")
+        manifest["source"].pop("software_versions")
+        self.assertEqual(self.extract(manifest).dicom_count, 1)
+
+    def test_accepts_ge_standard_dicom_without_private_metadata(self) -> None:
+        from pydicom.tag import Tag
+
+        def ge(dataset) -> None:
+            dataset.Manufacturer = "GE MEDICAL SYSTEMS"
+            dataset.ManufacturerModelName = "Discovery MR750"
+            dataset.SoftwareVersions = "GE DV26.0"
+            dataset.ImageType = [
+                value for value in dataset.ImageType if str(value) != "MOSAIC"
+            ]
+            for tag in (Tag(0x0029, 0x0010), Tag(0x0029, 0x1010)):
+                if tag in dataset:
+                    del dataset[tag]
+
+        self.rewrite_dicom(ge)
+        manifest = archive_manifest(self.dicom)
+        manifest["source"]["manufacturer"] = "GE MEDICAL SYSTEMS"
+        manifest["source"]["model"] = "Discovery MR750"
+        manifest["source"]["software_versions"] = ["GE DV26.0"]
+        manifest["source"]["image_type"].remove("MOSAIC")
+        manifest["deidentification"].pop("safe_private_exceptions")
+        self.assertEqual(self.extract(manifest).dicom_count, 1)
 
     def test_rejects_manifest_and_dicom_manufacturer_mismatch(self) -> None:
         manifest = archive_manifest(self.dicom)
@@ -355,17 +430,14 @@ class ArchiveTests(unittest.TestCase):
         with self.assertRaisesRegex(InvalidArchive, "ARCHIVE_MANUFACTURER_MISMATCH"):
             self.extract(manifest)
 
-    def test_rejects_unverified_scanner_model_or_software(self) -> None:
+    def test_accepts_unmeasured_scanner_model_or_software(self) -> None:
         def mutate(dataset) -> None:
             dataset.ManufacturerModelName = "MAGNETOM Prisma"
 
         self.rewrite_dicom(mutate)
         manifest = archive_manifest(self.dicom)
         manifest["source"]["model"] = "MAGNETOM Prisma"
-        with self.assertRaisesRegex(
-            InvalidArchive, "ARCHIVE_UNVERIFIED_SCANNER_FAMILY"
-        ):
-            self.extract(manifest)
+        self.assertEqual(self.extract(manifest).dicom_count, 1)
 
     def test_production_zstd_runs_in_tokenless_readonly_container(self) -> None:
         archive = self.root / "input.tar.zst"
@@ -630,6 +702,23 @@ class ArchiveTests(unittest.TestCase):
             "dicom_ps3.15_philips_per_frame_scale_slope",
         ]
         self.assertEqual(self.extract(manifest).dicom_count, 1)
+
+    def test_accepts_repeated_philips_scale_in_enhanced_frames(self) -> None:
+        from pydicom.dataset import Dataset
+        from pydicom.sequence import Sequence
+        from pydicom.tag import Tag
+
+        def mutate(dataset) -> None:
+            frames = []
+            for slope in (0.00363177, 0.004):
+                frame = Dataset()
+                frame.add_new(Tag(0x2005, 0x0010), "LO", "Philips MR Imaging DD 001")
+                frame.add_new(Tag(0x2005, 0x100E), "FL", slope)
+                frames.append(frame)
+            dataset.PerFrameFunctionalGroupsSequence = Sequence(frames)
+
+        self.rewrite_philips_dicom(mutate)
+        self.assertEqual(self.extract(self.philips_manifest()).dicom_count, 1)
 
     def test_rejects_philips_numeric_private_neighbor(self) -> None:
         from pydicom.tag import Tag

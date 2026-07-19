@@ -16,7 +16,7 @@ Cluster-created NIfTI, minimized sidecar, and processing manifest are determinis
 1. Resolve and checkpoint the canonical source-folder path. Inventory regular files recursively without following symlinks.
 2. Read bounded DICOM headers, group by Series Instance UID, and reject inconsistent identities, modalities, transfer syntax, geometry, or duplicate SOP Instance UIDs.
 3. Exclude definite non-MR, structural, diffusion, ASL, field-map, SBRef, localizer, secondary-capture, derived, and presentation series. Hold uncertain or unsupported formats.
-4. Accept only original/primary MR with strong EPI and temporal/functional evidence, explicit privacy eligibility, and classifier confidence at least `0.90`.
+4. Accept only original/primary MR with standard echo-planar evidence, repeated temporal structure, consistent plausible TR/TE, explicit privacy eligibility, and classifier confidence at least `0.90`.
 5. For each accepted series, write new Part 10 headers under `scaling-neuro.dicom-deidentification` version `1.0.0`, copy Pixel Data byte-for-byte, recursively audit the result, and stream it into a deterministic zstd-compressed tar archive.
 6. Initialize an idempotent DICOM upload, upload missing multipart parts through checksum-and-length-bound capabilities, and checkpoint every accepted ETag.
 7. Complete the multipart objects. The Worker performs authoritative R2 `HEAD` checks, records the receipt atomically, and queues one processing job per series.
@@ -46,14 +46,15 @@ An accepted archive must also satisfy:
 - `BurnedInAnnotation` compatible with the active fail-closed policy for every instance; and
 - successful recursive de-identification and post-write audit for every instance.
 
-The `0.3.0` measured compatibility boundary is:
+The `0.3.1` intake boundary is:
 
-- tested Siemens Prisma/E11 classic mosaic may proceed only when every CSA image header is boundedly parsed and canonically rebuilt from the reviewed seven-field numeric/vector allowlist;
-- tested Philips 5.1.1 classic may proceed with the reviewed PS3.15 physical values and, when present, a verified whole-series dynamic-timing transformation;
-- GE classic is held as `ge_classic_requires_verified_private_metadata_reconstruction` rather than accepting conversion-degraded metadata; and
-- all Enhanced MR and Extended Offset Table objects are held pending exact conversion-equivalence and pixel-pairing evidence.
+- scanner manufacturer, model, software, and prior conversion-fixture status are provenance rather than eligibility;
+- classic, Enhanced, and Legacy Converted Enhanced MR use the same standard-DICOM purpose, timing, and privacy checks;
+- known bounded vendor-private scientific fields may be retained, while unknown or malformed private metadata is removed rather than blocking otherwise complete standard DICOM;
+- Extended Offset Table metadata is removed while the complete Pixel Data element is copied and byte-audited; and
+- Siemens mosaic images require the numeric-only rebuilt CSA image geometry needed to interpret the mosaic.
 
-Other scanner models, software releases, PACS rewrites, and private-tag layouts are not implied by those two validated fixture families. Unknown or malformed vendor metadata fails closed.
+This is a universal standards-based intake claim, not a claim that every scanner/export has already produced an equivalent NIfTI under the current converter. Fixture-certified conversion status is downstream QC and is recorded separately from the durable source receipt.
 
 ## Metadata and pixels
 

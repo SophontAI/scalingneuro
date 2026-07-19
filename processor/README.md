@@ -18,7 +18,7 @@ For `input_format: "dicom-series-v1"`, one claimed job performs:
 
 Control-plane JSON calls retain a 120-second timeout. Large object GET and PUT streams use a separate one-hour socket timeout, configurable with `--object-transfer-timeout-seconds`; this prevents a healthy multi-gigabyte transfer from inheriting the short API timeout while still bounding a stalled connection.
 
-`BurnedInAnnotation=NO` is retained when the scanner declared it. The current beta's narrowly measured Siemens Prisma_fit/E11 and Philips Achieva dStream/5.1.1 routes may also accept a missing declaration only for classic MR images whose image type is `ORIGINAL` and `PRIMARY` and neither `DERIVED` nor `SECONDARY`; the series manifest must distinguish `verified_no` from `not_declared`. This is a measured direct-acquisition heuristic, not proof about a PACS export and not a policy inherited by future scanner routes. Any positive/unknown declaration, presentation content, or mismatch fails terminally.
+`BurnedInAnnotation=NO` is retained when the scanner declared it. For any scanner, a missing declaration may also pass only when the image type is `ORIGINAL` and `PRIMARY` and neither `DERIVED` nor `SECONDARY`; the series manifest must distinguish `verified_no` from `not_declared`. This is a bounded direct-acquisition heuristic, not proof about a PACS export. Any positive/unknown declaration, presentation content, or mismatch fails terminally.
 
 The local result record is keyed by the stable job ID, input SHA-256, processor version, pipeline version, and `dcm2niix` version. If a lease, upload grant, node, or completion request is interrupted, the next claim fully revalidates and reuses the prepared artifacts rather than downloading or converting them again. Heartbeats fail closed: once lease ownership is uncertain, no further output is uploaded or committed.
 
@@ -83,7 +83,7 @@ While processing, the consumer calls:
 Build from the repository root so the Dockerfile can copy this directory:
 
 ```sh
-docker build --pull -f processor/Dockerfile -t scaling-neuro-processor:0.1.0 .
+docker build --pull -f processor/Dockerfile -t scaling-neuro-processor:0.1.1 .
 ```
 
 The build downloads the official `dcm2niix v1.0.20260416` source tarball and verifies its pinned SHA-256 before compilation. JPEG-LS and JPEG 2000 support are enabled for cross-vendor scanner compatibility. `pydicom 3.0.1` and NumPy `2.2.6` are installed from hash-pinned wheels; NumPy performs bounded, vectorized full-voxel finite/nonconstant validation. The runtime is non-root and contains no secret or R2 credential.
@@ -95,7 +95,7 @@ docker run --rm \
   --user "$(id -u):$(id -g)" \
   --mount type=bind,src="$PWD/processor-token",dst=/run/secrets/scaling-neuro-processor-token,readonly \
   --mount type=bind,src="$PWD/processor-work",dst=/data/scaling-neuro/processor \
-  scaling-neuro-processor:0.1.0 \
+  scaling-neuro-processor:0.1.1 \
   --api-url https://scalingneuro.com --max-jobs 1
 ```
 
@@ -125,7 +125,7 @@ cd /data/paul/scaling-neuro/source
 /opt/slurm/bin/sbatch \
   processor/slurm/install-native.sbatch \
   "$PWD/processor" \
-  /data/paul/scaling-neuro/native/releases/0.1.0 \
+  /data/paul/scaling-neuro/native/releases/0.1.1 \
   /usr/bin/python3.12
 ```
 
@@ -135,7 +135,7 @@ After the install job reports success, start the persistent consumer:
 
 ```sh
 processor/scripts/submit-native-consumer.sh \
-  /data/paul/scaling-neuro/native/releases/0.1.0 \
+  /data/paul/scaling-neuro/native/releases/0.1.1 \
   https://scalingneuro.com \
   /data/paul/scaling-neuro/processor \
   /data/paul/scaling-neuro/secrets/processor-token
@@ -149,15 +149,15 @@ Build the image in CI or in a compute/build environment, never on a shared login
 
 ```sh
 /usr/bin/enroot import \
-  -o /data/paul/scaling-neuro/images/processor-0.1.0.sqsh \
-  docker://ghcr.io/sophontai/scaling-neuro-processor:0.1.0
+  -o /data/paul/scaling-neuro/images/processor-0.1.1.sqsh \
+  docker://ghcr.io/sophontai/scaling-neuro-processor:0.1.1
 ```
 
 Submit the persistent, bottom-priority consumer:
 
 ```sh
 processor/scripts/submit-consumer.sh \
-  /data/paul/scaling-neuro/images/processor-0.1.0.sqsh \
+  /data/paul/scaling-neuro/images/processor-0.1.1.sqsh \
   https://scalingneuro.com \
   /data/paul/scaling-neuro/processor \
   /data/paul/scaling-neuro/secrets/processor-token
@@ -179,7 +179,7 @@ PYTHONPATH=. .venv/bin/python -m unittest discover -v
 Container validation should additionally assert:
 
 ```sh
-docker run --rm --entrypoint dcm2niix scaling-neuro-processor:0.1.0 --version
+docker run --rm --entrypoint dcm2niix scaling-neuro-processor:0.1.1 --version
 ```
 
 The reported version must contain `v1.0.20260416`.

@@ -930,7 +930,10 @@ fn sanitize_dataset(
                 && creators_match(&private_creators, creator_tag, "Philips Imaging DD 001");
             if is_philips_number_of_slices {
                 if vr != VR::SL || !positive_i32_vm1(element.value(), 1..=4096) {
-                    bail!("Philips NumberOfSlices private metadata is outside safe bounds");
+                    // A malformed private candidate is not safe to retain, but
+                    // it is also not a reason to reject otherwise valid public
+                    // DICOM. Default-drop it like every unknown private field.
+                    continue;
                 }
                 retained_private_creators.insert(creator_tag);
                 output.put(element);
@@ -944,7 +947,7 @@ fn sanitize_dataset(
                 if vr != VR::FL
                     || !bounded_float32_vm1(element.value(), |v| (0.0..=1.0e6).contains(&v))
                 {
-                    bail!("Philips WaterFatShift private metadata is outside safe bounds");
+                    continue;
                 }
                 retained_private_creators.insert(creator_tag);
                 output.put(element);
@@ -956,12 +959,10 @@ fn sanitize_dataset(
                 && creators_match(&private_creators, creator_tag, "Philips MR Imaging DD 005")
                 && vr == VR::SQ;
             if is_philips_per_frame_scale {
-                let items = element
-                    .value()
-                    .items()
-                    .context("Philips per-frame scale metadata is not a sequence")?
-                    .len();
-                reserve_sequence_items(stats, items)?;
+                let Some(items) = element.value().items() else {
+                    continue;
+                };
+                reserve_sequence_items(stats, items.len())?;
                 match rebuild_philips_per_frame_scale_sequence(element.value()) {
                     PhilipsPerFrameScaleSequence::NotScaleMetadata => {}
                     PhilipsPerFrameScaleSequence::Rebuilt(value) => {
@@ -970,7 +971,7 @@ fn sanitize_dataset(
                         stats.philips_ps315_per_frame_scale_sequences_rebuilt += 1;
                     }
                     PhilipsPerFrameScaleSequence::Malformed => {
-                        bail!("Philips per-frame scale metadata is outside safe bounds");
+                        continue;
                     }
                 }
                 continue;
@@ -985,7 +986,7 @@ fn sanitize_dataset(
                     _ => false,
                 };
                 if vr != VR::FL || !valid {
-                    bail!("Philips scaling private metadata is outside safe bounds");
+                    continue;
                 }
                 retained_private_creators.insert(creator_tag);
                 output.put(element);
@@ -2227,25 +2228,56 @@ fn deterministic_tar_header(path: &str, size: u64) -> Result<tar::Header> {
 
 fn safe_source_metadata(group: &SeriesGroup) -> SourceMetadata {
     let header = &group.representative;
-    let manufacturer = header
-        .manufacturer
-        .as_deref()
-        .and_then(canonical_manufacturer);
+    let manufacturer = if group.manufacturer_missing || group.manufacturers.is_empty() {
+        None
+    } else {
+        let canonical = group
+            .manufacturers
+            .iter()
+            .filter_map(|value| canonical_manufacturer(value))
+            .collect::<Vec<_>>();
+        (canonical.len() == group.manufacturers.len())
+            .then(|| unique_value(canonical))
+            .flatten()
+    };
+    let model = if group.model_missing || group.models.is_empty() {
+        None
+    } else {
+        let canonical = group
+            .models
+            .iter()
+            .filter_map(|value| canonical_model(value))
+            .collect::<Vec<_>>();
+        (canonical.len() == group.models.len())
+            .then(|| unique_value(canonical))
+            .flatten()
+    };
+    let software_versions =
+        if group.software_versions_missing || group.software_version_values.is_empty() {
+            Vec::new()
+        } else {
+            let mut values = group
+                .software_version_values
+                .iter()
+                .map(|value| canonical_software_versions(value, manufacturer.as_deref()));
+            let first = values.next().unwrap_or_default();
+            if !first.is_empty() && values.all(|value| value == first) {
+                first
+            } else {
+                Vec::new()
+            }
+        };
     SourceMetadata {
         dicom_count: group.files.len() as u64,
         manufacturer: manufacturer.clone(),
-        model: header.model.as_deref().and_then(canonical_model),
+        model,
         patient_position: header.patient_position.as_deref().and_then(|value| {
             safe_enum(
                 value,
                 &["HFP", "HFS", "FFP", "FFS", "HFDR", "HFDL", "FFDR", "FFDL"],
             )
         }),
-        software_versions: header
-            .software_versions
-            .as_deref()
-            .map(|value| canonical_software_versions(value, manufacturer.as_deref()))
-            .unwrap_or_default(),
+        software_versions,
         magnetic_field_strength: header
             .magnetic_field_strength
             .filter(|value| value.is_finite() && (0.01..=15.0).contains(value)),
@@ -2304,6 +2336,12 @@ fn safe_source_metadata(group: &SeriesGroup) -> SourceMetadata {
             .acquisition_number
             .filter(|value| (0..=i64::from(i32::MAX)).contains(value)),
     }
+}
+
+fn unique_value(values: impl IntoIterator<Item = String>) -> Option<String> {
+    let mut values = values.into_iter();
+    let first = values.next()?;
+    values.all(|value| value == first).then_some(first)
 }
 
 fn acquisition_string<'a>(header: &'a DicomHeader, key: &str) -> Option<&'a str> {
@@ -2416,7 +2454,7 @@ mod tests {
         }];
         let client = ArchiveClient {
             name: "neuro-sync",
-            version: "0.3.0".into(),
+            version: "0.3.1".into(),
         };
         let first = derive_series_archive_id(
             &pseudonymizer,
@@ -2446,7 +2484,7 @@ mod tests {
         .unwrap();
         let changed_client = ArchiveClient {
             name: "neuro-sync",
-            version: "0.3.1".into(),
+            version: "0.3.2".into(),
         };
         let changed = derive_series_archive_id(
             &pseudonymizer,

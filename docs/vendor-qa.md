@@ -1,6 +1,6 @@
 # Scanner and vendor QA
 
-Scanner support is a measured compatibility claim, not a marketing synonym for “DICOM.” A family is supported only when a non-PHI or explicitly cleared fixture passes selection, local privacy rewrite, exact pixel comparison, archive validation, cluster conversion, scientific QC, receipt/recovery, and withdrawal tests.
+Scanner-neutral intake and fixture-certified conversion are separate claims. Any vendor’s standards-conformant functional MR may be ingested after the same purpose and privacy gates. A family earns a certified conversion row only when a non-PHI or explicitly cleared fixture also passes exact pixel comparison, cluster conversion, scientific QC, receipt/recovery, and withdrawal tests.
 
 ## Required evidence per route
 
@@ -22,26 +22,25 @@ Record:
 
 Do not upload participant scans merely to build the matrix. Use public test data, a phantom acquisition, or data explicitly cleared for this validation.
 
-## Current `0.3.0` matrix
+## Current `0.3.1` matrix
 
-| Exact measured route | Workstation archive evidence | Pinned conversion evidence | Production gate |
+| Route | Workstation archive evidence | Pinned conversion evidence | Intake/processing status |
 |---|---|---|---|
-| Siemens `MAGNETOM Prisma_fit`, `syngo MR E11`, classic mosaic, native Explicit VR Little Endian | every CSA image header is boundedly parsed and rebuilt from the reviewed numeric/vector allowlist; Pixel Data and the private inventory were audited | exact 86x86x51x10 dimensions, affine, datatype, voxels, TR/TE, multiband factor, phase encoding, effective echo spacing, total readout time, and all 51 slice times; voxel SHA-256 `7934115b9a6bba2d72f4f60bcfadc3772c3d6de8a286bb542eedb1d322c89c85` | accepted only when manufacturer, model, software, functional-EPI, and complete CSA predicates pass |
-| Same Siemens fixture, RLE Lossless Pixel Data | exact encapsulated Pixel Data element retained; same narrow CSA output | same conversion fields and voxel SHA-256 as the native fixture | accepted under the same exact release-family and CSA gates |
-| Philips `Achieva dStream`, software `5.1.1`/`5.1.1.0`, classic single-frame | only the reviewed PS3.15 scale/slice/water-fat values survive; local-only dynamic begin time is removed; all 90 redundant public `TriggerTime` values are suppressed only after the complete series contract passes | exact 64x64x9x10 dimensions, affine, datatype, scaling, voxels, TR/TE, echo-train/water-fat/phase-encoding/acquisition-duration metadata; voxel SHA-256 `13eab53cb50d0dfa00d011b8106a9cc9123f0596330454b307bda0d1fb5fc429` | accepted only when manufacturer, model, software, functional-EPI, private-value, and whole-series timing predicates pass |
-| GE `Discovery MR750`, DV26 classic | a narrow reconstruction prototype reached conversion equivalence, but its parser/rebuilder and hostile/property tests are not in the client | prototype recovered exact voxels, geometry, TR/TE, phase encoding, echo spacing/readout duration, acquisition duration, and 15 slice times | held as `ge_classic_requires_verified_private_metadata_reconstruction` |
-| Any other Siemens or Philips model/software/export family | no release-equivalence claim | not promoted from a different same-vendor fixture | held as `siemens_classic_unverified_model_or_software` or `philips_classic_unverified_model_or_software` |
-| Enhanced MR, Legacy Converted Enhanced MR, or any Extended Offset Table object | exact shared/per-frame and offset-table privacy/pixel contracts are not complete | no production equivalence claim | held locally |
-| Missing, mixed, unknown, or every other scanner manufacturer | no provenance-specific private-metadata contract | no production equivalence claim | held as `missing_scanner_manufacturer` or `unsupported_scanner_manufacturer` |
+| Siemens `MAGNETOM Prisma_fit`, `syngo MR E11`, classic mosaic, native Explicit VR Little Endian | every CSA image header is boundedly parsed and rebuilt from the reviewed numeric/vector allowlist; Pixel Data and the private inventory were audited | exact 86x86x51x10 dimensions, affine, datatype, voxels, TR/TE, multiband factor, phase encoding, effective echo spacing, total readout time, and all 51 slice times; voxel SHA-256 `7934115b9a6bba2d72f4f60bcfadc3772c3d6de8a286bb542eedb1d322c89c85` | intake accepted when functional/privacy gates and required mosaic CSA pass; conversion certified |
+| Same Siemens fixture, RLE Lossless Pixel Data | exact encapsulated Pixel Data element retained; same narrow CSA output | same conversion fields and voxel SHA-256 as the native fixture | intake accepted; conversion certified |
+| Philips `Achieva dStream`, software `5.1.1`/`5.1.1.0`, classic single-frame | reviewed PS3.15 scale/slice/water-fat values survive when valid; local-only dynamic begin time is removed; redundant public `TriggerTime` is suppressed only after the complete series contract passes | exact 64x64x9x10 dimensions, affine, datatype, scaling, voxels, TR/TE, echo-train/water-fat/phase-encoding/acquisition-duration metadata; voxel SHA-256 `13eab53cb50d0dfa00d011b8106a9cc9123f0596330454b307bda0d1fb5fc429` | intake accepted by standard gates; conversion certified for this fixture |
+| GE `Discovery MR750`, DV26 classic | standard metadata retained and unknown private values removed; synthetic archive/server regressions pass | prior prototype recovered exact voxels, geometry, TR/TE, phase encoding, echo spacing/readout duration, acquisition duration, and 15 slice times | intake accepted; full public fixture certification pending |
+| Enhanced or Legacy Converted Enhanced MR | recursive shared/per-frame sanitizer and nested timing extraction are covered by synthetic client/server regressions | public multi-vendor conversion matrix pending | intake accepted; processing status reports conversion/QC |
+| Other or missing manufacturer/model/software | safe recognized provenance is retained when present; unknown free text and private data are removed | no family-specific equivalence inferred | intake accepted by standard functional/privacy gates; processing status reports conversion/QC |
 
-The current deterministic refreshed archives are:
+The prior `0.3.0` deterministic fixture baselines were:
 
 - Siemens series archive ID `ec769f0fc957699701c228e6`, `dicom.tar.zst` SHA-256 `eabb2cd95627e770bfd503f17a4acd5ad84eccf847bb39d99477428c6d063951`;
 - Philips series archive ID `ae353951a7e5ffb4f73fb745`, `dicom.tar.zst` SHA-256 `9ed7bb8978202018d2740815b978bc979819ddd7bdc308e3a924df48ed55e5c8`.
 
 These identities include client version, the complete manifest, canonical scanner metadata, every rewritten instance hash, and the de-identification audit. Changing any of those inputs must change the series archive ID. The fixtures are fetched by `scripts/vendor_dicom_qa.py` from checksum-bound public repository commits; derived fixture trees, the current client, and pinned `dcm2niix` source are independently hash-verified. Fixture bytes are not copied into this repository.
 
-Opaque private `OB`/`UN` and private text remain prohibited. Siemens CSA is never retained wholesale: the client emits a newly serialized, numeric-only image-header block. Philips private exceptions are exact owner/tag/VR/VM physical values, not a generic private-numeric policy. A same-vendor name is insufficient—model, software, form, and all route predicates must match the measured contract.
+Opaque private `OB`/`UN` and private text remain prohibited. Siemens CSA is never retained wholesale: the client emits a newly serialized, numeric-only image-header block. Philips private exceptions are exact owner/tag/VR/VM physical values, not a generic private-numeric policy. Manufacturer/model/software never substitutes for standard functional evidence or a fixture-certified conversion claim.
 
 ## Historical `0.2.x` evidence
 
@@ -71,4 +70,4 @@ Fixtures must assert peak memory remains bounded independently of Pixel Data siz
 
 ## Promotion rule
 
-A row may move from “fixture required” to “supported” only after the evidence above is reviewed and linked to a reproducible fixture/hash. One successful scanner does not generalize to every model, software release, export mode, PACS rewrite, or historical private-tag layout from the same vendor.
+A route may move from “intake accepted” to “conversion certified” only after the evidence above is reviewed and linked to a reproducible fixture/hash. One successful scanner does not establish conversion equivalence for every model, software release, export mode, PACS rewrite, or historical private-tag layout from the same vendor; it also must never become an intake whitelist.

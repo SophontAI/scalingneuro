@@ -26,7 +26,7 @@ if [[ $# -gt 4 ]]; then
     exit 2
 fi
 
-release=${1:-/data/paul/scaling-neuro/native/releases/0.1.0}
+release=${1:-/data/paul/scaling-neuro/native/releases/0.1.1}
 api_url=${2:-https://scalingneuro.com}
 work_root=${3:-/data/paul/scaling-neuro/processor}
 token_file=${4:-/data/paul/scaling-neuro/secrets/processor-token}

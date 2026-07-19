@@ -309,7 +309,9 @@ impl Runtime {
             .state
             .completed_run_for_source(&canonical_source, dry_run)?
         {
-            if completed_run_matches_config(&completed, &config) {
+            if completed_run_matches_config(&completed, &config)
+                && completed_result_uses_current_classifier(&completed)
+            {
                 if let Some(previous) = self.state.source_fingerprint(&completed.id)? {
                     tracing::info!(
                         files = previous.file_count,
@@ -337,6 +339,13 @@ impl Runtime {
                         "Folder contents changed; checking the current export for new eligible scans"
                     );
                 }
+            } else if completed.status == "complete_no_eligible_series"
+                || completed.status == "dry_run_complete"
+            {
+                tracing::info!(
+                    previous_run_id = %completed.id,
+                    "The classifier changed since this folder was last found ineligible; rechecking it automatically"
+                );
             }
         }
 
@@ -1718,6 +1727,18 @@ fn completed_run_matches_config(run: &RunRecord, config: &ClientConfig) -> bool 
             && manifest.project_id == config.project_id
             && !manifest.consent_policy_version.is_empty()
             && manifest.consent_policy_version == config.consent_policy_version
+    })
+}
+
+fn completed_result_uses_current_classifier(run: &RunRecord) -> bool {
+    if run.status == "complete" {
+        return true;
+    }
+    load_checkpoint_manifest(run).is_ok_and(|manifest| {
+        manifest.client_version == crate::CLIENT_VERSION
+            && manifest.schema_version == MANIFEST_SCHEMA_VERSION
+            && manifest.metadata_policy.policy_id == DICOM_METADATA_POLICY_ID
+            && manifest.metadata_policy.policy_version == DICOM_METADATA_POLICY_VERSION
     })
 }
 
@@ -4092,6 +4113,61 @@ mod tests {
         assert_eq!(
             runtime.state.latest_run().unwrap().unwrap().id,
             "completed-run"
+        );
+    }
+
+    #[tokio::test]
+    async fn old_no_eligible_result_is_reclassified_after_client_upgrade() {
+        let state_root = tempfile::tempdir().unwrap();
+        let source = tempfile::tempdir().unwrap();
+        fs::write(
+            source.path().join("not-dicom.txt"),
+            b"stable source fixture",
+        )
+        .unwrap();
+        let runtime = Runtime::initialize(Some(state_root.path())).unwrap();
+        sync_test_config().save(&runtime.paths).unwrap();
+        let canonical_source = source.path().canonicalize().unwrap();
+        runtime
+            .state
+            .create_run("old-no-eligible", &canonical_source, false)
+            .unwrap();
+        write_empty_sync_checkpoint(&runtime, "old-no-eligible", "complete_no_eligible_series");
+        let checkpoint = runtime.state.run("old-no-eligible").unwrap().unwrap();
+        let mut manifest = load_checkpoint_manifest(&checkpoint).unwrap();
+        manifest.client_version = "0.3.0".into();
+        manifest.metadata_policy = crate::archive::metadata_policy();
+        write_json(
+            Path::new(checkpoint.manifest_path.as_deref().unwrap()),
+            &manifest,
+        )
+        .unwrap();
+        runtime
+            .state
+            .update_run(
+                "old-no-eligible",
+                "complete_no_eligible_series",
+                &SourceSummary::default(),
+                None,
+            )
+            .unwrap();
+        let fingerprint = snapshot_source_with_progress(&canonical_source, |_| {})
+            .unwrap()
+            .fingerprint(&canonical_source)
+            .unwrap();
+        runtime
+            .state
+            .set_source_fingerprint("old-no-eligible", &fingerprint)
+            .unwrap();
+
+        let selected = runtime
+            .sync_folder(source.path().to_path_buf(), false)
+            .await
+            .unwrap();
+        assert_ne!(selected, "old-no-eligible");
+        assert_eq!(
+            runtime.state.latest_run().unwrap().unwrap().status,
+            "complete_no_eligible_series"
         );
     }
 

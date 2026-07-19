@@ -200,8 +200,10 @@ pub fn write_functional_epi_fixture(path: &Path, instance: u32, options: &Functi
             "ep2d_bold"
         },
     );
-    text_element(&mut bytes, 0x0018, 0x0080, b"DS", "800");
-    text_element(&mut bytes, 0x0018, 0x0081, b"DS", "30");
+    if options.vendor != FixtureVendor::PhilipsEnhanced {
+        text_element(&mut bytes, 0x0018, 0x0080, b"DS", "800");
+        text_element(&mut bytes, 0x0018, 0x0081, b"DS", "30");
+    }
     if options.philips_dynamic_timing {
         let slices = options.philips_slices.max(1);
         let temporal_index = (instance.saturating_sub(1)) / slices;
@@ -441,6 +443,7 @@ pub fn write_functional_epi_fixture(path: &Path, instance: u32, options: &Functi
             );
         }
         text_element(&mut timing_item, 0x0018, 0x0080, b"DS", "800");
+        fd_element(&mut timing_item, 0x0018, 0x9082, 30.0);
         let mut frame_item = Vec::new();
         sequence_element(&mut frame_item, 0x0018, 0x9112, &[timing_item]);
         sequence_element(&mut bytes, 0x5200, 0x9230, &[frame_item]);
@@ -604,6 +607,10 @@ fn us_element(output: &mut Vec<u8>, group: u16, item: u16, value: u16) {
 
 fn fl_element(output: &mut Vec<u8>, group: u16, item: u16, value: f32) {
     element(output, group, item, b"FL", &value.to_le_bytes());
+}
+
+fn fd_element(output: &mut Vec<u8>, group: u16, item: u16, value: f64) {
+    element(output, group, item, b"FD", &value.to_le_bytes());
 }
 
 fn sl_element(output: &mut Vec<u8>, group: u16, item: u16, value: i32) {

@@ -1,4 +1,5 @@
 use std::{
+    collections::BTreeMap,
     io::{self, BufRead, BufReader, IsTerminal, Write},
     path::{Path, PathBuf},
 };
@@ -187,8 +188,23 @@ pub fn print_run_summary(runtime: &Runtime, run_id: &str, output: &mut impl Writ
         "Series: {} accepted, {} held, {} excluded",
         run.summary.accepted, run.summary.held, run.summary.excluded
     )?;
+    let report = runtime.report(Some(run_id)).ok();
+    if run.summary.held > 0 {
+        let mut reasons = BTreeMap::<&str, usize>::new();
+        if let Some(report) = report.as_ref() {
+            for series in &report.held_series {
+                *reasons.entry(&series.reason_code).or_default() += 1;
+            }
+        }
+        if !reasons.is_empty() {
+            writeln!(output, "Held reasons:")?;
+            for (reason, count) in reasons {
+                writeln!(output, "  {count} × {reason}")?;
+            }
+        }
+    }
     if !run.dry_run && run.status == "complete" {
-        if let Ok(report) = runtime.report(Some(run_id)) {
+        if let Some(report) = report.as_ref() {
             let received = report
                 .bundles
                 .iter()

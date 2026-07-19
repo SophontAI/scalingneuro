@@ -88,7 +88,14 @@ SCANNER_MODELS = {
     "BioSpec",
     "PharmaScan",
 }
-RELEASE_MANUFACTURERS = {"SIEMENS", "Philips Medical Systems"}
+CANONICAL_MANUFACTURERS = {
+    "SIEMENS",
+    "Philips Medical Systems",
+    "GE MEDICAL SYSTEMS",
+    "Canon/Toshiba",
+    "United Imaging",
+    "Bruker",
+}
 PHILIPS_REQUIRED_PRIVATE_FIELDS = frozenset(
     {"scale_intercept", "scale_slope", "number_of_slices", "water_fat_shift"}
 )
@@ -166,8 +173,11 @@ def _finite_number(value: Any, minimum: float, maximum: float) -> None:
 def _validate_source(source: Any, count: int) -> None:
     if not isinstance(source, dict):
         raise InvalidArchive("ARCHIVE_MANIFEST_SCHEMA")
-    required = {"dicom_count", "manufacturer", "model", "software_versions"}
+    required = {"dicom_count"}
     optional = {
+        "manufacturer",
+        "model",
+        "software_versions",
         "patient_position",
         "magnetic_field_strength",
         "receive_coil_name",
@@ -236,34 +246,25 @@ def _validate_source(source: Any, count: int) -> None:
             raise InvalidArchive("ARCHIVE_MANIFEST_SCHEMA")
         if any(item not in allowed for item in values):
             raise InvalidArchive("ARCHIVE_MANIFEST_SCHEMA")
-    versions = source["software_versions"]
-    if (
-        not isinstance(versions, list)
-        or not 1 <= len(versions) <= 16
-        or any(not isinstance(item, str) for item in versions)
-        or len(versions) != len(set(versions))
-        or any(SOFTWARE_VERSION_RE.fullmatch(item) is None for item in versions)
-    ):
-        raise InvalidArchive("ARCHIVE_MANIFEST_SCHEMA")
-    if (
+    if "software_versions" in source:
+        versions = source["software_versions"]
+        if (
+            not isinstance(versions, list)
+            or not 1 <= len(versions) <= 16
+            or any(not isinstance(item, str) for item in versions)
+            or len(versions) != len(set(versions))
+            or any(SOFTWARE_VERSION_RE.fullmatch(item) is None for item in versions)
+        ):
+            raise InvalidArchive("ARCHIVE_MANIFEST_SCHEMA")
+    if "manufacturer" in source and (
         not isinstance(source["manufacturer"], str)
-        or source["manufacturer"] not in RELEASE_MANUFACTURERS
+        or source["manufacturer"] not in CANONICAL_MANUFACTURERS
     ):
         raise InvalidArchive("ARCHIVE_MANIFEST_SCHEMA")
-    if not isinstance(source["model"], str) or source["model"] not in SCANNER_MODELS:
+    if "model" in source and (
+        not isinstance(source["model"], str) or source["model"] not in SCANNER_MODELS
+    ):
         raise InvalidArchive("ARCHIVE_MANIFEST_SCHEMA")
-    if source["manufacturer"] == "SIEMENS" and (
-        source["model"] != "MAGNETOM Prisma_fit" or versions != ["Siemens E11"]
-    ):
-        raise InvalidArchive("ARCHIVE_UNVERIFIED_SCANNER_FAMILY")
-    if source["manufacturer"] == "Philips Medical Systems" and (
-        source["model"] != "Achieva dStream"
-        or "Philips 5.1.1" not in versions
-        or any(
-            version not in {"Philips 5.1.1", "Philips 5.1.1.0"} for version in versions
-        )
-    ):
-        raise InvalidArchive("ARCHIVE_UNVERIFIED_SCANNER_FAMILY")
     for key in ("receive_coil_name", "transmit_coil_name"):
         if key in source and (
             not isinstance(source[key], str)
@@ -587,7 +588,6 @@ def _check_zstd_returncode(config: Config, returncode: int) -> None:
 def _functional_epi_headers_confirmed(audits: list[DicomAudit]) -> bool:
     if not audits:
         return False
-    strong_sequence_names = {"ep2d_bold", "epfid_bold", "bold", "fmri"}
     echo_planar_sequence_names = {
         "ep2d_bold",
         "epfid_bold",
@@ -603,12 +603,13 @@ def _functional_epi_headers_confirmed(audits: list[DicomAudit]) -> bool:
         "FLUID_ATTENUATED",
         "PERFUSION",
     }
-    strong_functional = False
     acquisition_numbers: set[int] = set()
     temporal_positions: set[int] = set()
     declared_temporal_positions: list[int] = []
+    image_positions: set[tuple[float, float, float]] = set()
+    image_position_count = 0
+    mosaic_instances = 0
     repetition_times: list[float] = []
-    echo_times: list[float] = []
     for audit in audits:
         if not {"ORIGINAL", "PRIMARY"}.issubset(
             audit.image_type
@@ -631,45 +632,37 @@ def _functional_epi_headers_confirmed(audits: list[DicomAudit]) -> bool:
             or audit.asl_technique_present
         ):
             return False
-        siemens_measured_functional = bool(
-            audit.manufacturer == "SIEMENS"
-            and audit.model == "MAGNETOM Prisma_fit"
-            and audit.software_versions == {"Siemens E11"}
-            and "MOSAIC" in audit.image_type
-            and "EP" in audit.scanning_sequence
-            and audit.sequence_name == "epfid"
-            and audit.mr_acquisition_type == "2D"
-            and "siemens_csa_image_header_numeric_v1" in audit.private_exceptions
-        )
-        strong_functional = strong_functional or bool(
-            audit.image_type & {"BOLD", "FMRI"}
-            or audit.sequence_name in strong_sequence_names
-            or siemens_measured_functional
-        )
         if audit.repetition_time_ms is None or not (
             100.0 <= audit.repetition_time_ms <= 20_000.0
         ):
             return False
-        if audit.echo_time_ms is None or not 0 < audit.echo_time_ms <= 2_000.0:
+        if not audit.echo_times_ms or any(
+            not 0 < value <= 2_000.0 for value in audit.echo_times_ms
+        ):
             return False
         repetition_times.append(audit.repetition_time_ms)
-        echo_times.append(audit.echo_time_ms)
         if audit.acquisition_number is not None:
             acquisition_numbers.add(audit.acquisition_number)
         if audit.temporal_position_identifier is not None:
             temporal_positions.add(audit.temporal_position_identifier)
+        temporal_positions.update(audit.temporal_position_indices)
         if audit.number_of_temporal_positions is not None:
             declared_temporal_positions.append(audit.number_of_temporal_positions)
+        image_positions.update(audit.image_positions)
+        image_position_count += audit.image_position_count
+        if "MOSAIC" in audit.image_type:
+            mosaic_instances += 1
     if max(repetition_times) - min(repetition_times) > 0.001:
         return False
-    if max(echo_times) - min(echo_times) > 0.001:
-        return False
     temporal_structure = bool(
-        any(value >= 10 for value in declared_temporal_positions)
-        or len(temporal_positions) >= 10
-        or len(acquisition_numbers) >= 10
+        any(value >= 2 for value in declared_temporal_positions)
+        or len(temporal_positions) >= 2
+        or len(acquisition_numbers) >= 2
+        or mosaic_instances >= 2
+        or image_positions
+        and image_position_count // len(image_positions) >= 2
     )
-    return strong_functional and temporal_structure
+    return temporal_structure
 
 
 def _archive_extraction_contract_bytes(config: Config, archive_bytes: int) -> int:
@@ -861,51 +854,57 @@ def _extract_archive(
         )
         if audit.sop_instance_uid != declared["sop_instance_uid"]:
             raise InvalidArchive("ARCHIVE_SOP_UID_MISMATCH")
-        source_manufacturer = manifest.value["source"]["manufacturer"]
-        if audit.manufacturer != source_manufacturer:
+        source_manufacturer = manifest.value["source"].get("manufacturer")
+        if (
+            source_manufacturer is not None
+            and audit.manufacturer != source_manufacturer
+        ):
             raise InvalidArchive("ARCHIVE_MANUFACTURER_MISMATCH")
-        if audit.model != manifest.value["source"][
-            "model"
-        ] or audit.software_versions != frozenset(
-            manifest.value["source"]["software_versions"]
+        source_model = manifest.value["source"].get("model")
+        source_versions = manifest.value["source"].get("software_versions")
+        if (
+            source_model is not None
+            and audit.model != source_model
+            or source_versions is not None
+            and audit.software_versions != frozenset(source_versions)
         ):
             raise InvalidArchive("ARCHIVE_SCANNER_METADATA_MISMATCH")
-        if audit.sop_class_uid != "1.2.840.10008.5.1.4.1.1.4":
+        if audit.sop_class_uid not in {
+            "1.2.840.10008.5.1.4.1.1.4",
+            "1.2.840.10008.5.1.4.1.1.4.1",
+            "1.2.840.10008.5.1.4.1.1.4.4",
+        }:
             raise InvalidArchive("ARCHIVE_UNSUPPORTED_DICOM_FORM")
         if audit.manufacturer == "SIEMENS":
-            if audit.model != "MAGNETOM Prisma_fit" or audit.software_versions != {
-                "Siemens E11"
-            }:
-                raise InvalidArchive("ARCHIVE_UNVERIFIED_SCANNER_FAMILY")
             if any(
                 exception.startswith("dicom_ps3.15_philips_")
                 for exception in audit.private_exceptions
             ):
                 raise InvalidArchive("ARCHIVE_VENDOR_METADATA_MISMATCH")
             if (
-                "MOSAIC" not in audit.image_type
-                or "siemens_csa_image_header_numeric_v1" not in audit.private_exceptions
+                "MOSAIC" in audit.image_type
+                and "siemens_csa_image_header_numeric_v1"
+                not in audit.private_exceptions
             ):
                 raise InvalidArchive("ARCHIVE_SIEMENS_CSA_REQUIRED")
-        else:
-            if (
-                audit.model != "Achieva dStream"
-                or "Philips 5.1.1" not in audit.software_versions
-                or any(
-                    version not in {"Philips 5.1.1", "Philips 5.1.1.0"}
-                    for version in audit.software_versions
-                )
-            ):
-                raise InvalidArchive("ARCHIVE_UNVERIFIED_SCANNER_FAMILY")
+        elif audit.manufacturer == "Philips Medical Systems":
             if any(
                 exception == "siemens_csa_image_header_numeric_v1"
                 for exception in audit.private_exceptions
             ):
                 raise InvalidArchive("ARCHIVE_VENDOR_METADATA_MISMATCH")
-            if not PHILIPS_REQUIRED_PRIVATE_FIELDS.issubset(
-                audit.philips_private_fields
-            ):
-                raise InvalidArchive("ARCHIVE_PHILIPS_PRIVATE_METADATA_REQUIRED")
+        elif audit.manufacturer is None:
+            has_siemens = (
+                "siemens_csa_image_header_numeric_v1" in audit.private_exceptions
+            )
+            has_philips = any(
+                exception.startswith("dicom_ps3.15_philips_")
+                for exception in audit.private_exceptions
+            )
+            if has_siemens and has_philips:
+                raise InvalidArchive("ARCHIVE_VENDOR_METADATA_MISMATCH")
+        elif audit.private_exceptions:
+            raise InvalidArchive("ARCHIVE_VENDOR_METADATA_MISMATCH")
         dicom_audits.append(audit)
         burned_in_declared.append(audit.burned_in_annotation_declared_no)
         observed_private_exceptions.update(audit.private_exceptions)
@@ -924,7 +923,7 @@ def _extract_archive(
     if "suppressed_redundant_philips_dynamic_trigger_time" in manifest.value[
         "deidentification"
     ].get("metadata_transformations", []) and (
-        manifest.value["source"]["manufacturer"] != "Philips Medical Systems"
+        manifest.value["source"].get("manufacturer") != "Philips Medical Systems"
         or trigger_time_present
     ):
         raise InvalidArchive("ARCHIVE_DEIDENTIFICATION_UNVERIFIED")

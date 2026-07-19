@@ -242,9 +242,6 @@ REQUIRED_TAGS = {
     Tag(0x0008, 0x0016),
     Tag(0x0008, 0x0018),
     Tag(0x0008, 0x0060),
-    Tag(0x0008, 0x0070),
-    Tag(0x0008, 0x1090),
-    Tag(0x0018, 0x1020),
     Tag(0x0010, 0x0010),
     Tag(0x0010, 0x0020),
     Tag(0x0012, 0x0062),
@@ -308,8 +305,8 @@ class _AuditState:
 class DicomAudit:
     sop_instance_uid: str
     sop_class_uid: str
-    manufacturer: str
-    model: str
+    manufacturer: str | None
+    model: str | None
     software_versions: frozenset[str]
     image_type: frozenset[str]
     scanning_sequence: frozenset[str]
@@ -317,10 +314,13 @@ class DicomAudit:
     mr_acquisition_type: str | None
     echo_planar_pulse_sequence: str | None
     repetition_time_ms: float | None
-    echo_time_ms: float | None
+    echo_times_ms: frozenset[float]
     acquisition_number: int | None
     temporal_position_identifier: int | None
+    temporal_position_indices: frozenset[int]
     number_of_temporal_positions: int | None
+    image_positions: frozenset[tuple[float, float, float]]
+    image_position_count: int
     acquisition_contrast: frozenset[str]
     diffusion_b_value: float | None
     asl_technique_present: bool
@@ -371,6 +371,96 @@ def _optional_single_text(dataset: Dataset, tag: BaseTag) -> str | None:
     if len(values) != 1:
         raise _PrivacyViolation()
     return values[0]
+
+
+def _recursive_elements(
+    dataset: Dataset, tag: BaseTag, depth: int = 0
+) -> list[DataElement]:
+    if depth > MAX_SEQUENCE_DEPTH:
+        raise _PrivacyViolation()
+    output: list[DataElement] = []
+    for element in dataset:
+        if element.tag == tag:
+            output.append(element)
+        if element.VR == "SQ":
+            if not isinstance(element.value, Sequence):
+                raise _PrivacyViolation()
+            for item in element.value:
+                if not isinstance(item, Dataset):
+                    raise _PrivacyViolation()
+                output.extend(_recursive_elements(item, tag, depth + 1))
+    return output
+
+
+def _recursive_single_text(dataset: Dataset, tag: BaseTag) -> str | None:
+    values = [
+        value
+        for element in _recursive_elements(dataset, tag)
+        for value in _text_components(element)
+    ]
+    if not values:
+        return None
+    if any(value != values[0] for value in values[1:]):
+        raise _PrivacyViolation()
+    return values[0]
+
+
+def _recursive_float(dataset: Dataset, tag: BaseTag) -> float | None:
+    value = _recursive_single_text(dataset, tag)
+    if value is None:
+        return None
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise _PrivacyViolation() from exc
+    if not math.isfinite(parsed):
+        raise _PrivacyViolation()
+    return parsed
+
+
+def _recursive_floats(dataset: Dataset, tag: BaseTag) -> frozenset[float]:
+    output: set[float] = set()
+    for element in _recursive_elements(dataset, tag):
+        for value in _text_components(element):
+            try:
+                parsed = float(value)
+            except (TypeError, ValueError, OverflowError) as exc:
+                raise _PrivacyViolation() from exc
+            if not math.isfinite(parsed):
+                raise _PrivacyViolation()
+            output.add(parsed)
+    return frozenset(output)
+
+
+def _recursive_integers(dataset: Dataset, tag: BaseTag) -> frozenset[int]:
+    output: set[int] = set()
+    for element in _recursive_elements(dataset, tag):
+        for value in _text_components(element):
+            try:
+                output.add(int(value))
+            except (TypeError, ValueError, OverflowError) as exc:
+                raise _PrivacyViolation() from exc
+    return frozenset(output)
+
+
+def _recursive_image_positions(
+    dataset: Dataset,
+) -> tuple[frozenset[tuple[float, float, float]], int]:
+    output: set[tuple[float, float, float]] = set()
+    count = 0
+    for element in _recursive_elements(dataset, Tag(0x0020, 0x0032)):
+        values = _text_components(element)
+        if len(values) != 3:
+            raise _PrivacyViolation()
+        try:
+            position = tuple(float(value) for value in values)
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise _PrivacyViolation() from exc
+        if len(position) != 3 or any(not math.isfinite(value) for value in position):
+            raise _PrivacyViolation()
+        output.add((position[0], position[1], position[2]))
+        count += 1
+    return frozenset(output), count
 
 
 def _optional_float(dataset: Dataset, tag: BaseTag) -> float | None:
@@ -790,9 +880,15 @@ def _audit_positive_i32_vm1(element: DataElement) -> None:
         raise _PrivacyViolation()
 
 
-def _record_philips_private_field(state: _AuditState, field_name: str) -> None:
-    if field_name in state.philips_private_fields:
+def _record_philips_private_field(
+    state: _AuditState, semantic_fields: set[str], field_name: str
+) -> None:
+    # Enhanced MR legitimately repeats a narrowly allowed scale attribute in
+    # each per-frame Dataset. Reject duplicate semantic fields within one
+    # Dataset, while retaining a file-level inventory for manifest attestation.
+    if field_name in semantic_fields:
         raise _PrivacyViolation()
+    semantic_fields.add(field_name)
     state.philips_private_fields.add(field_name)
 
 
@@ -848,6 +944,7 @@ def _audit_private(
     element: DataElement,
     creators: dict[BaseTag, str],
     state: _AuditState,
+    semantic_fields: set[str],
     depth: int,
 ) -> tuple[BaseTag, str]:
     tag = element.tag
@@ -872,7 +969,7 @@ def _audit_private(
             field_name = "scale_slope"
             if not 0.0 < value <= 1.0e9:
                 raise _PrivacyViolation()
-        _record_philips_private_field(state, field_name)
+        _record_philips_private_field(state, semantic_fields, field_name)
         return creator_tag, "dicom_ps3.15_philips_scale_intercept_slope"
     if (
         tag.group == 0x2001
@@ -880,7 +977,7 @@ def _audit_private(
         and creator == PHILIPS_IMAGING_CREATOR
     ):
         _audit_positive_i32_vm1(element)
-        _record_philips_private_field(state, "number_of_slices")
+        _record_philips_private_field(state, semantic_fields, "number_of_slices")
         return creator_tag, "dicom_ps3.15_philips_number_of_slices"
     if (
         tag.group == 0x2001
@@ -890,7 +987,7 @@ def _audit_private(
         value = _audit_finite_float32_vm1(element)
         if not 0.0 <= value <= 1.0e6:
             raise _PrivacyViolation()
-        _record_philips_private_field(state, "water_fat_shift")
+        _record_philips_private_field(state, semantic_fields, "water_fat_shift")
         return creator_tag, "dicom_ps3.15_philips_water_fat_shift"
     if (
         tag.group == 0x2005
@@ -898,7 +995,7 @@ def _audit_private(
         and creator == PHILIPS_PER_FRAME_CREATOR
     ):
         _audit_philips_per_frame_scale_sequence(element, state, depth)
-        _record_philips_private_field(state, "per_frame_scale_slope")
+        _record_philips_private_field(state, semantic_fields, "per_frame_scale_slope")
         return creator_tag, "dicom_ps3.15_philips_per_frame_scale_slope"
     raise _PrivacyViolation()
 
@@ -927,6 +1024,7 @@ def _audit_dataset(
                 raise _PrivacyViolation()
             creators[tag] = values[0]
     used_creators: set[BaseTag] = set()
+    semantic_private_fields: set[str] = set()
     for element in dataset:
         tag = element.tag
         if (
@@ -946,6 +1044,7 @@ def _audit_dataset(
                 element,
                 creators,
                 state,
+                semantic_private_fields,
                 depth,
             )
             used_creators.add(creator_tag)
@@ -1131,24 +1230,39 @@ def audit_dicom(path: Path, *, expected_subject_id: str) -> DicomAudit:
         _audit_dataset(dataset, expected_subject_id, state, 0)
         transfer_syntax = _audit_file_meta(dataset.file_meta, dataset)
         _audit_pixel_boundary(path, pixel_offset, transfer_syntax)
+        temporal_position_indices = _recursive_integers(dataset, Tag(0x0020, 0x9128))
+        number_of_temporal_positions = _optional_int(dataset, Tag(0x0020, 0x0105))
+        if number_of_temporal_positions is None and len(temporal_position_indices) >= 2:
+            number_of_temporal_positions = len(temporal_position_indices)
+        image_positions, image_position_count = _recursive_image_positions(dataset)
         return DicomAudit(
             sop_instance_uid=str(dataset[Tag(0x0008, 0x0018)].value).strip(" \0"),
             sop_class_uid=sop_class,
-            manufacturer=_text_components(dataset[Tag(0x0008, 0x0070)])[0],
-            model=_text_components(dataset[Tag(0x0008, 0x1090)])[0],
-            software_versions=frozenset(_text_components(dataset[Tag(0x0018, 0x1020)])),
+            manufacturer=_optional_single_text(dataset, Tag(0x0008, 0x0070)),
+            model=_optional_single_text(dataset, Tag(0x0008, 0x1090)),
+            software_versions=frozenset(_optional_text(dataset, Tag(0x0018, 0x1020))),
             image_type=frozenset(_text_components(dataset[Tag(0x0008, 0x0008)])),
             scanning_sequence=frozenset(_optional_text(dataset, Tag(0x0018, 0x0020))),
             sequence_name=_optional_single_text(dataset, Tag(0x0018, 0x0024)),
             mr_acquisition_type=_optional_single_text(dataset, Tag(0x0018, 0x0023)),
             echo_planar_pulse_sequence=_optional_single_text(
                 dataset, Tag(0x0018, 0x9018)
+            )
+            or _recursive_single_text(dataset, Tag(0x0018, 0x9018)),
+            repetition_time_ms=_optional_float(dataset, Tag(0x0018, 0x0080))
+            or _recursive_float(dataset, Tag(0x0018, 0x0080)),
+            echo_times_ms=(
+                frozenset([root_echo_time])
+                if (root_echo_time := _optional_float(dataset, Tag(0x0018, 0x0081)))
+                is not None
+                else _recursive_floats(dataset, Tag(0x0018, 0x9082))
             ),
-            repetition_time_ms=_optional_float(dataset, Tag(0x0018, 0x0080)),
-            echo_time_ms=_optional_float(dataset, Tag(0x0018, 0x0081)),
             acquisition_number=_optional_int(dataset, Tag(0x0020, 0x0012)),
             temporal_position_identifier=_optional_int(dataset, Tag(0x0020, 0x0100)),
-            number_of_temporal_positions=_optional_int(dataset, Tag(0x0020, 0x0105)),
+            temporal_position_indices=temporal_position_indices,
+            number_of_temporal_positions=number_of_temporal_positions,
+            image_positions=image_positions,
+            image_position_count=image_position_count,
             acquisition_contrast=frozenset(
                 _optional_text(dataset, Tag(0x0008, 0x9209))
             ),

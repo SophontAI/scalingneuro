@@ -1,6 +1,6 @@
 # Scaling Neuro
 
-Scaling Neuro is a privacy-first path from a scanner export to a reusable functional-MRI archive. The `0.3.0` beta is deliberately narrow: a researcher points one terminal command at a completed DICOM folder; `neuro-sync` selects confidently identified functional EPI, rewrites it locally under a default-deny DICOM de-identification policy, uploads resumable per-series archives to Cloudflare R2, and returns a durable receipt. Pinned conversion and scientific validation then run asynchronously on the Sophont cluster.
+Scaling Neuro is a privacy-first path from a scanner export to a reusable functional-MRI archive. In the `0.3.1` beta, a researcher points one terminal command at a completed DICOM folder; `neuro-sync` selects functional EPI using vendor-neutral standard DICOM evidence, rewrites it locally under a default-deny DICOM de-identification policy, uploads resumable per-series archives to Cloudflare R2, and returns a durable receipt. Pinned conversion and scientific validation then run asynchronously on the Sophont cluster.
 
 It is open to any lab. Registration records the lab and creates a revocable identity for one workstation; the same lab may register any number of workstations. Scaling Neuro is a research transfer system, not a clinical device or a substitute for consent, IRB, or data-use review.
 
@@ -49,9 +49,9 @@ Structural MRI, diffusion, ASL, field maps, SBRefs, localizers, derived images, 
 
 ## Functional-EPI selection
 
-Selection is evidence-based, with a separate exact vendor/export compatibility gate. An accepted series must be MR, original/primary, satisfy the active burned-in-annotation policy, and have strong EPI plus temporal/functional evidence. Exclusion evidence wins over inclusion evidence. The threshold is intentionally high (`>= 0.90`), and uncertain data is held locally with a code-only reason.
+Selection is evidence-based and independent of scanner manufacturer, model, or software version. An accepted series must be MR, original/primary, satisfy the active burned-in-annotation policy, and have standard echo-planar evidence plus a repeated temporal structure and consistent plausible TR/TE. Exclusion evidence wins over inclusion evidence. The threshold is intentionally high (`>= 0.90`), and uncertain data is held locally with a code-only reason.
 
-The current measured support boundary is deliberately narrower than “all DICOM.” Classic Siemens mosaic from the tested Prisma/E11 family is accepted only when its CSA image header can be parsed and rebuilt from a seven-field numeric/vector allowlist. Classic Philips from the tested 5.1.1 family is accepted, including its reviewed PS3.15 private scaling fields, only when any dynamic-timing metadata satisfies a strict whole-series contract. GE classic, every Enhanced MR object, extended-offset-table objects, and unverified scanner/export families are held locally with stable compatibility codes. A fixture claim requires a recursive privacy audit, exact pixel and conversion-equivalence checks, and an end-to-end receipt; one validated fixture does not imply every scanner or software release from that vendor.
+Classic MR, Enhanced MR, and Legacy Converted Enhanced MR from any manufacturer can enter through the same standard-DICOM route. Unknown or missing equipment provenance is omitted rather than treated as an eligibility failure. Known safe scanner provenance and standard acquisition metadata are retained; unknown and malformed private metadata is dropped. The one vendor-specific intake condition is scientific rather than commercial: Siemens mosaic Pixel Data requires a successfully rebuilt numeric-only CSA image header because that private geometry is necessary to interpret the mosaic. A scanner can therefore be accepted for durable source ingest before its derived conversion has a fixture-certified equivalence claim; processing/QC records that later outcome separately. The exact measured conversion matrix remains in [Vendor QA](docs/vendor-qa.md).
 
 ## Architecture
 
@@ -158,9 +158,9 @@ Client packages are built from the current `main` commit for universal macOS, Wi
 
 ## Remaining broad-adoption gates
 
-- Maintain the pinned public Siemens/Philips compatibility harness as a release gate, and expand the privacy-audited matrix across additional models, software releases, PACS rewrites, and transfer syntaxes.
-- Add the proven narrow GE classic metadata reconstruction only after hostile/property tests demonstrate that no opaque private block or unbounded value can enter an archive.
-- Validate Enhanced MR shared/per-frame semantics and exact extended-offset-table pairing before enabling either route.
+- Expand fixture-certified conversion/QC across GE, Canon/Toshiba, United Imaging, Bruker, additional Siemens/Philips families, PACS rewrites, and transfer syntaxes without reintroducing an intake whitelist.
+- Add narrowly rebuilt vendor-private scientific fields only after hostile/property tests demonstrate that no opaque private block or unbounded value can enter an archive.
+- Extend Enhanced MR fixture coverage across shared/per-frame dimension-index layouts and compressed multi-frame exports.
 - Run clean-machine installation, interruption, automatic continuation, and receipt tests on each promised OS and representative institution-managed workstations.
 - Independently inspect every release’s stored rewritten DICOM, derived sidecar/manifest, metadata retention, PHI absence, native geometry, hashes, withdrawal, and cleanup.
 - Add governed discovery/access, compatibility dashboards, and downstream training caches without weakening the immutable source archive.

@@ -6,7 +6,7 @@ export PYTHONNOUSERSITE=1
 export PYTHONDONTWRITEBYTECODE=1
 export PYTHONSAFEPATH=1
 
-PROCESSOR_VERSION=0.1.0
+PROCESSOR_VERSION=0.1.1
 DCM2NIIX_VERSION=1.0.20260416
 DCM2NIIX_SHA256=e88b40f6ebbcf9f47ebfdd7bb5f0127297cb7e8b06266a91a4642b5814031bd0
 DCM2NIIX_URL=https://github.com/rordenlab/dcm2niix/releases/download/v1.0.20260416/dcm2niix_lnx.zip
@@ -28,7 +28,7 @@ if [ "$(uname -s)" != Linux ] || [ "$(uname -m)" != x86_64 ]; then
 fi
 
 processor_source=$1
-install_root=${2:-/data/paul/scaling-neuro/native/releases/0.1.0}
+install_root=${2:-/data/paul/scaling-neuro/native/releases/0.1.1}
 python_bin=${3:-python3.12}
 
 if [ ! -r "$processor_source/requirements.lock" ] || [ ! -d "$processor_source/scaling_neuro_processor" ]; then
@@ -127,7 +127,7 @@ validate_release() {
     grep -Fx "zstd_binary_sha256=$ZSTD_SHA256" "$release/RELEASE" >/dev/null || return 1
     grep -Fx "controller_source_sha256=$source_controller_sha256" "$release/RELEASE" >/dev/null || return 1
     PYTHONNOUSERSITE=1 PYTHONPATH="$release/app" "$release/venv/bin/python" -c \
-        'import numpy, pydicom, scaling_neuro_processor as p; assert numpy.__version__ == "2.2.6"; assert pydicom.__version__ == "3.0.1"; assert p.__version__ == "0.1.0"' || return 1
+        'import numpy, pydicom, scaling_neuro_processor as p; assert numpy.__version__ == "2.2.6"; assert pydicom.__version__ == "3.0.1"; assert p.__version__ == "0.1.1"' || return 1
     installed_controller_sha256=$(controller_source_sha256 \
         "$release/requirements.lock" \
         "$release/app/scaling_neuro_processor") || return 1

@@ -60,7 +60,7 @@
     <div class="eyebrow">Open self-service beta · functional EPI only</div>
     <h1>Install now. Start when ready.</h1>
     <p class="lede">Paste the command for your computer. It installs and verifies neuro-sync, then returns you to the shell—no browser, administrator access, or dependencies to configure. Find or copy your DICOM folder path, then start neuro-sync when you are ready.</p>
-    <p class="boundary"><strong>Measured beta boundary:</strong> classic Siemens Prisma_fit/E11 mosaic and Philips Achieva dStream/5.1.1 functional EPI only. Unverified scanner families and all structural, diffusion, reference, derived, and ambiguous scans remain local.</p>
+    <p class="boundary"><strong>Scanner-neutral functional EPI:</strong> neuro-sync uses standard DICOM evidence rather than a vendor/model whitelist, including classic and Enhanced MR. Structural, diffusion, reference, derived, ambiguous, and privacy-unsafe scans remain local.</p>
     <div class="status" id="releaseStatus">Checking the current verified release…</div>
 
     <section class="commands" aria-label="Terminal installation commands">
@@ -97,7 +97,7 @@
         <li>Complete the one-minute terminal registration and authorization confirmation. Nothing opens in a browser.</li>
         <li>Run <code>neuro-sync /path/to/dicom-export</code>. neuro-sync selects compatible functional EPI, removes identifying DICOM fields, and uploads with a live progress bar, speed, ETA, and automatic continuation.</li>
       </ol>
-      <p>The original files remain unchanged. Privacy-cleared functional DICOM copies retain scanner-native pixel data and useful acquisition metadata; identifying fields, dates, raw UIDs, free text, and unsafe private data are removed or remapped before upload. Structural, diffusion, reference, derived, and ambiguous scans stay local. The current beta has real-fixture support for strict Siemens classic and Philips classic routes; GE, Enhanced MR, and unverified export families are safely held locally with a report code. Conversion and scientific validation run asynchronously on Scaling Neuro's research cluster after the upload receipt is complete. <a href="/docs/vendor-qa.md">See the measured scanner matrix.</a></p>
+      <p>The original files remain unchanged. Privacy-cleared functional DICOM copies retain scanner-native pixel data and useful standard acquisition metadata; identifying fields, dates, raw UIDs, free text, and unsafe private data are removed or remapped before upload. Scanner make/model/software is provenance, not a whitelist. Structural, diffusion, reference, derived, ambiguous, and privacy-unsafe scans stay local. Conversion and scientific validation run asynchronously on Scaling Neuro's research cluster after the upload receipt is complete. <a href="/docs/vendor-qa.md">See the measured conversion matrix.</a></p>
     </section>
 
     <p class="meta"><a href="/docs/contribution-policy">Contribution policy</a> · <a href="/docs/dicom-deidentification-policy.md">DICOM de-identification details</a> · Registration creates a private, revocable upload identity; it is not evidence of participant consent or authorization.</p>

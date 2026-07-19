@@ -151,21 +151,6 @@ pub fn classify_header(group: &SeriesGroup) -> Classification {
             [("unsupported_sop_class", "dicom_header", "contradicts")],
         );
     }
-    if group
-        .sop_class_uids
-        .iter()
-        .any(|value| is_enhanced_or_legacy_converted_mr_sop(value))
-    {
-        return hold(
-            "enhanced_mr_pending_verified_metadata_contract",
-            1.0,
-            [(
-                "enhanced_multiframe_metadata_not_yet_conversion_equivalent",
-                "dicom_header",
-                "contradicts",
-            )],
-        );
-    }
     if group.modalities.is_empty() {
         return hold(
             "missing_required_modality",
@@ -185,95 +170,14 @@ pub fn classify_header(group: &SeriesGroup) -> Classification {
             evidence: vec![ev("modality_not_mr", "dicom_header", "excludes")],
         };
     }
-    if group.manufacturer_missing || group.manufacturers.is_empty() {
-        return hold(
-            "missing_scanner_manufacturer",
-            1.0,
-            [(
-                "missing_scanner_manufacturer",
-                "dicom_header",
-                "contradicts",
-            )],
-        );
-    }
-    let all_siemens = group
-        .manufacturers
-        .iter()
-        .all(|value| is_siemens_manufacturer(value));
-    let all_philips = group
-        .manufacturers
-        .iter()
-        .all(|value| is_philips_manufacturer(value));
-    let all_ge = group
-        .manufacturers
-        .iter()
-        .all(|value| is_ge_manufacturer(value));
-    if all_ge {
-        return hold(
-            "ge_classic_requires_verified_private_metadata_reconstruction",
-            1.0,
-            [(
-                "ge_classic_scientific_metadata_not_conversion_equivalent",
-                "dicom_header",
-                "contradicts",
-            )],
-        );
-    }
-    if !all_siemens && !all_philips {
-        return hold(
-            "unsupported_scanner_manufacturer",
-            1.0,
-            [(
-                "scanner_manufacturer_not_release_verified",
-                "dicom_header",
-                "contradicts",
-            )],
-        );
-    }
-    if all_siemens && !siemens_release_family_verified(group) {
-        return hold(
-            "siemens_classic_unverified_model_or_software",
-            1.0,
-            [(
-                "siemens_model_software_not_release_verified",
-                "dicom_header",
-                "contradicts",
-            )],
-        );
-    }
-    if all_philips && !philips_release_family_verified(group) {
-        return hold(
-            "philips_classic_unverified_model_or_software",
-            1.0,
-            [(
-                "philips_model_software_not_release_verified",
-                "dicom_header",
-                "contradicts",
-            )],
-        );
-    }
-    if all_philips && !group.all_philips_classic_private_metadata_contract_verified {
-        return hold(
-            "philips_classic_private_metadata_contract_unverified",
-            1.0,
-            [(
-                "philips_private_scientific_metadata_not_release_verified",
-                "dicom_header",
-                "contradicts",
-            )],
-        );
-    }
-    if all_philips && !group.philips_dynamic_timing_contract_verified {
-        return hold(
-            "philips_dynamic_timing_contract_unverified",
-            1.0,
-            [(
-                "philips_dynamic_timing_series_contract_failed",
-                "dicom_header",
-                "contradicts",
-            )],
-        );
-    }
+    // Scanner identity is provenance, not eligibility. Unknown, absent, or
+    // previously unmeasured manufacturer/model/software values must never
+    // prevent standards-conformant functional MR from reaching the archive.
+    let all_siemens = !group.manufacturers.is_empty()
+        && group
+            .manufacturers
+            .iter()
+            .all(|value| is_siemens_manufacturer(value));
     if group
         .burned_in_annotations
         .iter()
@@ -294,17 +198,6 @@ pub fn classify_header(group: &SeriesGroup) -> Classification {
             "overlay_or_graphics",
             1.0,
             [("overlay_or_graphics_present", "dicom_header", "contradicts")],
-        );
-    }
-    if group.has_extended_offset_table {
-        return hold(
-            "encapsulated_extended_offset_table_unsupported",
-            1.0,
-            [(
-                "extended_offset_table_requires_validated_pixel_pairing",
-                "dicom_header",
-                "contradicts",
-            )],
         );
     }
     let image_type = lower_join(&group.image_types);
@@ -330,8 +223,8 @@ pub fn classify_header(group: &SeriesGroup) -> Classification {
     }
 
     if all_siemens
-        && (!image_type.contains("mosaic")
-            || !group.siemens_csa_image_header_present
+        && image_type.contains("mosaic")
+        && (!group.siemens_csa_image_header_present
             || !group.all_siemens_csa_image_headers_sanitizable)
     {
         return hold(
@@ -531,7 +424,7 @@ pub fn classify_header(group: &SeriesGroup) -> Classification {
     }
     if header
         .number_of_temporal_positions
-        .is_some_and(|count| count >= 10)
+        .is_some_and(|count| count >= 2)
     {
         score += 2;
         evidence.push(ev(
@@ -555,24 +448,33 @@ pub fn classify_header(group: &SeriesGroup) -> Classification {
             .is_some_and(|value| value.eq_ignore_ascii_case("YES"))
         || contains_any(&image_type, &["epi", "bold", "fmri"])
         || contains_any(&sequence, &["ep2d", "epfid", "epi", "bold"]);
-    let enhanced_temporal_structure = header
-        .sop_class_uid
-        .as_deref()
-        .is_some_and(|uid| uid == "1.2.840.10008.5.1.4.1.1.4.1")
-        && group.has_per_frame_functional_groups
-        && header.number_of_frames.is_some_and(|count| count >= 10);
+    let repeated_slice_positions = repeated_slice_time_series(group);
+    let classic_mosaic_time_series = image_type.contains("mosaic") && group.files.len() >= 2;
     let temporal_evidence = header
         .number_of_temporal_positions
-        .is_some_and(|count| count >= 10)
-        || group.temporal_position_identifiers.len() >= 10
-        || group.acquisition_numbers.len() >= 10
-        || enhanced_temporal_structure;
+        .is_some_and(|count| count >= 2)
+        || group.temporal_position_identifiers.len() >= 2
+        || group.acquisition_numbers.len() >= 2
+        || repeated_slice_positions
+        || classic_mosaic_time_series;
 
-    if score >= 8 && strong_functional_evidence && temporal_evidence {
+    if temporal_evidence
+        && !evidence
+            .iter()
+            .any(|item| item.code == "multiple_temporal_positions")
+    {
+        evidence.push(ev(
+            "multiple_temporal_positions",
+            "dicom_header",
+            "supports",
+        ));
+    }
+
+    if strong_functional_evidence && temporal_evidence {
         Classification {
             decision: ClassificationDecision::Accepted,
             kind: "functional_epi_candidate".into(),
-            confidence: (0.50 + f64::from(score) * 0.05).min(0.95),
+            confidence: (0.90 + f64::from(score.min(5)) * 0.01).min(0.95),
             evidence,
         }
     } else {
@@ -588,6 +490,33 @@ pub fn classify_header(group: &SeriesGroup) -> Classification {
             evidence,
         }
     }
+}
+
+fn repeated_slice_time_series(group: &SeriesGroup) -> bool {
+    let mut positions = Vec::<[i64; 3]>::new();
+    let mut measured_instances = 0_usize;
+    for instance in &group.instances {
+        if instance.image_position_patient.len() != 3
+            || instance
+                .image_position_patient
+                .iter()
+                .any(|value| !value.is_finite())
+        {
+            continue;
+        }
+        measured_instances += 1;
+        let position = [
+            (instance.image_position_patient[0] * 1_000_000.0).round() as i64,
+            (instance.image_position_patient[1] * 1_000_000.0).round() as i64,
+            (instance.image_position_patient[2] * 1_000_000.0).round() as i64,
+        ];
+        if !positions.contains(&position) {
+            positions.push(position);
+        }
+    }
+    !positions.is_empty()
+        && measured_instances == group.instances.len()
+        && measured_instances / positions.len() >= 2
 }
 
 fn series_timing_contract(
@@ -648,12 +577,6 @@ fn series_timing_contract(
             "tr_inconsistent_across_series_instances",
         ));
     }
-    if spread(&echo_times) > 0.001 {
-        return Err((
-            "inconsistent_echo_time",
-            "te_inconsistent_across_series_instances",
-        ));
-    }
     Ok(())
 }
 
@@ -661,13 +584,6 @@ fn is_supported_mr_sop(value: &str) -> bool {
     matches!(
         value,
         "1.2.840.10008.5.1.4.1.1.4" | "1.2.840.10008.5.1.4.1.1.4.1" | "1.2.840.10008.5.1.4.1.1.4.4"
-    )
-}
-
-fn is_enhanced_or_legacy_converted_mr_sop(value: &str) -> bool {
-    matches!(
-        value,
-        "1.2.840.10008.5.1.4.1.1.4.1" | "1.2.840.10008.5.1.4.1.1.4.4"
     )
 }
 
@@ -682,72 +598,12 @@ fn is_secondary_capture_sop(value: &str) -> bool {
     )
 }
 
-fn is_ge_manufacturer(value: &str) -> bool {
-    let value = value.trim().to_ascii_uppercase();
-    value == "GE"
-        || value.contains("GENERAL ELECTRIC")
-        || value.starts_with("GE MEDICAL")
-        || value.starts_with("GE HEALTHCARE")
-}
-
 fn is_siemens_manufacturer(value: &str) -> bool {
     let value = normalized_family_text(value);
     value == "SIEMENS"
         || value == "SIEMENS HEALTHCARE"
         || value == "SIEMENS HEALTHINEERS"
         || value.starts_with("SIEMENS MEDICAL ")
-}
-
-fn is_philips_manufacturer(value: &str) -> bool {
-    let value = normalized_family_text(value);
-    value == "PHILIPS"
-        || value.starts_with("PHILIPS MEDICAL ")
-        || value.starts_with("PHILIPS HEALTHCARE ")
-}
-
-fn siemens_release_family_verified(group: &SeriesGroup) -> bool {
-    !group.model_missing
-        && !group.software_versions_missing
-        && !group.models.is_empty()
-        && !group.software_version_values.is_empty()
-        && group.models.iter().all(|value| {
-            matches!(
-                normalized_family_text(value).as_str(),
-                "PRISMA_FIT" | "MAGNETOM PRISMA_FIT"
-            )
-        })
-        && group
-            .software_version_values
-            .iter()
-            .all(|value| normalized_family_text(value) == "SYNGO MR E11")
-}
-
-fn philips_release_family_verified(group: &SeriesGroup) -> bool {
-    !group.model_missing
-        && !group.software_versions_missing
-        && !group.models.is_empty()
-        && !group.software_version_values.is_empty()
-        && group
-            .models
-            .iter()
-            .all(|value| normalized_family_text(value) == "ACHIEVA DSTREAM")
-        && group
-            .software_version_values
-            .iter()
-            .all(|value| philips_511_software_versions(value))
-}
-
-fn philips_511_software_versions(value: &str) -> bool {
-    let versions = value
-        .split('\\')
-        .map(str::trim)
-        .filter(|part| !part.is_empty())
-        .collect::<Vec<_>>();
-    !versions.is_empty()
-        && versions
-            .iter()
-            .all(|part| matches!(*part, "5.1.1" | "5.1.1.0"))
-        && versions.contains(&"5.1.1")
 }
 
 fn normalized_family_text(value: &str) -> String {
@@ -1053,7 +909,22 @@ mod tests {
     }
 
     #[test]
-    fn every_accepted_instance_requires_consistent_in_range_tr_and_te() {
+    fn two_position_short_functional_epi_is_accepted() {
+        let classification = classify_header(&group(DicomHeader {
+            modality: Some("MR".into()),
+            image_type: vec!["ORIGINAL".into(), "PRIMARY".into()],
+            echo_planar_pulse_sequence: Some("YES".into()),
+            repetition_time_ms: Some(1_500.0),
+            echo_time_ms: Some(23.0),
+            number_of_temporal_positions: Some(2),
+            burned_in_annotation: Some("NO".into()),
+            ..Default::default()
+        }));
+        assert_eq!(classification.decision, ClassificationDecision::Accepted);
+    }
+
+    #[test]
+    fn every_accepted_instance_requires_consistent_tr_and_valid_te() {
         let header = DicomHeader {
             modality: Some("MR".into()),
             image_type: vec!["ORIGINAL".into(), "PRIMARY".into(), "BOLD".into()],
@@ -1084,14 +955,14 @@ mod tests {
             "inconsistent_repetition_time"
         );
 
-        let mut inconsistent_te = group(header);
-        inconsistent_te.instances = vec![
+        let mut multi_echo = group(header);
+        multi_echo.instances = vec![
             timing_instance(Some(2_000.0), Some(30.0)),
-            timing_instance(Some(2_000.0), Some(30.01)),
+            timing_instance(Some(2_000.0), Some(12.0)),
         ];
         assert_eq!(
-            classify_header(&inconsistent_te).kind,
-            "inconsistent_echo_time"
+            classify_header(&multi_echo).decision,
+            ClassificationDecision::Accepted
         );
     }
 
@@ -1152,7 +1023,7 @@ mod tests {
     }
 
     #[test]
-    fn unknown_or_missing_scanner_manufacturer_never_passes_the_release_gate() {
+    fn scanner_manufacturer_is_optional_provenance() {
         let header = DicomHeader {
             modality: Some("MR".into()),
             image_type: vec![
@@ -1173,8 +1044,8 @@ mod tests {
         unknown.representative.manufacturer = Some("FIXTURE_VENDOR".into());
         unknown.manufacturers = vec!["FIXTURE_VENDOR".into()];
         assert_eq!(
-            classify_header(&unknown).kind,
-            "unsupported_scanner_manufacturer"
+            classify_header(&unknown).decision,
+            ClassificationDecision::Accepted
         );
 
         let mut missing = group(header);
@@ -1182,17 +1053,18 @@ mod tests {
         missing.manufacturers.clear();
         missing.manufacturer_missing = true;
         assert_eq!(
-            classify_header(&missing).kind,
-            "missing_scanner_manufacturer"
+            classify_header(&missing).decision,
+            ClassificationDecision::Accepted
         );
     }
 
     #[test]
-    fn measured_manufacturer_without_complete_release_identity_is_held() {
+    fn scanner_model_and_software_are_optional_provenance() {
         let header = DicomHeader {
             modality: Some("MR".into()),
             image_type: vec!["ORIGINAL".into(), "PRIMARY".into(), "BOLD".into()],
             scanning_sequence: vec!["EP".into()],
+            repetition_time_ms: Some(800.0),
             number_of_temporal_positions: Some(120),
             burned_in_annotation: Some("NO".into()),
             ..Default::default()
@@ -1201,16 +1073,16 @@ mod tests {
         missing_model.models.clear();
         missing_model.model_missing = true;
         assert_eq!(
-            classify_header(&missing_model).kind,
-            "siemens_classic_unverified_model_or_software"
+            classify_header(&missing_model).decision,
+            ClassificationDecision::Accepted
         );
 
         let mut missing_software = group(header);
         missing_software.software_version_values.clear();
         missing_software.software_versions_missing = true;
         assert_eq!(
-            classify_header(&missing_software).kind,
-            "siemens_classic_unverified_model_or_software"
+            classify_header(&missing_software).decision,
+            ClassificationDecision::Accepted
         );
     }
 

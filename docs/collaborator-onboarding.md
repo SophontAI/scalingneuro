@@ -53,7 +53,7 @@ The source folder is read-only and unchanged. The files uploaded are not the sca
 
 Pixel Data is copied byte-for-byte in its original transfer syntax. Standard scientific metadata required for decoding, geometry, MR timing/acquisition, scanner make/model/software, coils, matrices, and acceleration is retained. See [the exact policy](dicom-deidentification-policy.md).
 
-Structural, diffusion, ASL, field-map, SBRef, localizer, derived, secondary-capture, ambiguous, and privacy-unsafe series stay local. The current measured scanner routes are classic Siemens mosaic from the tested Prisma/E11 family and classic Philips from the tested 5.1.1 family, each under strict metadata predicates. GE classic, all Enhanced MR, extended-offset-table objects, malformed vendor metadata, and unverified export families are held locally rather than uploaded with degraded scientific metadata.
+Structural, diffusion, ASL, field-map, SBRef, localizer, derived, secondary-capture, ambiguous, and privacy-unsafe series stay local. Scanner manufacturer, model, software, and prior fixture status do not determine eligibility. Classic, Enhanced, and Legacy Converted Enhanced functional MR from any vendor use the same standard-DICOM EPI and time-series gates. Unknown or malformed private metadata is removed; a Siemens mosaic is held only if the numeric-only CSA geometry needed to interpret its Pixel Data cannot be rebuilt safely. Conversion compatibility is reported later by the cluster and does not invalidate a durable privacy-cleared source receipt.
 
 ## Interruption and continuation
 

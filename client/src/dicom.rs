@@ -820,6 +820,23 @@ pub fn read_header(path: &Path) -> Result<DicomHeader> {
         integer(&object, Tag(0x0028, 0x0011)),
     );
 
+    let image_type = {
+        let root = multi_string(&object, Tag(0x0008, 0x0008));
+        if root.is_empty() {
+            recursive_multi_string(&object, Tag(0x0008, 0x9007), 0)
+        } else {
+            root
+        }
+    };
+    let repetition_time_ms = float(&object, Tag(0x0018, 0x0080))
+        .or_else(|| recursive_float(&object, Tag(0x0018, 0x0080), 0));
+    let echo_time_ms = float(&object, Tag(0x0018, 0x0081))
+        .or_else(|| recursive_float(&object, Tag(0x0018, 0x9082), 0));
+    let temporal_positions = recursive_integers(&object, Tag(0x0020, 0x9128), 0);
+    let derived_temporal_positions = (temporal_positions.len() >= 2)
+        .then(|| i64::try_from(temporal_positions.len()).ok())
+        .flatten();
+
     Ok(DicomHeader {
         path: path.to_path_buf(),
         patient_id: string(&object, Tag(0x0010, 0x0020)),
@@ -829,7 +846,7 @@ pub fn read_header(path: &Path) -> Result<DicomHeader> {
         sop_class_uid: string(&object, Tag(0x0008, 0x0016)),
         sop_instance_uid: string(&object, Tag(0x0008, 0x0018)),
         modality: string(&object, Tag(0x0008, 0x0060)),
-        image_type: multi_string(&object, Tag(0x0008, 0x0008)),
+        image_type,
         manufacturer: string(&object, Tag(0x0008, 0x0070)),
         model: string(&object, Tag(0x0008, 0x1090)),
         patient_position: string(&object, Tag(0x0018, 0x5100)),
@@ -841,8 +858,10 @@ pub fn read_header(path: &Path) -> Result<DicomHeader> {
         scanning_sequence: multi_string(&object, Tag(0x0018, 0x0020)),
         sequence_variant: multi_string(&object, Tag(0x0018, 0x0021)),
         scan_options: multi_string(&object, Tag(0x0018, 0x0022)),
-        mr_acquisition_type: string(&object, Tag(0x0018, 0x0023)),
-        echo_planar_pulse_sequence: string(&object, Tag(0x0018, 0x9018)),
+        mr_acquisition_type: string(&object, Tag(0x0018, 0x0023))
+            .or_else(|| recursive_string(&object, Tag(0x0018, 0x0023), 0)),
+        echo_planar_pulse_sequence: string(&object, Tag(0x0018, 0x9018))
+            .or_else(|| recursive_string(&object, Tag(0x0018, 0x9018), 0)),
         trigger_time_ms: float(&object, Tag(0x0018, 0x1060)),
         philips_dynamic_scan_begin_time_seconds: philips_dynamic_scan_begin_time(&object),
         philips_dynamic_timing_tag_present: philips_dynamic_scan_begin_time_tag_present(&object),
@@ -854,11 +873,12 @@ pub fn read_header(path: &Path) -> Result<DicomHeader> {
         acquisition_number: integer(&object, Tag(0x0020, 0x0012)),
         instance_number: integer(&object, Tag(0x0020, 0x0013)),
         echo_number: integer(&object, Tag(0x0018, 0x0086)),
-        repetition_time_ms: float(&object, Tag(0x0018, 0x0080)),
-        echo_time_ms: float(&object, Tag(0x0018, 0x0081)),
+        repetition_time_ms,
+        echo_time_ms,
         inversion_time_ms: float(&object, Tag(0x0018, 0x0082)),
         flip_angle_degrees: float(&object, Tag(0x0018, 0x1314)),
-        number_of_temporal_positions: integer(&object, Tag(0x0020, 0x0105)),
+        number_of_temporal_positions: integer(&object, Tag(0x0020, 0x0105))
+            .or(derived_temporal_positions),
         temporal_position_identifier: integer(&object, Tag(0x0020, 0x0100)),
         number_of_frames: integer(&object, Tag(0x0028, 0x0008)),
         images_in_acquisition: integer(&object, Tag(0x0020, 0x1002)),
@@ -1276,6 +1296,112 @@ fn float(object: &DefaultDicomObject, tag: Tag) -> Option<f64> {
         .to_float64()
         .ok()
         .filter(|v| v.is_finite())
+}
+
+fn recursive_string(
+    object: &dicom_object::InMemDicomObject,
+    tag: Tag,
+    depth: usize,
+) -> Option<String> {
+    if depth > 32 {
+        return None;
+    }
+    if let Ok(element) = object.element(tag) {
+        if let Ok(value) = element.to_str() {
+            let value = value.trim_matches([' ', '\0']).to_owned();
+            if !value.is_empty() {
+                return Some(value);
+            }
+        }
+    }
+    object.iter().find_map(|element| {
+        element.value().items().and_then(|items| {
+            items
+                .iter()
+                .find_map(|item| recursive_string(item, tag, depth + 1))
+        })
+    })
+}
+
+fn recursive_multi_string(
+    object: &dicom_object::InMemDicomObject,
+    tag: Tag,
+    depth: usize,
+) -> Vec<String> {
+    if depth > 32 {
+        return Vec::new();
+    }
+    if let Ok(element) = object.element(tag) {
+        if let Ok(values) = element.to_multi_str() {
+            let values = values
+                .iter()
+                .map(|value| value.trim_matches([' ', '\0']).to_owned())
+                .filter(|value| !value.is_empty())
+                .collect::<Vec<_>>();
+            if !values.is_empty() {
+                return values;
+            }
+        }
+    }
+    object
+        .iter()
+        .filter_map(|element| element.value().items())
+        .flat_map(|items| items.iter())
+        .find_map(|item| {
+            let values = recursive_multi_string(item, tag, depth + 1);
+            (!values.is_empty()).then_some(values)
+        })
+        .unwrap_or_default()
+}
+
+fn recursive_float(object: &dicom_object::InMemDicomObject, tag: Tag, depth: usize) -> Option<f64> {
+    if depth > 32 {
+        return None;
+    }
+    if let Ok(element) = object.element(tag) {
+        if let Ok(value) = element.to_float64() {
+            if value.is_finite() {
+                return Some(value);
+            }
+        }
+    }
+    object.iter().find_map(|element| {
+        element.value().items().and_then(|items| {
+            items
+                .iter()
+                .find_map(|item| recursive_float(item, tag, depth + 1))
+        })
+    })
+}
+
+fn recursive_integers(object: &dicom_object::InMemDicomObject, tag: Tag, depth: usize) -> Vec<i64> {
+    if depth > 32 {
+        return Vec::new();
+    }
+    let mut output = Vec::new();
+    if let Ok(element) = object.element(tag) {
+        if let Ok(value) = element.to_int::<i64>() {
+            output.push(value);
+        } else if let Ok(values) = element.to_multi_str() {
+            for value in values.iter().filter_map(|value| value.trim().parse().ok()) {
+                if !output.contains(&value) {
+                    output.push(value);
+                }
+            }
+        }
+    }
+    for element in object.iter() {
+        if let Some(items) = element.value().items() {
+            for item in items {
+                for value in recursive_integers(item, tag, depth + 1) {
+                    if !output.contains(&value) {
+                        output.push(value);
+                    }
+                }
+            }
+        }
+    }
+    output
 }
 
 fn multi_int(object: &DefaultDicomObject, tag: Tag) -> Vec<i64> {

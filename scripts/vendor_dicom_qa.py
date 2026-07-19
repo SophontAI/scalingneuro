@@ -1030,6 +1030,32 @@ def run_positive_fixture(
     }
 
 
+def run_intake_fixture(
+    name: str,
+    fixture: Path,
+    count: int,
+    client: Path,
+    repo_root: Path,
+    work: Path,
+) -> dict[str, Any]:
+    state = work / f"state-{name}"
+    report = run_client(client, fixture, state)
+    archive = accepted_archive(report, state, count)
+    _, processor = validate_processor_boundary(
+        repo_root,
+        archive,
+        report["bundles"][0],
+        count,
+        work / f"processor-archive-{name}",
+    )
+    return {
+        "archive_sha256": sha256_file(archive),
+        "archive_bytes": archive.stat().st_size,
+        "processor_boundary": processor,
+        "conversion_certified": False,
+    }
+
+
 def self_test() -> None:
     with tempfile.TemporaryDirectory(prefix="scaling-neuro-vendor-qa-unit-") as value:
         root = Path(value)
@@ -1095,24 +1121,18 @@ def execute(args: argparse.Namespace, work: Path) -> dict[str, Any]:
         "philips", philips, 90, client, dcm2niix, args.repo_root, work
     )
 
-    print("\nValidating GE classic hold", flush=True)
-    ge_report = run_client(client, sources["ge"], work / "state-ge")
-    assert_hold(
-        ge_report,
-        reason="ge_classic_requires_verified_private_metadata_reconstruction",
-        dicom_count=150,
+    print("\nValidating GE classic vendor-neutral intake", flush=True)
+    ge_result = run_intake_fixture(
+        "ge", sources["ge"], 150, client, args.repo_root, work
     )
 
-    print("\nValidating Enhanced MR hold", flush=True)
-    enhanced_folder = work / "enhanced-negative"
+    print("\nValidating Enhanced MR vendor-neutral intake", flush=True)
+    enhanced_folder = work / "enhanced-intake"
     enhanced_folder.mkdir()
     enhanced_source = sources["enhanced"]
     shutil.copyfile(enhanced_source, enhanced_folder / enhanced_source.name)
-    enhanced_report = run_client(client, enhanced_folder, work / "state-enhanced")
-    assert_hold(
-        enhanced_report,
-        reason="enhanced_mr_pending_verified_metadata_contract",
-        dicom_count=1,
+    enhanced_result = run_intake_fixture(
+        "enhanced", enhanced_folder, 1, client, args.repo_root, work
     )
 
     return {
@@ -1139,9 +1159,9 @@ def execute(args: argparse.Namespace, work: Path) -> dict[str, Any]:
             "siemens": siemens_result,
             "philips": philips_result,
         },
-        "negative": {
-            "ge": "ge_classic_requires_verified_private_metadata_reconstruction",
-            "enhanced": "enhanced_mr_pending_verified_metadata_contract",
+        "intake": {
+            "ge": ge_result,
+            "enhanced": enhanced_result,
         },
     }
 
