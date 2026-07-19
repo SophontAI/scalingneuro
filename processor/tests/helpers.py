@@ -17,6 +17,10 @@ SUBJECT_ID = "c" * 24
 SESSION_ID = "d" * 24
 PROTOCOL_ID = "e" * 24
 SOP_UID = "2.25.123456789012345678901234567890123456"
+# Keep functional fixtures independent of hosted-runner disk size. Production
+# retains the 20 GiB default; exact capacity boundaries are exercised with
+# mocked filesystem values in test_hardening_contract.py.
+TEST_DISK_RESERVE_BYTES = 1024**3
 
 
 def siemens_csa_fixture() -> bytes:

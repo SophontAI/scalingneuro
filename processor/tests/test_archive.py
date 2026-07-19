@@ -22,7 +22,13 @@ from scaling_neuro_processor.errors import ConverterFailure, InvalidArchive
 from scaling_neuro_processor.sandbox import NATIVE_ZSTD
 from scaling_neuro_processor.dicom_privacy import CANONICAL_MODELS
 
-from tests.helpers import ARCHIVE_ID, archive_manifest, make_archive, make_dicom
+from tests.helpers import (
+    ARCHIVE_ID,
+    TEST_DISK_RESERVE_BYTES,
+    archive_manifest,
+    make_archive,
+    make_dicom,
+)
 
 
 class ArchiveTests(unittest.TestCase):
@@ -34,6 +40,7 @@ class ArchiveTests(unittest.TestCase):
             token="test",
             work_root=self.root / "work",
             processor_id="test",
+            disk_reserve_bytes=TEST_DISK_RESERVE_BYTES,
             allow_insecure_http=True,
             allowed_object_hosts=("127.0.0.1",),
         )
@@ -370,6 +377,7 @@ class ArchiveTests(unittest.TestCase):
             processor_id="zstd-sandbox-test",
             native_tools_slurm_image=Path("/release/native-tools.sqsh"),
             enroot_runtime_root=self.root / "enroot",
+            disk_reserve_bytes=TEST_DISK_RESERVE_BYTES,
         )
         command = zstd_decompression_command(config, archive)
         self.assertEqual(command[0], "/opt/slurm/bin/srun")
@@ -405,6 +413,7 @@ class ArchiveTests(unittest.TestCase):
             processor_id="zstd-sandbox-test",
             native_tools_slurm_image=Path("/release/native-tools.sqsh"),
             enroot_runtime_root=self.root / "enroot",
+            disk_reserve_bytes=TEST_DISK_RESERVE_BYTES,
         )
 
     def sandbox_zstd_failure(self, returncode: int, destination: str) -> None:

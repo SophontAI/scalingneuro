@@ -16,6 +16,7 @@ from scaling_neuro_processor.pipeline import process_job
 
 from tests.helpers import (
     ARCHIVE_ID,
+    TEST_DISK_RESERVE_BYTES,
     archive_manifest,
     canonical_json,
     fake_converter,
@@ -171,6 +172,7 @@ class FakeServerIntegrationTests(unittest.TestCase):
             work_root=root / "work",
             processor_id="integration-test",
             dcm2niix_bin=str(converter),
+            disk_reserve_bytes=TEST_DISK_RESERVE_BYTES,
             allow_insecure_http=True,
             allowed_object_hosts=("127.0.0.1",),
             max_jobs=1,
