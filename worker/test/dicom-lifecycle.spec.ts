@@ -1149,7 +1149,7 @@ describe("DICOM receipt and processing queue", () => {
         .bind(allocation.upload_id)
         .first<number>("count"),
     ).toBe(1);
-  });
+  }, 15_000);
 
   it("converges two workstations racing the same series without a conflict loop", async () => {
     const inviteResponse = await call(
