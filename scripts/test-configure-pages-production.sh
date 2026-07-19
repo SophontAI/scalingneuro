@@ -202,7 +202,7 @@ jq --exit-status \
   $preview.r2_buckets == {ARCHIVE: null}
 ' "$tmp/patch-payload" >/dev/null || fail_test "PATCH payload did not exactly reconcile configuration drift"
 
-if rg --quiet 'ADMIN_SECRET_SENTINEL|PROCESSOR_SECRET_SENTINEL|SITE_SECRET_SENTINEL|R2_SECRET_SENTINEL|PREVIEW_VALUE_SENTINEL|PREVIEW_SECRET_SENTINEL' "$tmp/patch-payload"; then
+if grep -Eq 'ADMIN_SECRET_SENTINEL|PROCESSOR_SECRET_SENTINEL|SITE_SECRET_SENTINEL|R2_SECRET_SENTINEL|PREVIEW_VALUE_SENTINEL|PREVIEW_SECRET_SENTINEL' "$tmp/patch-payload"; then
   fail_test "PATCH payload leaked a secret or stale preview value"
 fi
 
@@ -223,7 +223,7 @@ printf '{"success":false,"errors":[{"message":"GET_API_VALUE_SENTINEL"}]}\n' \
 invoke_gate "$tmp/get-api-failure.json" "$tmp/valid.json" "$tmp/patch-success.json"
 [[ $gate_status -ne 0 ]] || fail_test "unsuccessful initial API response was accepted"
 [[ $(cat "$tmp/patch-count") == 0 ]] || fail_test "gate PATCHed after unsuccessful initial API response"
-if rg --quiet 'GET_API_VALUE_SENTINEL' "$tmp/stdout" "$tmp/stderr"; then
+if grep -Eq 'GET_API_VALUE_SENTINEL' "$tmp/stdout" "$tmp/stderr"; then
   fail_test "initial API failure leaked a response value"
 fi
 
@@ -233,7 +233,7 @@ invoke_gate "$tmp/drift.json" "$tmp/valid.json" "$tmp/patch-api-failure.json"
 [[ $gate_status -ne 0 ]] || fail_test "unsuccessful PATCH API response was accepted"
 [[ $(cat "$tmp/patch-count") == 1 ]] || fail_test "PATCH API failure test did not issue one PATCH"
 [[ $(cat "$tmp/get-count") == 1 ]] || fail_test "gate re-read configuration after unsuccessful PATCH"
-if rg --quiet 'PATCH_API_VALUE_SENTINEL' "$tmp/stdout" "$tmp/stderr"; then
+if grep -Eq 'PATCH_API_VALUE_SENTINEL' "$tmp/stdout" "$tmp/stderr"; then
   fail_test "PATCH API failure leaked a response value"
 fi
 
@@ -244,10 +244,10 @@ jq '
 invoke_gate "$tmp/drift.json" "$tmp/post-mismatch.json" "$tmp/patch-success.json"
 [[ $gate_status -ne 0 ]] || fail_test "post-reconciliation mismatch was accepted"
 [[ $(cat "$tmp/patch-count") == 1 ]] || fail_test "post-reconciliation mismatch did not follow PATCH"
-if rg --quiet 'POST_VALUE_SENTINEL|POST_SECRET_SENTINEL' "$tmp/stdout" "$tmp/stderr"; then
+if grep -Eq 'POST_VALUE_SENTINEL|POST_SECRET_SENTINEL' "$tmp/stdout" "$tmp/stderr"; then
   fail_test "post-reconciliation mismatch leaked a variable value"
 fi
-rg --quiet '"name":"PROCESSOR_API_TOKEN","type":"secret_text"' "$tmp/stderr" || \
+grep -Eq '"name":"PROCESSOR_API_TOKEN","type":"secret_text"' "$tmp/stderr" || \
   fail_test "sanitized report omitted safe variable name/type evidence"
 
 echo "production Pages configuration reconciliation tests passed"
