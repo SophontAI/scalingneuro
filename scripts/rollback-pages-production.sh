@@ -16,7 +16,8 @@ POLL_INTERVAL_SECONDS=${PAGES_ROLLBACK_INTERVAL_SECONDS:-5}
 
 : "${CLOUDFLARE_API_TOKEN:?CLOUDFLARE_API_TOKEN is required}"
 : "${CLOUDFLARE_ACCOUNT_ID:?CLOUDFLARE_ACCOUNT_ID is required}"
-[[ "$DEPLOYMENT_ID" =~ ^[0-9a-f]{32}$ ]] || {
+[[ "$DEPLOYMENT_ID" =~ ^[0-9a-f]{32}$ ||
+   "$DEPLOYMENT_ID" =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$ ]] || {
   echo "Unsafe Cloudflare Pages deployment ID" >&2
   exit 2
 }

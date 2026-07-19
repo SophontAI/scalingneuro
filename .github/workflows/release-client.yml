@@ -784,7 +784,10 @@ jobs:
           deployment_id=$(jq -er '
             select(.success == true) |
             .result.canonical_deployment.id |
-            select(type == "string" and test("^[0-9a-f]{32}$"))
+            select(
+              type == "string" and
+              test("^([0-9a-f]{32}|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$")
+            )
           ' <<<"$project")
           commit_hash=$(jq -r '
             .result.canonical_deployment.deployment_trigger.metadata.commit_hash // ""
