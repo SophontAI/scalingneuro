@@ -69,8 +69,21 @@
     "verification": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["verified_series", "total_series"],
+      "required": [
+        "phase",
+        "finalized_series",
+        "verified_series",
+        "total_series"
+      ],
       "properties": {
+        "phase": {
+          "enum": [
+            "finalizing_objects",
+            "validating_scans",
+            "committing_archive"
+          ]
+        },
+        "finalized_series": { "type": "integer", "minimum": 0, "maximum": 32 },
         "verified_series": { "type": "integer", "minimum": 0, "maximum": 32 },
         "total_series": { "type": "integer", "minimum": 1, "maximum": 32 }
       }

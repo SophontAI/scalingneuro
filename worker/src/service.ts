@@ -252,6 +252,24 @@ interface VerifiedObject extends ExpectedObject {
   sidecar?: ValidatedSidecar;
 }
 
+type VerificationPhase =
+  | "finalizing_objects"
+  | "validating_scans"
+  | "committing_archive";
+
+interface VerificationProgress {
+  phase: VerificationPhase;
+  finalized_series: number;
+  verified_series: number;
+  total_series: number;
+}
+
+interface CompletionObjectState {
+  item: ExpectedObject;
+  clientObject: CompleteUploadRequest["objects"][number];
+  row: UploadObjectRow;
+}
+
 class StoredObjectValidationError extends AppError {
   constructor(message: string, details?: Readonly<Record<string, unknown>>) {
     super("OBJECT_MISMATCH", 409, message, details);
@@ -262,7 +280,10 @@ class StoredObjectValidationError extends AppError {
 const BASE_PART_SIZE = 64 * 1024 * 1024;
 const PART_SIZE_GRANULARITY = 1024 * 1024;
 const INITIALIZE_LEASE_SECONDS = 5 * 60;
-const VERIFY_LEASE_SECONDS = 10 * 60;
+// Each completion request performs one bounded, durable step. Match the
+// maximum Pages CPU window so an interrupted step becomes reclaimable without
+// leaving the workstation blocked behind a long orphaned lease.
+const VERIFY_LEASE_SECONDS = 5 * 60;
 
 function nowSeconds(): number {
   return Math.floor(Date.now() / 1000);
@@ -522,7 +543,7 @@ async function getUploadForDevice(
 
 function uploadStatusResponse(
   upload: UploadRow,
-  verifiedSeries?: number,
+  verification?: VerificationProgress,
 ): Record<string, unknown> {
   const response: Record<string, unknown> = {
     upload_id: upload.id,
@@ -544,29 +565,60 @@ function uploadStatusResponse(
       sha256: upload.manifest_sha256,
     };
   }
-  if (upload.status === "uploading" && verifiedSeries !== undefined) {
-    response.verification = {
-      verified_series: verifiedSeries,
-      total_series: upload.series_count,
-    };
+  if (upload.status === "uploading" && verification !== undefined) {
+    response.verification = verification;
   }
   return response;
 }
 
-async function verifiedSeriesCount(env: Env, uploadId: string): Promise<number> {
+async function verificationProgress(
+  env: Env,
+  upload: UploadRow,
+): Promise<VerificationProgress> {
   const result = await env.DB.prepare(
-    `SELECT COUNT(*) AS verified_series
-     FROM upload_bundles b
-     WHERE b.upload_id = ?1
-       AND 2 = (
-         SELECT COUNT(*) FROM upload_objects o
-         WHERE o.upload_id = b.upload_id AND o.bundle_id = b.bundle_id
-           AND o.verified_at IS NOT NULL AND o.etag IS NOT NULL
-       )`,
+    `SELECT
+       (SELECT COUNT(*) FROM upload_bundles b
+        WHERE b.upload_id = ?1
+          AND 2 = (
+            SELECT COUNT(*) FROM upload_objects o
+            WHERE o.upload_id = b.upload_id AND o.bundle_id = b.bundle_id
+              AND o.completed_at IS NOT NULL AND o.etag IS NOT NULL
+          )) AS finalized_series,
+       (SELECT COUNT(*) FROM upload_bundles b
+        WHERE b.upload_id = ?1
+          AND 2 = (
+            SELECT COUNT(*) FROM upload_objects o
+            WHERE o.upload_id = b.upload_id AND o.bundle_id = b.bundle_id
+              AND o.verified_at IS NOT NULL AND o.etag IS NOT NULL
+          )) AS verified_series`,
   )
-    .bind(uploadId)
-    .first<{ verified_series: number }>();
-  return result?.verified_series ?? 0;
+    .bind(upload.id)
+    .first<{ finalized_series: number; verified_series: number }>();
+  const finalizedSeries = result?.finalized_series ?? 0;
+  const verifiedSeries = result?.verified_series ?? 0;
+  return {
+    phase:
+      finalizedSeries < upload.series_count
+        ? "finalizing_objects"
+        : verifiedSeries < upload.series_count
+          ? "validating_scans"
+          : "committing_archive",
+    finalized_series: finalizedSeries,
+    verified_series: verifiedSeries,
+    total_series: upload.series_count,
+  };
+}
+
+async function uploadStatusWithProgress(
+  env: Env,
+  upload: UploadRow,
+): Promise<Record<string, unknown>> {
+  return uploadStatusResponse(
+    upload,
+    upload.status === "uploading"
+      ? await verificationProgress(env, upload)
+      : undefined,
+  );
 }
 
 async function catalogBundles(
@@ -1800,11 +1852,7 @@ export async function getUploadStatus(
 ): Promise<Record<string, unknown>> {
   const device = await authenticateDevice(request, env);
   const upload = await getUploadForDevice(env, uploadId, device.id);
-  const verified =
-    upload.status === "uploading"
-      ? await verifiedSeriesCount(env, upload.id)
-      : undefined;
-  return uploadStatusResponse(upload, verified);
+  return uploadStatusWithProgress(env, upload);
 }
 
 function expectedObjects(
@@ -1829,13 +1877,12 @@ function expectedObjects(
   ]);
 }
 
-async function verifyObjects(
+async function completionObjectState(
   env: Env,
   upload: UploadRow,
-  bundles: BundleRow[],
   expected: ExpectedObject[],
   input: CompleteUploadRequest,
-): Promise<VerifiedObject[]> {
+): Promise<CompletionObjectState[]> {
   if (input.objects.length !== expected.length) {
     throw new AppError(
       "OBJECT_MISMATCH",
@@ -1852,9 +1899,6 @@ async function verifyObjects(
   const rows = new Map(
     objectResult.results.map((object) => [object.object_key, object]),
   );
-  const bundlesById = new Map(
-    bundles.map((bundle) => [bundle.bundle_id, bundle]),
-  );
   if (rows.size !== expected.length) {
     throw new AppError(
       "INTERNAL",
@@ -1863,7 +1907,7 @@ async function verifyObjects(
     );
   }
 
-  const pending = expected.map((item) => {
+  const state = expected.map((item) => {
     const clientObject = declared.get(item.key);
     const row = rows.get(item.key);
     if (!clientObject) {
@@ -1923,206 +1967,363 @@ async function verifyObjects(
     );
   }
 
-  const verified: VerifiedObject[] = [];
+  return state;
+}
+
+function assertStoredObjectIdentity(
+  upload: UploadRow,
+  item: ExpectedObject,
+  object: R2Object,
+): void {
+  const metadataHash = object.customMetadata?.sha256;
+  const metadataUploadId =
+    object.customMetadata?.upload_id ??
+    object.customMetadata?.["upload-id"];
+  if (
+    object.size !== item.size ||
+    metadataHash !== item.sha256 ||
+    metadataUploadId !== upload.id
+  ) {
+    throw new StoredObjectValidationError(
+      "Stored object metadata does not match",
+      { key: item.key },
+    );
+  }
+}
+
+async function persistedObjectHead(
+  env: Env,
+  item: ExpectedObject,
+  failureMessage: string,
+): Promise<R2Object | null> {
+  try {
+    return await env.ARCHIVE.head(item.key);
+  } catch {
+    throw new AppError("STORAGE_UNAVAILABLE", 502, failureMessage);
+  }
+}
+
+async function checkpointFinalizedBundle(
+  env: Env,
+  upload: UploadRow,
+  chunk: CompletionObjectState[],
+  heads: ReadonlyMap<string, R2Object>,
+): Promise<void> {
+  const [first, second] = chunk;
+  if (!first || !second) {
+    throw new AppError("INTERNAL", 500, "Bundle object pair is incomplete");
+  }
+  const checkpointedAt = nowSeconds();
+  // One SQL statement is the atomic pair boundary. CASE preserves each
+  // object's distinct ETag while preventing a half-finalized bundle.
+  const checkpoint = await env.DB.prepare(
+    `UPDATE upload_objects
+     SET completed_at = COALESCE(completed_at, ?1),
+         etag = CASE object_key WHEN ?2 THEN ?3 WHEN ?4 THEN ?5 END
+     WHERE upload_id = ?6 AND object_key IN (?2, ?4)
+       AND EXISTS (
+         SELECT 1 FROM uploads
+         WHERE id = ?6 AND operation_token = ?7
+           AND operation_kind = 'verify'
+       )`,
+  )
+    .bind(
+      checkpointedAt,
+      first.item.key,
+      heads.get(first.item.key)!.etag,
+      second.item.key,
+      heads.get(second.item.key)!.etag,
+      upload.id,
+      upload.operation_token,
+    )
+    .run();
+  if ((checkpoint.meta.changes ?? 0) !== 2) {
+    throw new AppError(
+      "CONFLICT",
+      409,
+      "Upload object-finalization checkpoint lost its lease",
+    );
+  }
+  const released = await env.DB.prepare(
+    `UPDATE uploads
+     SET updated_at = ?1, operation_token = NULL,
+         operation_kind = NULL, operation_expires_at = NULL
+     WHERE id = ?2 AND operation_token = ?3
+       AND operation_kind = 'verify'`,
+  )
+    .bind(checkpointedAt, upload.id, upload.operation_token)
+    .run();
+  if ((released.meta.changes ?? 0) !== 1) {
+    throw new AppError(
+      "CONFLICT",
+      409,
+      "Upload object-finalization checkpoint lost its lease",
+    );
+  }
+}
+
+async function finalizeNextBundle(
+  env: Env,
+  upload: UploadRow,
+  bundles: BundleRow[],
+  state: CompletionObjectState[],
+): Promise<boolean> {
   for (const bundle of bundles) {
-    const chunk = pending.filter(
+    const chunk = state.filter(
       ({ item }) => item.bundle_id === bundle.bundle_id,
     );
     if (chunk.length !== 2) {
       throw new AppError("INTERNAL", 500, "Bundle object pair is incomplete");
     }
-    // verified_at represents an atomic NIfTI/sidecar scientific-validation
-    // checkpoint. A retried request can skip already checked bundles without
-    // rereading multi-gigabyte objects from R2. completed_at remains the
-    // distinct multipart-object durability boundary.
     if (
       chunk.every(
-        ({ row }) => row.verified_at !== null && row.etag !== null,
+        ({ row }) => row.completed_at !== null && row.etag !== null,
       )
     ) {
-      verified.push(
-        ...chunk.map(({ item, row }) => ({
-          ...item,
-          etag: row.etag as string,
-        })),
-      );
       continue;
     }
-    const results = await Promise.all(
-      chunk.map(
-        async ({ item, clientObject, row }): Promise<VerifiedObject> => {
-          let head: R2Object | null;
-          if (row.completed_at === null) {
-            try {
-              const multipart = env.ARCHIVE.resumeMultipartUpload(
-                item.key,
-                row.r2_multipart_id as string,
-              );
-              await multipart.complete(
-                clientObject.parts.map((part) => ({
-                  partNumber: part.part_number,
-                  etag: stripEtag(part.etag),
-                })),
-              );
-            } catch {
-              // An identical retry may arrive after R2 committed the object
-              // but before D1 checkpointing. The authoritative HEAD below
-              // distinguishes that case from a transient completion failure.
-            }
-            // Cloudflare's live multipart complete result does not reliably
-            // populate customMetadata. The persisted object HEAD is the
-            // authoritative verification boundary after both a successful
-            // completion and an idempotent already-completed retry.
-            try {
-              head = await env.ARCHIVE.head(item.key);
-            } catch {
-              throw new AppError(
-                "STORAGE_UNAVAILABLE",
-                502,
-                "Unable to complete multipart objects",
-              );
-            }
-          } else {
-            try {
-              head = await env.ARCHIVE.head(item.key);
-            } catch {
-              throw new AppError(
-                "STORAGE_UNAVAILABLE",
-                502,
-                "Unable to verify archive objects",
-              );
-            }
-          }
-          if (!head) {
-            throw new AppError(
-              "STORAGE_UNAVAILABLE",
-              502,
-              "Persisted archive object is temporarily unavailable",
-            );
-          }
-          const metadataHash = head.customMetadata?.sha256;
-          const metadataUploadId =
-            head.customMetadata?.upload_id ??
-            head.customMetadata?.["upload-id"];
-          if (
-            head.size !== item.size ||
-            metadataHash !== item.sha256 ||
-            metadataUploadId !== upload.id
-          ) {
-            throw new StoredObjectValidationError(
-              "Stored object metadata does not match",
-              {
-                key: item.key,
-              },
-            );
-          }
 
-          // The custom metadata above is server-owned, but it is initialized
-          // from the client's declaration. Read the completed object back and
-          // independently hash its bytes before allowing a catalog commit.
-          // DigestStream performs this incrementally, so large EPI objects are
-          // never buffered in Worker memory.
-          let stored: R2ObjectBody | null;
-          try {
-            stored = await env.ARCHIVE.get(item.key);
-          } catch {
-            throw new AppError(
-              "STORAGE_UNAVAILABLE",
-              502,
-              "Unable to verify archived object bytes",
-            );
-          }
-          if (!stored || stored.size !== item.size) {
-            throw new StoredObjectValidationError(
-              "Stored object size does not match",
-              { key: item.key },
-            );
-          }
-          let storedSha256: string;
-          let metadataBytes: Uint8Array<ArrayBuffer> | undefined;
-          let nifti: NiftiFacts | undefined;
-          if (item.kind === "metadata") {
-            try {
-              metadataBytes = new Uint8Array(await stored.arrayBuffer());
-              storedSha256 = await sha256Hex(metadataBytes);
-            } catch {
-              throw new AppError(
-                "STORAGE_UNAVAILABLE",
-                502,
-                "Unable to verify archived object bytes",
-              );
-            }
-          } else {
-            const bundle = bundlesById.get(item.bundle_id);
-            if (!bundle) {
-              throw new AppError(
-                "INTERNAL",
-                500,
-                "NIfTI bundle index is incomplete",
-              );
-            }
-            const hashed = sha256PassThrough(stored.body);
-            try {
-              nifti = await inspectGzipNifti(
-                hashed.body,
-                bundle.nii_uncompressed_sha256,
-              );
-              storedSha256 = await hashed.sha256;
-            } catch {
-              void hashed.sha256.catch(() => undefined);
-              throw new StoredObjectValidationError(
-                "Stored NIfTI gzip or header is invalid",
-                { key: item.key },
-              );
-            }
-          }
-          if (storedSha256 !== item.sha256) {
-            throw new StoredObjectValidationError(
-              "Stored object checksum does not match",
-              { key: item.key },
-            );
-          }
-          let sidecar: ValidatedSidecar | undefined;
-          if (item.kind === "metadata") {
-            const bundle = bundlesById.get(item.bundle_id);
-            if (!bundle || !metadataBytes) {
-              throw new AppError(
-                "INTERNAL",
-                500,
-                "Metadata bundle index is incomplete",
-              );
-            }
-            try {
-              sidecar = validateSidecarBytes(metadataBytes, {
-                bundle_id: bundle.bundle_id,
-                series_id: bundle.series_id,
-                subject_id: bundle.subject_id,
-                session_id: bundle.session_id,
-                protocol_group_id: bundle.protocol_group_id,
-                client_version: upload.client_version,
-                nii_relative_key: bundle.nii_relative_key,
-                nii_size: bundle.nii_size,
-                nii_sha256: bundle.nii_sha256,
-                nii_uncompressed_sha256: bundle.nii_uncompressed_sha256,
-              });
-            } catch (error) {
-              if (
-                error instanceof AppError &&
-                error.code === "OBJECT_MISMATCH"
-              ) {
-                throw new StoredObjectValidationError(error.message, {
-                  key: item.key,
-                });
-              }
-              throw error;
-            }
-          }
-          const verifiedObject: VerifiedObject = { ...item, etag: head.etag };
-          if (nifti) verifiedObject.nifti = nifti;
-          if (sidecar) verifiedObject.sidecar = sidecar;
-          return verifiedObject;
-        },
-      ),
+    // HEAD first is essential for lost-response recovery. R2 may already have
+    // committed an object even when the preceding Worker invocation ended
+    // before D1 recorded the receipt. Never retry a stale multipart completion
+    // until the authoritative object lookup says it is actually absent.
+    const heads = new Map<string, R2Object>();
+    for (const { item, clientObject, row } of chunk) {
+      let head = await persistedObjectHead(
+        env,
+        item,
+        "Unable to inspect multipart objects",
+      );
+      if (!head) {
+        try {
+          const multipart = env.ARCHIVE.resumeMultipartUpload(
+            item.key,
+            row.r2_multipart_id as string,
+          );
+          await multipart.complete(
+            clientObject.parts.map((part) => ({
+              partNumber: part.part_number,
+              etag: stripEtag(part.etag),
+            })),
+          );
+        } catch {
+          // A successful R2 completion can outlive a lost Worker response.
+          // The second HEAD below distinguishes that case from a real storage
+          // failure without retransmitting any part.
+        }
+        head = await persistedObjectHead(
+          env,
+          item,
+          "Unable to complete multipart objects",
+        );
+      }
+      if (!head) {
+        throw new AppError(
+          "STORAGE_UNAVAILABLE",
+          502,
+          "Persisted archive object is temporarily unavailable",
+        );
+      }
+      assertStoredObjectIdentity(upload, item, head);
+      heads.set(item.key, head);
+    }
+
+    // Object durability is checkpointed before any gzip or scientific
+    // validation work. A terminated validation request can therefore resume
+    // from R2 without touching multipart state.
+    await checkpointFinalizedBundle(env, upload, chunk, heads);
+    return true;
+  }
+  return false;
+}
+
+async function verifyStoredObject(
+  env: Env,
+  upload: UploadRow,
+  bundle: BundleRow,
+  state: CompletionObjectState,
+): Promise<VerifiedObject> {
+  const { item } = state;
+  let stored: R2ObjectBody | null;
+  try {
+    stored = await env.ARCHIVE.get(item.key);
+  } catch {
+    throw new AppError(
+      "STORAGE_UNAVAILABLE",
+      502,
+      "Unable to verify archived object bytes",
+    );
+  }
+  if (!stored) {
+    throw new StoredObjectValidationError("Stored archive object is missing", {
+      key: item.key,
+    });
+  }
+  assertStoredObjectIdentity(upload, item, stored);
+
+  let storedSha256: string;
+  let metadataBytes: Uint8Array<ArrayBuffer> | undefined;
+  let nifti: NiftiFacts | undefined;
+  if (item.kind === "metadata") {
+    try {
+      metadataBytes = new Uint8Array(await stored.arrayBuffer());
+      storedSha256 = await sha256Hex(metadataBytes);
+    } catch {
+      throw new AppError(
+        "STORAGE_UNAVAILABLE",
+        502,
+        "Unable to verify archived object bytes",
+      );
+    }
+  } else {
+    const hashed = sha256PassThrough(stored.body);
+    try {
+      nifti = await inspectGzipNifti(
+        hashed.body,
+        bundle.nii_uncompressed_sha256,
+      );
+      storedSha256 = await hashed.sha256;
+    } catch {
+      void hashed.sha256.catch(() => undefined);
+      throw new StoredObjectValidationError(
+        "Stored NIfTI gzip or header is invalid",
+        { key: item.key },
+      );
+    }
+  }
+  if (storedSha256 !== item.sha256) {
+    throw new StoredObjectValidationError(
+      "Stored object checksum does not match",
+      { key: item.key },
+    );
+  }
+
+  let sidecar: ValidatedSidecar | undefined;
+  if (item.kind === "metadata") {
+    if (!metadataBytes) {
+      throw new AppError("INTERNAL", 500, "Metadata bytes are unavailable");
+    }
+    try {
+      sidecar = validateSidecarBytes(metadataBytes, {
+        bundle_id: bundle.bundle_id,
+        series_id: bundle.series_id,
+        subject_id: bundle.subject_id,
+        session_id: bundle.session_id,
+        protocol_group_id: bundle.protocol_group_id,
+        client_version: upload.client_version,
+        nii_relative_key: bundle.nii_relative_key,
+        nii_size: bundle.nii_size,
+        nii_sha256: bundle.nii_sha256,
+        nii_uncompressed_sha256: bundle.nii_uncompressed_sha256,
+      });
+    } catch (error) {
+      if (error instanceof AppError && error.code === "OBJECT_MISMATCH") {
+        throw new StoredObjectValidationError(error.message, {
+          key: item.key,
+        });
+      }
+      throw error;
+    }
+  }
+
+  const verified: VerifiedObject = { ...item, etag: stored.etag };
+  if (nifti) verified.nifti = nifti;
+  if (sidecar) verified.sidecar = sidecar;
+  return verified;
+}
+
+async function checkpointVerifiedBundle(
+  env: Env,
+  upload: UploadRow,
+  objects: VerifiedObject[],
+): Promise<void> {
+  const [first, second] = objects;
+  if (!first || !second) {
+    throw new AppError("INTERNAL", 500, "Bundle object pair is incomplete");
+  }
+  const checkpointedAt = nowSeconds();
+  const checkpoint = await env.DB.prepare(
+    `UPDATE upload_objects
+     SET verified_at = ?1,
+         etag = CASE object_key WHEN ?2 THEN ?3 WHEN ?4 THEN ?5 END
+     WHERE upload_id = ?6 AND object_key IN (?2, ?4)
+       AND completed_at IS NOT NULL
+       AND EXISTS (
+         SELECT 1 FROM uploads
+         WHERE id = ?6 AND operation_token = ?7
+           AND operation_kind = 'verify'
+       )`,
+  )
+    .bind(
+      checkpointedAt,
+      first.key,
+      first.etag,
+      second.key,
+      second.etag,
+      upload.id,
+      upload.operation_token,
+    )
+    .run();
+  if ((checkpoint.meta.changes ?? 0) !== 2) {
+    throw new AppError(
+      "CONFLICT",
+      409,
+      "Upload verification checkpoint lost its lease",
+    );
+  }
+  const released = await env.DB.prepare(
+    `UPDATE uploads
+     SET updated_at = ?1, operation_token = NULL,
+         operation_kind = NULL, operation_expires_at = NULL
+     WHERE id = ?2 AND operation_token = ?3
+       AND operation_kind = 'verify'`,
+  )
+    .bind(checkpointedAt, upload.id, upload.operation_token)
+    .run();
+  if ((released.meta.changes ?? 0) !== 1) {
+    throw new AppError(
+      "CONFLICT",
+      409,
+      "Upload verification checkpoint lost its lease",
+    );
+  }
+}
+
+async function verifyNextBundle(
+  env: Env,
+  upload: UploadRow,
+  bundles: BundleRow[],
+  state: CompletionObjectState[],
+): Promise<boolean> {
+  for (const bundle of bundles) {
+    const chunk = state.filter(
+      ({ item }) => item.bundle_id === bundle.bundle_id,
+    );
+    if (chunk.length !== 2) {
+      throw new AppError("INTERNAL", 500, "Bundle object pair is incomplete");
+    }
+    if (
+      chunk.every(({ row }) => row.verified_at !== null && row.etag !== null)
+    ) {
+      continue;
+    }
+    if (
+      chunk.some(
+        ({ row }) => row.completed_at === null || row.etag === null,
+      )
+    ) {
+      throw new AppError(
+        "INTERNAL",
+        500,
+        "Scientific validation started before object finalization",
+      );
+    }
+
+    // One series pair is the maximum expensive unit per invocation. The small
+    // sidecar and streaming NIfTI read can run together without buffering the
+    // scan in Worker memory.
+    const results = await Promise.all(
+      chunk.map((object) => verifyStoredObject(env, upload, bundle, object)),
     );
     const nifti = results.find((object) => object.kind === "nii")?.nifti;
     const sidecar = results.find(
@@ -2144,58 +2345,33 @@ async function verifyObjects(
       );
     }
 
-    // Checkpoint the two objects only after their hashes, NIfTI structure,
-    // minimized sidecar, and cross-file geometry all agree. D1 batch is
-    // atomic, so a terminated invocation can never expose a half-verified
-    // bundle to the next retry.
-    const checkpointedAt = nowSeconds();
-    const checkpointResults = await env.DB.batch([
-      ...results.map((object) =>
-        env.DB.prepare(
-          `UPDATE upload_objects
-           SET completed_at = COALESCE(completed_at, ?1),
-               verified_at = ?1, etag = ?2
-           WHERE upload_id = ?3 AND object_key = ?4
-             AND EXISTS (
-               SELECT 1 FROM uploads
-               WHERE id = ?3 AND operation_token = ?5
-                 AND operation_kind = 'verify'
-             )`,
-        ).bind(
-          checkpointedAt,
-          object.etag,
-          upload.id,
-          object.key,
-          upload.operation_token,
-        ),
-      ),
-      env.DB.prepare(
-        `UPDATE uploads
-         SET updated_at = ?1, operation_expires_at = ?2
-         WHERE id = ?3 AND operation_token = ?4
-           AND operation_kind = 'verify'`,
-      ).bind(
-        checkpointedAt,
-        checkpointedAt + VERIFY_LEASE_SECONDS,
-        upload.id,
-        upload.operation_token,
-      ),
-    ]);
-    if (
-      checkpointResults.some((result) => (result.meta.changes ?? 0) !== 1)
-    ) {
-      throw new AppError(
-        "CONFLICT",
-        409,
-        "Upload verification checkpoint lost its lease",
-      );
-    }
-    verified.push(...results);
+    await checkpointVerifiedBundle(env, upload, results);
+    return true;
+  }
+  return false;
+}
+
+function persistedVerifiedObjects(
+  state: CompletionObjectState[],
+): VerifiedObject[] {
+  if (
+    state.some(
+      ({ row }) =>
+        row.completed_at === null || row.verified_at === null || !row.etag,
+    )
+  ) {
+    throw new AppError(
+      "INTERNAL",
+      500,
+      "Verified object index is incomplete",
+    );
   }
 
-  return verified.sort((left, right) =>
-    left.key < right.key ? -1 : left.key > right.key ? 1 : 0,
-  );
+  return state
+    .map(({ item, row }) => ({ ...item, etag: row.etag as string }))
+    .sort((left, right) =>
+      left.key < right.key ? -1 : left.key > right.key ? 1 : 0,
+    );
 }
 
 async function rejectStoredUpload(
@@ -2359,11 +2535,11 @@ export async function completeUpload(
         "Upload is no longer writable",
       );
     }
-    throw new AppError(
-      "CONFLICT",
-      409,
-      "Upload verification is already in progress",
-    );
+    // Completion is a client-driven state machine. A concurrent or
+    // disconnected invocation is an ordinary in-progress state, not a failed
+    // upload; expose its durable counters so the caller can poll once and
+    // continue without issuing hidden conflict retries.
+    return uploadStatusWithProgress(env, current);
   }
   const upload = operation.upload;
 
@@ -2378,13 +2554,21 @@ export async function completeUpload(
       throw new AppError("INTERNAL", 500, "Upload catalog is incomplete");
     }
 
-    const verified = await verifyObjects(
+    const state = await completionObjectState(
       env,
       upload,
-      bundles,
       expectedObjects(upload, bundles),
       input,
     );
+    if (await finalizeNextBundle(env, upload, bundles, state)) {
+      const current = await getUploadForDevice(env, upload.id, device.id);
+      return uploadStatusWithProgress(env, current);
+    }
+    if (await verifyNextBundle(env, upload, bundles, state)) {
+      const current = await getUploadForDevice(env, upload.id, device.id);
+      return uploadStatusWithProgress(env, current);
+    }
+    const verified = persistedVerifiedObjects(state);
     let committedAt = nowSeconds();
     const manifestKey = archiveManifestKey(upload);
     const manifest = {

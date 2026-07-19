@@ -72,7 +72,7 @@ neuro-sync upload /path/to/dicom-export --confirm-authorized
 
 Running `neuro-sync` with no arguments starts the complete guided fallback in the current terminal and prompts for the folder. It does not start a local web server or require a graphical session.
 
-During a large or network-mounted export, the client prints live file, DICOM, series, conversion, multipart-transfer, and server archive-verification progress. Final verification is checkpointed per NIfTI/sidecar pair; an interruption continues from the last verified pair without retransmitting completed files. `Ctrl+C` is safe during local validation: no data reaches R2 until a privacy-checked bundle has been prepared, and interrupted work is continued by rerunning `neuro-sync /the/same/folder`.
+During a large or network-mounted export, the client prints live file, DICOM, series, conversion, multipart-transfer, server-finalization, and scientific-verification progress. Each NIfTI/sidecar pair is first checkpointed as durably stored and then checkpointed again after byte, gzip, NIfTI-header, and sidecar validation. An interruption continues from the last durable boundary without retransmitting completed files or rereading verified scans. `Ctrl+C` is safe during local validation: no data reaches R2 until a privacy-checked bundle has been prepared, and interrupted work is continued by rerunning `neuro-sync /the/same/folder`.
 
 ## What success looks like
 

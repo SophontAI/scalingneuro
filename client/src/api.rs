@@ -48,6 +48,15 @@ pub fn has_error_code(error: &anyhow::Error, expected: &str) -> bool {
         .is_some_and(|failure| failure.code == expected)
 }
 
+pub fn is_transient_api_error(error: &anyhow::Error) -> bool {
+    error
+        .downcast_ref::<ApiFailure>()
+        .is_some_and(ApiFailure::is_retryable)
+        || error.downcast_ref::<reqwest::Error>().is_some_and(|error| {
+            error.is_timeout() || error.is_connect() || error.is_request() || error.is_body()
+        })
+}
+
 #[derive(Clone)]
 pub struct IngestApi {
     client: Client,
@@ -235,10 +244,14 @@ pub struct UploadStatus {
     pub verification: Option<VerificationProgress>,
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize, Eq, PartialEq, Serialize)]
 pub struct VerificationProgress {
     pub verified_series: u32,
     pub total_series: u32,
+    #[serde(default)]
+    pub phase: Option<String>,
+    #[serde(default)]
+    pub finalized_series: Option<u32>,
 }
 
 impl IngestApi {
@@ -364,16 +377,19 @@ impl IngestApi {
         objects: Vec<CompletedObject>,
     ) -> Result<UploadStatus> {
         let request = CompleteUploadRequest { objects };
-        self.send_idempotent(|| {
-            Ok(self
-                .authorized(
-                    self.client
-                        .post(self.url(&format!("/v1/uploads/{upload_id}/complete"))),
-                )?
-                .timeout(std::time::Duration::from_secs(30 * 60))
-                .json(&request))
-        })
-        .await
+        let response = self
+            .authorized(
+                self.client
+                    .post(self.url(&format!("/v1/uploads/{upload_id}/complete"))),
+            )?
+            // A single bounded Worker step may stream and decompress a large
+            // NIfTI. Keep the connection alive beyond the server's five-minute
+            // CPU window; the outer state machine handles any real timeout.
+            .timeout(Duration::from_secs(10 * 60))
+            .json(&request)
+            .send()
+            .await?;
+        decode(response).await
     }
 
     pub async fn status(&self, upload_id: &str) -> Result<UploadStatus> {
@@ -635,6 +651,34 @@ mod tests {
             existing_bundles: Vec::new(),
         };
         assert!(busy.is_retryable());
+    }
+
+    #[test]
+    fn verification_progress_accepts_old_and_phase_aware_worker_responses() {
+        let legacy: UploadStatus = serde_json::from_value(serde_json::json!({
+            "upload_id": "11111111-1111-4111-8111-111111111111",
+            "status": "uploading",
+            "verification": {"verified_series": 0, "total_series": 15}
+        }))
+        .unwrap();
+        let legacy = legacy.verification.unwrap();
+        assert_eq!(legacy.phase, None);
+        assert_eq!(legacy.finalized_series, None);
+
+        let current: UploadStatus = serde_json::from_value(serde_json::json!({
+            "upload_id": "11111111-1111-4111-8111-111111111111",
+            "status": "uploading",
+            "verification": {
+                "phase": "validating_scans",
+                "finalized_series": 8,
+                "verified_series": 4,
+                "total_series": 15
+            }
+        }))
+        .unwrap();
+        let current = current.verification.unwrap();
+        assert_eq!(current.phase.as_deref(), Some("validating_scans"));
+        assert_eq!(current.finalized_series, Some(8));
     }
 
     #[test]

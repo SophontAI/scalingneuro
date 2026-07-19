@@ -20,7 +20,8 @@ use crate::{
     MANIFEST_SCHEMA_VERSION, PINNED_DCM2NIIX_VERSION,
     api::{
         CompleteUploadRequest, CompletedObject, ContributionInfo, CreateUploadResponse, IngestApi,
-        MultipartObject, RegisterRequest, UploadStatus, has_error_code, normalize_base_url,
+        MultipartObject, RegisterRequest, UploadStatus, VerificationProgress, has_error_code,
+        is_transient_api_error, normalize_base_url,
     },
     bundle::{
         BundleRequest, METADATA_POLICY_ID, METADATA_POLICY_VERSION, analyze_converted,
@@ -44,7 +45,8 @@ const MAX_BUNDLES_PER_UPLOAD: usize = 32;
 const MAX_BYTES_PER_UPLOAD: u64 = 32 * 1024 * 1024 * 1024;
 const MAX_NIFTI_BYTES_PER_BUNDLE: u64 = 5 * 1024 * 1024 * 1024;
 const SOURCE_QUIET_INTERVAL: Duration = Duration::from_secs(2);
-const ARCHIVE_VERIFICATION_WAIT: Duration = Duration::from_secs(30 * 60);
+const ARCHIVE_VERIFICATION_POLL_INTERVAL: Duration = Duration::from_secs(5);
+const ARCHIVE_VERIFICATION_NOTICE_INTERVAL: Duration = Duration::from_secs(2 * 60);
 
 struct LocalValidationProgress<'a> {
     state: &'a StateStore,
@@ -557,6 +559,64 @@ impl Runtime {
         if bundles.iter().any(|bundle| bundle.subject_id != subject_id) {
             bail!("local upload chunk must contain exactly one pseudonymous subject");
         }
+        let completion_path = self.paths.reports.join(format!(
+            "{run_id}.chunk-{}.complete-request.json",
+            chunk.chunk_index
+        ));
+        if completion_path.is_file() {
+            if let Some(upload_id) = chunk.worker_upload_id.as_deref() {
+                let recover_saved_completion = match api.status(upload_id).await {
+                    Ok(status) if matches!(status.status.as_str(), "committed" | "complete") => {
+                        self.state
+                            .set_chunk_status(run_id, chunk.chunk_index, "committed")?;
+                        return Ok(());
+                    }
+                    Ok(status) if matches!(status.status.as_str(), "created" | "uploading") => true,
+                    Ok(status) if status.status == "expired" => false,
+                    Ok(status) if status.status == "withdrawn" => {
+                        bail!("archive upload was withdrawn and cannot be continued");
+                    }
+                    Ok(status) => bail!(
+                        "archive upload entered an unsupported server state: {}",
+                        status.status
+                    ),
+                    Err(error) if has_error_code(&error, "UPLOAD_NOT_WRITABLE") => false,
+                    Err(error) if is_transient_api_error(&error) => true,
+                    Err(error) => return Err(error),
+                };
+                if recover_saved_completion {
+                    let saved: CompleteUploadRequest =
+                        serde_json::from_slice(&fs::read(&completion_path)?)?;
+                    tracing::info!(
+                        "Found the completed transfer checkpoint; continuing server verification"
+                    );
+                    let status = match complete_with_recovery(api, upload_id, &saved.objects).await
+                    {
+                        Ok(status) => status,
+                        Err(error)
+                            if reconcile_completion_duplicate(
+                                &self.state,
+                                run_id,
+                                bundles,
+                                &error,
+                            )? =>
+                        {
+                            self.state
+                                .set_chunk_status(run_id, chunk.chunk_index, "reconciled")?;
+                            return Ok(());
+                        }
+                        Err(error) => return Err(error),
+                    };
+                    if matches!(status.status.as_str(), "committed" | "complete") {
+                        self.state
+                            .set_chunk_status(run_id, chunk.chunk_index, "committed")?;
+                        tracing::info!("Archive verification and commit complete");
+                        return Ok(());
+                    }
+                    bail!("ingest API did not commit the saved completion request");
+                }
+            }
+        }
         let plan: Option<UploadSessionPlan> = if let Some(upload_id) =
             chunk.worker_upload_id.as_deref()
         {
@@ -645,10 +705,6 @@ impl Runtime {
                 .set_chunk_status(run_id, chunk.chunk_index, "committed")?;
             return Ok(());
         }
-        let completion_path = self.paths.reports.join(format!(
-            "{run_id}.chunk-{}.complete-request.json",
-            chunk.chunk_index
-        ));
         if revived && completion_path.is_file() {
             fs::remove_file(&completion_path)?;
         }
@@ -1200,61 +1256,98 @@ async fn complete_with_recovery(
     upload_id: &str,
     objects: &[CompletedObject],
 ) -> Result<UploadStatus> {
-    let started = Instant::now();
-    let mut last_progress: Option<(u32, u32)> = None;
-    let mut last_notice = Instant::now() - Duration::from_secs(60);
+    complete_with_recovery_polling(api, upload_id, objects, ARCHIVE_VERIFICATION_POLL_INTERVAL)
+        .await
+}
+
+async fn complete_with_recovery_polling(
+    api: &IngestApi,
+    upload_id: &str,
+    objects: &[CompletedObject],
+    poll_interval: Duration,
+) -> Result<UploadStatus> {
+    let mut last_progress: Option<VerificationProgress> = None;
+    let mut last_notice = Instant::now() - ARCHIVE_VERIFICATION_NOTICE_INTERVAL;
     loop {
-        match api.complete_upload(upload_id, objects.to_vec()).await {
+        let should_backoff = match api.complete_upload(upload_id, objects.to_vec()).await {
             Ok(status) if matches!(status.status.as_str(), "committed" | "complete") => {
                 return Ok(status);
             }
             Ok(status) if matches!(status.status.as_str(), "created" | "uploading") => {
-                log_archive_verification_progress(&status, &mut last_progress, &mut last_notice);
+                !log_archive_verification_progress(&status, &mut last_progress, &mut last_notice)
             }
             Ok(status) => return Ok(status),
-            Err(error) if has_error_code(&error, "CONFLICT") => {
-                let status = api.status(upload_id).await?;
-                if matches!(status.status.as_str(), "committed" | "complete") {
+            Err(error) if is_transient_api_error(&error) => match api.status(upload_id).await {
+                Ok(status) if matches!(status.status.as_str(), "committed" | "complete") => {
                     return Ok(status);
                 }
-                if !matches!(status.status.as_str(), "created" | "uploading") {
-                    return Err(error);
+                Ok(status) if matches!(status.status.as_str(), "created" | "uploading") => {
+                    !log_archive_verification_progress(
+                        &status,
+                        &mut last_progress,
+                        &mut last_notice,
+                    )
                 }
-                log_archive_verification_progress(&status, &mut last_progress, &mut last_notice);
-            }
+                Ok(status) => return Ok(status),
+                Err(status_error) if is_transient_api_error(&status_error) => {
+                    log_archive_verification_status_retry(&mut last_notice);
+                    true
+                }
+                Err(status_error) => return Err(status_error),
+            },
             Err(error) => return Err(error),
+        };
+        // A successful state transition releases its Worker lease, so drive
+        // the next durable step immediately. Back off only when another
+        // request is active or the control plane is temporarily unavailable.
+        if should_backoff {
+            tokio::time::sleep(poll_interval).await;
         }
-        if started.elapsed() >= ARCHIVE_VERIFICATION_WAIT {
-            bail!(
-                "archive verification is still pending after 30 minutes; rerun the same `neuro-sync <folder>` command to continue without reconversion or reuploading completed files"
-            );
-        }
-        tokio::time::sleep(Duration::from_secs(5)).await;
     }
 }
 
 fn log_archive_verification_progress(
     status: &UploadStatus,
-    last_progress: &mut Option<(u32, u32)>,
+    last_progress: &mut Option<VerificationProgress>,
     last_notice: &mut Instant,
-) {
-    let progress = status
-        .verification
-        .as_ref()
-        .map(|value| (value.verified_series, value.total_series));
-    if progress != *last_progress || last_notice.elapsed() >= Duration::from_secs(30) {
-        if let Some((verified_series, total_series)) = progress {
-            tracing::info!(
-                verified_series,
-                total_series,
-                "Server archive verification progress; transferred files remain checkpointed"
-            );
+) -> bool {
+    let progress = status.verification.clone();
+    let changed = progress != *last_progress;
+    if changed || last_notice.elapsed() >= ARCHIVE_VERIFICATION_NOTICE_INTERVAL {
+        if let Some(progress) = progress.as_ref() {
+            if let (Some(phase), Some(finalized_series)) =
+                (progress.phase.as_deref(), progress.finalized_series)
+            {
+                tracing::info!(
+                    phase,
+                    finalized_series,
+                    verified_series = progress.verified_series,
+                    total_series = progress.total_series,
+                    "Server archive verification progress; transferred files remain checkpointed"
+                );
+            } else {
+                tracing::info!(
+                    verified_series = progress.verified_series,
+                    total_series = progress.total_series,
+                    "Server archive verification progress; transferred files remain checkpointed"
+                );
+            }
         } else {
             tracing::info!(
                 "Server archive verification is still running; transferred files remain checkpointed"
             );
         }
         *last_progress = progress;
+        *last_notice = Instant::now();
+    }
+    changed
+}
+
+fn log_archive_verification_status_retry(last_notice: &mut Instant) {
+    if last_notice.elapsed() >= ARCHIVE_VERIFICATION_NOTICE_INTERVAL {
+        tracing::info!(
+            "Reconnecting to server archive verification; transferred files remain checkpointed"
+        );
         *last_notice = Instant::now();
     }
 }
@@ -1965,6 +2058,45 @@ mod tests {
             .unwrap();
     }
 
+    fn write_saved_completion_checkpoint(
+        runtime: &Runtime,
+        run_id: &str,
+        upload_id: &str,
+    ) -> (ManifestBundle, crate::state::RunUploadRecord) {
+        runtime
+            .state
+            .create_run(run_id, Path::new("/private/source"), false)
+            .unwrap();
+        let bundle = upload_test_bundle('1', '2');
+        runtime
+            .state
+            .ensure_run_uploads(
+                run_id,
+                std::slice::from_ref(&bundle.subject_id),
+                &[bundle.nifti.size + bundle.metadata.size],
+                32,
+                32 * 1024 * 1024 * 1024,
+            )
+            .unwrap();
+        runtime
+            .state
+            .set_chunk_worker(run_id, 0, upload_id)
+            .unwrap();
+        let completion_path = runtime
+            .paths
+            .reports
+            .join(format!("{run_id}.chunk-0.complete-request.json"));
+        write_json(
+            &completion_path,
+            &CompleteUploadRequest {
+                objects: Vec::new(),
+            },
+        )
+        .unwrap();
+        let chunk = runtime.state.run_uploads(run_id).unwrap().remove(0);
+        (bundle, chunk)
+    }
+
     #[test]
     fn multi_echo_labels_prefer_unique_explicit_echo_numbers() {
         let images = [
@@ -2187,7 +2319,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn completion_waits_through_a_busy_verifier_without_reuploading() {
+    async fn completion_recovery_owns_each_busy_verifier_retry() {
         use axum::{
             Json, Router,
             http::StatusCode,
@@ -2195,15 +2327,17 @@ mod tests {
         };
         use std::sync::atomic::{AtomicUsize, Ordering};
 
-        let attempts = Arc::new(AtomicUsize::new(0));
-        let post_attempts = attempts.clone();
+        let post_attempts = Arc::new(AtomicUsize::new(0));
+        let post_attempts_for_handler = post_attempts.clone();
+        let status_attempts = Arc::new(AtomicUsize::new(0));
+        let status_attempts_for_handler = status_attempts.clone();
         let app = Router::new()
             .route(
                 "/v1/uploads/{upload_id}/complete",
                 post(move || {
-                    let attempt = post_attempts.fetch_add(1, Ordering::SeqCst);
+                    let attempt = post_attempts_for_handler.fetch_add(1, Ordering::SeqCst);
                     async move {
-                        if attempt < 5 {
+                        if attempt < 20 {
                             (
                                 StatusCode::CONFLICT,
                                 Json(serde_json::json!({
@@ -2228,12 +2362,20 @@ mod tests {
             )
             .route(
                 "/v1/uploads/{upload_id}",
-                get(|| async {
-                    Json(serde_json::json!({
-                        "upload_id": "22222222-2222-4222-8222-222222222222",
-                        "status": "uploading",
-                        "verification": {"verified_series": 4, "total_series": 15}
-                    }))
+                get(move || {
+                    status_attempts_for_handler.fetch_add(1, Ordering::SeqCst);
+                    async {
+                        Json(serde_json::json!({
+                            "upload_id": "22222222-2222-4222-8222-222222222222",
+                            "status": "uploading",
+                            "verification": {
+                                "phase": "validating_scans",
+                                "finalized_series": 8,
+                                "verified_series": 4,
+                                "total_series": 15
+                            }
+                        }))
+                    }
                 }),
             );
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -2249,11 +2391,271 @@ mod tests {
             pseudonym_key_b64: "fixture".into(),
         };
         let api = IngestApi::from_config(&config).unwrap();
-        let status = complete_with_recovery(&api, "22222222-2222-4222-8222-222222222222", &[])
+        let status = complete_with_recovery_polling(
+            &api,
+            "22222222-2222-4222-8222-222222222222",
+            &[],
+            Duration::ZERO,
+        )
+        .await
+        .unwrap();
+        assert_eq!(status.status, "committed");
+        assert_eq!(post_attempts.load(Ordering::SeqCst), 21);
+        assert_eq!(status_attempts.load(Ordering::SeqCst), 20);
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn successful_verification_phases_are_driven_without_poll_delay() {
+        use axum::{Json, Router, routing::post};
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let post_attempts = Arc::new(AtomicUsize::new(0));
+        let post_attempts_for_handler = post_attempts.clone();
+        let app = Router::new().route(
+            "/v1/uploads/{upload_id}/complete",
+            post(move || {
+                let attempt = post_attempts_for_handler.fetch_add(1, Ordering::SeqCst);
+                async move {
+                    Json(match attempt {
+                        0 => serde_json::json!({
+                            "upload_id": "22222222-2222-4222-8222-222222222222",
+                            "status": "uploading",
+                            "verification": {
+                                "phase": "finalizing_objects",
+                                "finalized_series": 1,
+                                "verified_series": 0,
+                                "total_series": 2
+                            }
+                        }),
+                        1 => serde_json::json!({
+                            "upload_id": "22222222-2222-4222-8222-222222222222",
+                            "status": "uploading",
+                            "verification": {
+                                "phase": "validating_scans",
+                                "finalized_series": 2,
+                                "verified_series": 1,
+                                "total_series": 2
+                            }
+                        }),
+                        _ => serde_json::json!({
+                            "upload_id": "22222222-2222-4222-8222-222222222222",
+                            "status": "committed"
+                        }),
+                    })
+                }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let config = ClientConfig {
+            api_url: format!("http://{address}"),
+            device_token: "sn_device_test".into(),
+            site_id: "site".into(),
+            project_id: "project".into(),
+            project_name: "Project".into(),
+            consent_policy_version: "policy-1".into(),
+            pseudonym_key_b64: "fixture".into(),
+        };
+        let api = IngestApi::from_config(&config).unwrap();
+
+        let status = tokio::time::timeout(
+            Duration::from_secs(2),
+            complete_with_recovery_polling(
+                &api,
+                "22222222-2222-4222-8222-222222222222",
+                &[],
+                Duration::from_secs(60 * 60),
+            ),
+        )
+        .await
+        .expect("successful verification progress must bypass the poll delay")
+        .unwrap();
+
+        assert_eq!(status.status, "committed");
+        assert_eq!(post_attempts.load(Ordering::SeqCst), 3);
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn saved_completion_checkpoint_bypasses_credentials_and_multipart() {
+        use axum::{
+            Json, Router,
+            http::StatusCode,
+            routing::{get, post},
+        };
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let credential_attempts = Arc::new(AtomicUsize::new(0));
+        let credential_attempts_for_handler = credential_attempts.clone();
+        let part_attempts = Arc::new(AtomicUsize::new(0));
+        let part_attempts_for_handler = part_attempts.clone();
+        let completion_attempts = Arc::new(AtomicUsize::new(0));
+        let completion_attempts_for_handler = completion_attempts.clone();
+        let app = Router::new()
+            .route(
+                "/v1/uploads/{upload_id}",
+                get(|| async {
+                    Json(serde_json::json!({
+                        "upload_id": "22222222-2222-4222-8222-222222222222",
+                        "status": "uploading",
+                        "verification": {
+                            "phase": "validating_scans",
+                            "finalized_series": 0,
+                            "verified_series": 0,
+                            "total_series": 1
+                        }
+                    }))
+                }),
+            )
+            .route(
+                "/v1/uploads/{upload_id}/parts",
+                post(move || {
+                    part_attempts_for_handler.fetch_add(1, Ordering::SeqCst);
+                    async { StatusCode::INTERNAL_SERVER_ERROR }
+                }),
+            )
+            .route(
+                "/v1/uploads/{upload_id}/credentials",
+                post(move || {
+                    credential_attempts_for_handler.fetch_add(1, Ordering::SeqCst);
+                    async {
+                        (
+                            StatusCode::CONFLICT,
+                            Json(serde_json::json!({
+                                "error": {
+                                    "code": "CONFLICT",
+                                    "message": "Upload is busy; retry shortly"
+                                }
+                            })),
+                        )
+                    }
+                }),
+            )
+            .route(
+                "/v1/uploads/{upload_id}/complete",
+                post(move || {
+                    completion_attempts_for_handler.fetch_add(1, Ordering::SeqCst);
+                    async {
+                        Json(serde_json::json!({
+                            "upload_id": "22222222-2222-4222-8222-222222222222",
+                            "status": "committed"
+                        }))
+                    }
+                }),
+            );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let config = ClientConfig {
+            api_url: format!("http://{address}"),
+            device_token: "sn_device_test".into(),
+            site_id: "site".into(),
+            project_id: "project".into(),
+            project_name: "Project".into(),
+            consent_policy_version: "policy-1".into(),
+            pseudonym_key_b64: "fixture".into(),
+        };
+        let api = IngestApi::from_config(&config).unwrap();
+        let state_root = tempfile::tempdir().unwrap();
+        let runtime = Runtime::initialize(Some(state_root.path())).unwrap();
+        let (bundle, chunk) = write_saved_completion_checkpoint(
+            &runtime,
+            "run",
+            "22222222-2222-4222-8222-222222222222",
+        );
+
+        runtime
+            .continue_upload_chunk("run", &chunk, &[bundle], crate::CLIENT_VERSION, &api)
             .await
             .unwrap();
-        assert_eq!(status.status, "committed");
-        assert_eq!(attempts.load(Ordering::SeqCst), 6);
+
+        assert_eq!(credential_attempts.load(Ordering::SeqCst), 0);
+        assert_eq!(part_attempts.load(Ordering::SeqCst), 0);
+        assert_eq!(completion_attempts.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            runtime.state.run_uploads("run").unwrap()[0].status,
+            "committed"
+        );
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn saved_completion_already_committed_is_a_network_no_op_after_status() {
+        use axum::{Json, Router, http::StatusCode, routing::get, routing::post};
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let credential_attempts = Arc::new(AtomicUsize::new(0));
+        let credential_attempts_for_handler = credential_attempts.clone();
+        let part_attempts = Arc::new(AtomicUsize::new(0));
+        let part_attempts_for_handler = part_attempts.clone();
+        let completion_attempts = Arc::new(AtomicUsize::new(0));
+        let completion_attempts_for_handler = completion_attempts.clone();
+        let app = Router::new()
+            .route(
+                "/v1/uploads/{upload_id}",
+                get(|| async {
+                    Json(serde_json::json!({
+                        "upload_id": "22222222-2222-4222-8222-222222222222",
+                        "status": "committed"
+                    }))
+                }),
+            )
+            .route(
+                "/v1/uploads/{upload_id}/credentials",
+                post(move || {
+                    credential_attempts_for_handler.fetch_add(1, Ordering::SeqCst);
+                    async { StatusCode::INTERNAL_SERVER_ERROR }
+                }),
+            )
+            .route(
+                "/v1/uploads/{upload_id}/parts",
+                post(move || {
+                    part_attempts_for_handler.fetch_add(1, Ordering::SeqCst);
+                    async { StatusCode::INTERNAL_SERVER_ERROR }
+                }),
+            )
+            .route(
+                "/v1/uploads/{upload_id}/complete",
+                post(move || {
+                    completion_attempts_for_handler.fetch_add(1, Ordering::SeqCst);
+                    async { StatusCode::INTERNAL_SERVER_ERROR }
+                }),
+            );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let config = ClientConfig {
+            api_url: format!("http://{address}"),
+            device_token: "sn_device_test".into(),
+            site_id: "site".into(),
+            project_id: "project".into(),
+            project_name: "Project".into(),
+            consent_policy_version: "policy-1".into(),
+            pseudonym_key_b64: "fixture".into(),
+        };
+        let api = IngestApi::from_config(&config).unwrap();
+        let state_root = tempfile::tempdir().unwrap();
+        let runtime = Runtime::initialize(Some(state_root.path())).unwrap();
+        let (bundle, chunk) = write_saved_completion_checkpoint(
+            &runtime,
+            "run",
+            "22222222-2222-4222-8222-222222222222",
+        );
+
+        runtime
+            .continue_upload_chunk("run", &chunk, &[bundle], crate::CLIENT_VERSION, &api)
+            .await
+            .unwrap();
+
+        assert_eq!(credential_attempts.load(Ordering::SeqCst), 0);
+        assert_eq!(part_attempts.load(Ordering::SeqCst), 0);
+        assert_eq!(completion_attempts.load(Ordering::SeqCst), 0);
+        assert_eq!(
+            runtime.state.run_uploads("run").unwrap()[0].status,
+            "committed"
+        );
         server.abort();
     }
 

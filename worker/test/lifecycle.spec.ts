@@ -420,6 +420,20 @@ describe("ingestion control plane", () => {
         .first<string>("status"),
     ).not.toBe("expired");
 
+    // The first bounded finalization request completed the NIfTI in R2 before
+    // the simulated visibility failure. Materialize the sidecar as well to
+    // reproduce the live upload: both objects exist, but D1 has only a legacy
+    // sidecar receipt and no scientifically verified pair.
+    await env.ARCHIVE.resumeMultipartUpload(
+      metadataKey,
+      metadataMultipart.upload_id,
+    ).complete([
+      {
+        partNumber: metadataPart.partNumber,
+        etag: metadataPart.etag.replaceAll('"', ""),
+      },
+    ]);
+
     // Reproduce the production recovery shape left by the former verifier:
     // one small sidecar has an object-completion receipt, but no atomic
     // NIfTI/sidecar scientific-validation checkpoint. The new verifier must
@@ -446,31 +460,106 @@ describe("ingestion control plane", () => {
     );
     expect(await verifyingStatus.json()).toMatchObject({
       status: "uploading",
-      verification: { verified_series: 0, total_series: 1 },
+      verification: {
+        phase: "finalizing_objects",
+        finalized_series: 0,
+        verified_series: 0,
+        total_series: 1,
+      },
     });
 
-    const resumeSpy = vi
-      .spyOn(env.ARCHIVE, "resumeMultipartUpload")
-      .mockImplementation(
-        () =>
-          ({
-            // Reproduce the live binding: an idempotent completion result may
-            // not expose custom metadata even though persisted HEAD does.
-            complete: async () => ({}) as R2Object,
-          }) as unknown as R2MultipartUpload,
-      );
-    const completion = await (async () => {
-      try {
-        return await call(
-          "POST",
-          `/v1/uploads/${uploadId}/complete`,
-          completionBody,
-          deviceToken,
-        );
-      } finally {
-        resumeSpy.mockRestore();
-      }
-    })();
+    // An active verifier is normal progress, not an API conflict. This makes
+    // concurrent/lost-response recovery a lightweight status poll.
+    const busyUntil = Math.floor(Date.now() / 1000) + 60;
+    await env.DB.prepare(
+      `UPDATE uploads SET operation_token = 'busy-test',
+         operation_kind = 'verify', operation_expires_at = ?1
+       WHERE id = ?2`,
+    )
+      .bind(busyUntil, uploadId)
+      .run();
+    const busy = await call(
+      "POST",
+      `/v1/uploads/${uploadId}/complete`,
+      completionBody,
+      deviceToken,
+    );
+    expect(busy.status).toBe(200);
+    expect(await busy.json()).toMatchObject({
+      status: "uploading",
+      verification: {
+        phase: "finalizing_objects",
+        finalized_series: 0,
+        verified_series: 0,
+      },
+    });
+    await env.DB.prepare(
+      `UPDATE uploads SET operation_token = NULL, operation_kind = NULL,
+         operation_expires_at = NULL WHERE id = ?1`,
+    )
+      .bind(uploadId)
+      .run();
+
+    const resumeSpy = vi.spyOn(env.ARCHIVE, "resumeMultipartUpload");
+    const finalization = await call(
+      "POST",
+      `/v1/uploads/${uploadId}/complete`,
+      completionBody,
+      deviceToken,
+    );
+    expect(finalization.status, await finalization.clone().text()).toBe(200);
+    expect(await finalization.json()).toMatchObject({
+      upload_id: uploadId,
+      status: "uploading",
+      verification: {
+        phase: "validating_scans",
+        finalized_series: 1,
+        verified_series: 0,
+        total_series: 1,
+      },
+    });
+    expect(resumeSpy).not.toHaveBeenCalled();
+    resumeSpy.mockRestore();
+    expect(
+      await env.DB.prepare(
+        `SELECT COUNT(*) AS count FROM upload_objects
+         WHERE upload_id = ?1 AND completed_at IS NOT NULL AND etag IS NOT NULL`,
+      )
+        .bind(uploadId)
+        .first<number>("count"),
+    ).toBe(2);
+
+    const verification = await call(
+      "POST",
+      `/v1/uploads/${uploadId}/complete`,
+      completionBody,
+      deviceToken,
+    );
+    expect(verification.status, await verification.clone().text()).toBe(200);
+    expect(await verification.json()).toMatchObject({
+      upload_id: uploadId,
+      status: "uploading",
+      verification: {
+        phase: "committing_archive",
+        finalized_series: 1,
+        verified_series: 1,
+        total_series: 1,
+      },
+    });
+    expect(
+      await env.DB.prepare(
+        "SELECT COUNT(*) AS count FROM catalog_series WHERE upload_id = ?1",
+      )
+        .bind(uploadId)
+        .first<number>("count"),
+    ).toBe(0);
+
+    const completion = await call(
+      "POST",
+      `/v1/uploads/${uploadId}/complete`,
+      completionBody,
+      deviceToken,
+    );
     expect(completion.status, await completion.clone().text()).toBe(200);
     const committed = await completion.json<Record<string, unknown>>();
     expect(committed).toMatchObject({
@@ -507,35 +596,58 @@ describe("ingestion control plane", () => {
       raceMetadataKey,
       raceMetadataMultipart.upload_id,
     ).uploadPart(1, metadataBytes);
+    const raceCompletionBody = {
+      objects: [
+        {
+          key: raceNiiKey,
+          size: bundle.nii.size,
+          sha256: bundle.nii.sha256,
+          parts: [
+            {
+              part_number: raceNiiPart.partNumber,
+              etag: raceNiiPart.etag,
+            },
+          ],
+        },
+        {
+          key: raceMetadataKey,
+          size: bundle.metadata.size,
+          sha256: bundle.metadata.sha256,
+          parts: [
+            {
+              part_number: raceMetadataPart.partNumber,
+              etag: raceMetadataPart.etag,
+            },
+          ],
+        },
+      ],
+    };
+    const racedFinalization = await call(
+      "POST",
+      `/v1/uploads/${raceUploadId}/complete`,
+      raceCompletionBody,
+      raceToken,
+    );
+    expect(racedFinalization.status).toBe(200);
+    expect(await racedFinalization.json()).toMatchObject({
+      status: "uploading",
+      verification: { finalized_series: 1, verified_series: 0 },
+    });
+    const racedVerification = await call(
+      "POST",
+      `/v1/uploads/${raceUploadId}/complete`,
+      raceCompletionBody,
+      raceToken,
+    );
+    expect(racedVerification.status).toBe(200);
+    expect(await racedVerification.json()).toMatchObject({
+      status: "uploading",
+      verification: { finalized_series: 1, verified_series: 1 },
+    });
     const racedCompletion = await call(
       "POST",
       `/v1/uploads/${raceUploadId}/complete`,
-      {
-        objects: [
-          {
-            key: raceNiiKey,
-            size: bundle.nii.size,
-            sha256: bundle.nii.sha256,
-            parts: [
-              {
-                part_number: raceNiiPart.partNumber,
-                etag: raceNiiPart.etag,
-              },
-            ],
-          },
-          {
-            key: raceMetadataKey,
-            size: bundle.metadata.size,
-            sha256: bundle.metadata.sha256,
-            parts: [
-              {
-                part_number: raceMetadataPart.partNumber,
-                etag: raceMetadataPart.etag,
-              },
-            ],
-          },
-        ],
-      },
+      raceCompletionBody,
       raceToken,
     );
     expect(racedCompletion.status).toBe(409);
@@ -866,6 +978,236 @@ describe("ingestion control plane", () => {
         },
       },
     });
+  });
+
+  it("bounds multi-series completion to one durable pair phase per request", async () => {
+    // Match the 15-series production upload that exposed the original
+    // monolithic-verifier failure.
+    const bundleCount = 15;
+    const fixture = await functionalNiftiFixture();
+    const compressedSha256 = await sha256Hex(fixture.compressed);
+    const subjectId = "a".repeat(24);
+    const sessionId = "b".repeat(24);
+    const payloads = new Map<
+      string,
+      { bytes: Uint8Array<ArrayBuffer>; size: number; sha256: string }
+    >();
+    const bundles = [];
+
+    for (let index = 0; index < bundleCount; index += 1) {
+      const bundleId = (0xc0 + index).toString(16).padStart(24, "0");
+      const seriesId = (0xd0 + index).toString(16).padStart(24, "0");
+      const protocolGroupId = (0xe0 + index)
+        .toString(16)
+        .padStart(24, "0");
+      const basename = `scan-${index + 1}_bold`;
+      const niiRelativeKey = `${bundleId}/${basename}.nii.gz`;
+      const metadataRelativeKey = `${bundleId}/${basename}.json`;
+      const sidecar = structuredClone(scanSidecarExample);
+      sidecar.bundle_id = bundleId;
+      sidecar.series_id = seriesId;
+      sidecar.subject_id = subjectId;
+      sidecar.session_id = sessionId;
+      sidecar.protocol_group_id = protocolGroupId;
+      sidecar.files.nifti.filename = `${basename}.nii.gz`;
+      sidecar.files.nifti.size_bytes = fixture.compressed.byteLength;
+      sidecar.files.nifti.sha256 = compressedSha256;
+      sidecar.files.nifti.uncompressed_sha256 = fixture.uncompressedSha256;
+      Object.assign(sidecar.image, fixture.image);
+      const metadataBytes = new TextEncoder().encode(JSON.stringify(sidecar));
+      const metadataSha256 = await sha256Hex(metadataBytes);
+      const bundle = {
+        bundle_id: bundleId,
+        series_id: seriesId,
+        subject_id: subjectId,
+        session_id: sessionId,
+        protocol_group_id: protocolGroupId,
+        nii: {
+          relative_key: niiRelativeKey,
+          size: fixture.compressed.byteLength,
+          sha256: compressedSha256,
+          uncompressed_sha256: fixture.uncompressedSha256,
+        },
+        metadata: {
+          relative_key: metadataRelativeKey,
+          size: metadataBytes.byteLength,
+          sha256: metadataSha256,
+        },
+      };
+      bundles.push(bundle);
+      payloads.set(niiRelativeKey, {
+        bytes: fixture.compressed,
+        size: bundle.nii.size,
+        sha256: bundle.nii.sha256,
+      });
+      payloads.set(metadataRelativeKey, {
+        bytes: metadataBytes,
+        size: bundle.metadata.size,
+        sha256: bundle.metadata.sha256,
+      });
+    }
+
+    const invite = await createInvite();
+    const enrollment = await enrollDevice(invite.invite_code as string);
+    const deviceToken = enrollment.device_token as string;
+    const allocationResponse = await call(
+      "POST",
+      "/v1/uploads",
+      { bundles, client_version: CLIENT_VERSION },
+      deviceToken,
+    );
+    expect(
+      allocationResponse.status,
+      await allocationResponse.clone().text(),
+    ).toBe(201);
+    const allocation = await allocationResponse.json<Record<string, unknown>>();
+    const uploadId = allocation.upload_id as string;
+    const objectPrefix = allocation.object_prefix as string;
+    const multipartObjects = allocation.multipart_objects as Array<{
+      key: string;
+      upload_id: string;
+      part_size: number;
+    }>;
+    expect(multipartObjects).toHaveLength(bundleCount * 2);
+
+    const completionObjects = [];
+    for (const multipartObject of multipartObjects) {
+      expect(multipartObject.key.startsWith(objectPrefix)).toBe(true);
+      const relativeKey = multipartObject.key.slice(objectPrefix.length);
+      const payload = payloads.get(relativeKey);
+      expect(payload).toBeDefined();
+      const part = await env.ARCHIVE.resumeMultipartUpload(
+        multipartObject.key,
+        multipartObject.upload_id,
+      ).uploadPart(1, payload!.bytes);
+      completionObjects.push({
+        key: multipartObject.key,
+        size: payload!.size,
+        sha256: payload!.sha256,
+        parts: [{ part_number: part.partNumber, etag: part.etag }],
+      });
+    }
+    const completionBody = { objects: completionObjects };
+    const manifestKey =
+      `manifests/v1/${enrollment.site_id as string}/` +
+      `${enrollment.project_id as string}/${uploadId}.json`;
+
+    const resumeSpy = vi.spyOn(env.ARCHIVE, "resumeMultipartUpload");
+    const headSpy = vi.spyOn(env.ARCHIVE, "head");
+    const getSpy = vi.spyOn(env.ARCHIVE, "get");
+    let completionCalls = 0;
+
+    const expectArchiveNotCommitted = async (): Promise<void> => {
+      expect(
+        await env.DB.prepare(
+          "SELECT COUNT(*) AS count FROM catalog_series WHERE upload_id = ?1",
+        )
+          .bind(uploadId)
+          .first<number>("count"),
+      ).toBe(0);
+      expect(
+        await env.DB.prepare(
+          "SELECT manifest_object_key FROM uploads WHERE id = ?1",
+        )
+          .bind(uploadId)
+          .first<string | null>("manifest_object_key"),
+      ).toBeNull();
+    };
+
+    for (let index = 1; index <= bundleCount; index += 1) {
+      resumeSpy.mockClear();
+      headSpy.mockClear();
+      getSpy.mockClear();
+      const response = await call(
+        "POST",
+        `/v1/uploads/${uploadId}/complete`,
+        completionBody,
+        deviceToken,
+      );
+      completionCalls += 1;
+      expect(response.status, await response.clone().text()).toBe(200);
+      expect(await response.json()).toMatchObject({
+        upload_id: uploadId,
+        status: "uploading",
+        verification: {
+          phase:
+            index < bundleCount ? "finalizing_objects" : "validating_scans",
+          finalized_series: index,
+          verified_series: 0,
+          total_series: bundleCount,
+        },
+      });
+      expect(resumeSpy).toHaveBeenCalledTimes(2);
+      expect(new Set(resumeSpy.mock.calls.map((call) => call[0])).size).toBe(2);
+      expect(new Set(headSpy.mock.calls.map((call) => call[0])).size).toBe(2);
+      expect(getSpy).not.toHaveBeenCalled();
+      await expectArchiveNotCommitted();
+    }
+
+    for (let index = 1; index <= bundleCount; index += 1) {
+      resumeSpy.mockClear();
+      headSpy.mockClear();
+      getSpy.mockClear();
+      const response = await call(
+        "POST",
+        `/v1/uploads/${uploadId}/complete`,
+        completionBody,
+        deviceToken,
+      );
+      completionCalls += 1;
+      expect(response.status, await response.clone().text()).toBe(200);
+      expect(await response.json()).toMatchObject({
+        upload_id: uploadId,
+        status: "uploading",
+        verification: {
+          phase:
+            index < bundleCount ? "validating_scans" : "committing_archive",
+          finalized_series: bundleCount,
+          verified_series: index,
+          total_series: bundleCount,
+        },
+      });
+      expect(resumeSpy).not.toHaveBeenCalled();
+      expect(headSpy).not.toHaveBeenCalled();
+      expect(getSpy).toHaveBeenCalledTimes(2);
+      expect(new Set(getSpy.mock.calls.map((call) => call[0])).size).toBe(2);
+      await expectArchiveNotCommitted();
+    }
+
+    resumeSpy.mockClear();
+    headSpy.mockClear();
+    getSpy.mockClear();
+    const committedResponse = await call(
+      "POST",
+      `/v1/uploads/${uploadId}/complete`,
+      completionBody,
+      deviceToken,
+    );
+    completionCalls += 1;
+    expect(
+      committedResponse.status,
+      await committedResponse.clone().text(),
+    ).toBe(200);
+    expect(await committedResponse.json()).toMatchObject({
+      upload_id: uploadId,
+      status: "committed",
+      manifest: { key: manifestKey },
+    });
+    expect(completionCalls).toBe(bundleCount * 2 + 1);
+    expect(resumeSpy).not.toHaveBeenCalled();
+    expect(headSpy).not.toHaveBeenCalled();
+    expect(getSpy).not.toHaveBeenCalled();
+    expect(
+      await env.DB.prepare(
+        "SELECT COUNT(*) AS count FROM catalog_series WHERE upload_id = ?1",
+      )
+        .bind(uploadId)
+        .first<number>("count"),
+    ).toBe(bundleCount);
+    resumeSpy.mockRestore();
+    headSpy.mockRestore();
+    getSpy.mockRestore();
+    expect(await env.ARCHIVE.head(manifestKey)).not.toBeNull();
   });
 
   it("replays a lost enrollment response without consuming the invite twice", async () => {

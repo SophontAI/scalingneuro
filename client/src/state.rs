@@ -478,7 +478,7 @@ impl StateStore {
     ) -> Result<Option<RunRecord>> {
         self.connection()?
             .query_row(
-                "SELECT r.id,r.source_path,r.status,r.dry_run,r.summary_json,r.manifest_path,r.report_path,r.worker_upload_id,r.error_code,r.created_at,r.updated_at FROM runs r WHERE r.source_path=?1 AND r.dry_run=?2 AND r.status IN ('prepared','uploading','upload_failed') AND NOT EXISTS (SELECT 1 FROM runs newer WHERE newer.source_path=r.source_path AND newer.dry_run=r.dry_run AND newer.created_at>r.created_at AND newer.status IN ('complete','complete_no_eligible_series','dry_run_complete')) ORDER BY r.created_at DESC LIMIT 1",
+                "SELECT r.id,r.source_path,r.status,r.dry_run,r.summary_json,r.manifest_path,r.report_path,r.worker_upload_id,r.error_code,r.created_at,r.updated_at FROM runs r WHERE r.source_path=?1 AND r.dry_run=?2 AND r.status IN ('prepared','uploading','upload_failed') AND NOT EXISTS (SELECT 1 FROM runs newer WHERE newer.source_path=r.source_path AND newer.dry_run=r.dry_run AND newer.created_at>r.created_at AND newer.status IN ('complete','complete_no_eligible_series','dry_run_complete')) ORDER BY EXISTS (SELECT 1 FROM run_uploads u WHERE u.run_id=r.id AND u.worker_upload_id IS NOT NULL) DESC, r.created_at DESC LIMIT 1",
                 params![source.to_string_lossy(), dry_run],
                 row_to_run,
             )
@@ -925,6 +925,47 @@ mod tests {
                 .continuable_run_for_source(source, false)
                 .unwrap()
                 .is_none()
+        );
+    }
+
+    #[test]
+    fn server_bound_legacy_run_outranks_a_newer_empty_shadow_retry() {
+        let directory = tempdir().unwrap();
+        let store = StateStore::open(&directory.path().join("state.sqlite3")).unwrap();
+        let source = Path::new("/private/dicoms");
+        store.create_run("server-bound", source, false).unwrap();
+        store
+            .ensure_run_uploads("server-bound", &["subject".into()], &[1], 32, 32)
+            .unwrap();
+        store
+            .set_chunk_worker("server-bound", 0, "11111111-1111-4111-8111-111111111111")
+            .unwrap();
+        store
+            .update_run(
+                "server-bound",
+                "upload_failed",
+                &SourceSummary::default(),
+                Some("upload_failed"),
+            )
+            .unwrap();
+
+        store.create_run("shadow-retry", source, false).unwrap();
+        store
+            .update_run(
+                "shadow-retry",
+                "upload_failed",
+                &SourceSummary::default(),
+                Some("upload_failed"),
+            )
+            .unwrap();
+
+        assert_eq!(
+            store
+                .continuable_run_for_source(source, false)
+                .unwrap()
+                .unwrap()
+                .id,
+            "server-bound"
         );
     }
 
