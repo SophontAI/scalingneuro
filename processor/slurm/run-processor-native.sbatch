@@ -18,8 +18,8 @@ set -euo pipefail
 export PATH="/opt/slurm/bin:/usr/local/bin:/usr/bin:/bin"
 export PYTHONNOUSERSITE=1
 export PYTHONDONTWRITEBYTECODE=1
+export PYTHONSAFEPATH=1
 export TZ=UTC
-export ENROOT_RESTRICT_DEV=yes
 
 if [[ $# -gt 4 ]]; then
     echo "usage: sbatch run-processor-native.sbatch [RELEASE [API_URL [WORK_ROOT [TOKEN_FILE]]]]" >&2
@@ -34,14 +34,15 @@ python_bin="$release/venv/bin/python"
 native_tools_image="$release/native-tools.sqsh"
 release_manifest="$release/RELEASE"
 srun_bin=/opt/slurm/bin/srun
+env_bin=/usr/bin/env
 app_root="$release/app"
 
 if [[ ! -x "$python_bin" || ! -r "$native_tools_image" || ! -r "$release_manifest" || ! -r "$app_root/scaling_neuro_processor/__init__.py" ]]; then
     echo "native processor release is incomplete or unreadable" >&2
     exit 2
 fi
-if [[ ! -x "$srun_bin" || ! -r "$token_file" ]]; then
-    echo "Slurm or the processor token is unavailable" >&2
+if [[ ! -x "$srun_bin" || ! -x "$env_bin" || ! -r "$token_file" ]]; then
+    echo "Slurm, env, or the processor token is unavailable" >&2
     exit 2
 fi
 expected_image_sha256=$(sed -n 's/^native_tools_squashfs_sha256=//p' "$release_manifest")
@@ -86,7 +87,6 @@ if [[ ! "$expected_controller_sha256" =~ ^[0-9a-f]{64}$ || "$actual_controller_s
     exit 2
 fi
 
-export PYTHONPATH="$app_root"
 child_pid=""
 stop_processor() {
     if [[ -n "$child_pid" ]]; then
@@ -97,7 +97,13 @@ stop_processor() {
 trap stop_processor USR1 TERM INT
 
 "$srun_bin" \
-    "$python_bin" -m scaling_neuro_processor \
+    "$env_bin" \
+        "PYTHONPATH=$app_root" \
+        PYTHONNOUSERSITE=1 \
+        PYTHONDONTWRITEBYTECODE=1 \
+        PYTHONSAFEPATH=1 \
+        TZ=UTC \
+        "$python_bin" -m scaling_neuro_processor \
         --api-url "$api_url" \
         --token-file "$token_file" \
         --work-root "$work_root" \

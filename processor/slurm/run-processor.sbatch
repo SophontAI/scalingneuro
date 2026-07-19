@@ -16,7 +16,6 @@
 
 set -euo pipefail
 export PATH="/opt/slurm/bin:/usr/bin:/bin"
-export ENROOT_RESTRICT_DEV=yes
 
 if [[ $# -lt 1 || $# -gt 4 ]]; then
     echo "usage: sbatch run-processor.sbatch IMAGE [API_URL [WORK_ROOT [TOKEN_FILE]]]" >&2
@@ -43,6 +42,7 @@ stop_processor() {
 trap stop_processor USR1 TERM INT
 
 /opt/slurm/bin/srun \
+    --export=ENROOT_RESTRICT_DEV=yes \
     --container-image="$image" \
     --container-readonly \
     --no-container-mount-home \
