@@ -245,7 +245,7 @@
         <span class="label reveal" style="display:block;margin-bottom:24px">03 — For every new session</span>
         <h2 class="display reveal" style="font-size:clamp(2.4rem,7vw,5rem)">Point it at one folder. Let every future scan count.</h2>
         <p class="hero-para reveal">
-          Keep the scanner workflow. Install once, return to the shell, and start neuro-sync whenever the export path is ready. It finds approved functional EPI scans, checks them locally, and resumes until every verified bundle is committed.
+          Keep the scanner workflow. Install once, return to the shell, and run neuro-sync whenever the export path is ready. It finds approved functional EPI scans, checks them locally, and automatically continues checkpointed work until every verified bundle is committed.
         </p>
 
         <div class="adoption-line reveal" aria-label="Why a lab should adopt the tool">
@@ -269,7 +269,7 @@
 <span class="c-ok">✓</span> Private upload identity: <span class="c-hi">your lab</span>
 <span class="c-ok">✓</span> Confirm the selected folder is approved for contribution
 <span class="c-ok">✓</span> Discover → convert → minimize metadata → QC → upload
-<span class="c-ok">✓</span> Safe to stop: conversion and multipart upload resume locally</code></pre>
+<span class="c-ok">✓</span> Interrupted? Rerun this same folder command; completed work is reused</code></pre>
             <pre class="term-pane" id="pane-run" data-pane="run" role="tabpanel" aria-labelledby="tab-run"><code><span class="c-com"># after the one-time terminal lab registration</span>
 <span class="c-p">$</span> neuro-sync ./new_session_dicoms
 

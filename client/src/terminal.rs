@@ -75,8 +75,8 @@ async fn run_with_io(
         return Ok(());
     }
 
-    writeln!(output, "\nValidating {}…", folder.display())?;
-    let run_id = runtime.upload(folder, false).await?;
+    writeln!(output, "\nSyncing {}…", folder.display())?;
+    let run_id = runtime.sync_folder(folder, false).await?;
     print_run_summary(&runtime, &run_id, output)
 }
 

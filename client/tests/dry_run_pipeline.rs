@@ -71,7 +71,7 @@ cp "$NEURO_SYNC_FAKE_JSON" "$out/series.json"
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
     let progress_output = format!("{stdout}\n{stderr}");
-    assert!(stdout.contains("Validating"));
+    assert!(stdout.contains("Syncing"));
     assert!(
         progress_output.contains("DICOM discovery complete"),
         "output={progress_output}"

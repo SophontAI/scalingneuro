@@ -21,7 +21,7 @@ pub struct Cli {
     /// Override the private local state directory (primarily for managed deployments and tests).
     #[arg(long, global = true, env = "NEURO_SYNC_STATE_DIR", hide = true)]
     pub state_dir: Option<PathBuf>,
-    /// DICOM export folder to validate and upload.
+    /// DICOM export folder to sync.
     #[arg(value_name = "DICOM_FOLDER")]
     pub folder: Option<PathBuf>,
     #[command(subcommand)]
@@ -30,7 +30,7 @@ pub struct Cli {
 
 #[derive(Subcommand)]
 pub enum Command {
-    /// Run the guided terminal setup and upload flow.
+    /// Run the guided terminal setup and folder-sync flow.
     Setup,
     /// Register this machine for the open public EPI contribution.
     Register {
@@ -63,7 +63,7 @@ pub enum Command {
         #[arg(long)]
         device_name: Option<String>,
     },
-    /// Select, validate, convert, and upload a DICOM folder.
+    /// Sync a DICOM folder, automatically continuing any checkpointed work.
     #[command(alias = "run")]
     Upload {
         folder: PathBuf,
@@ -74,8 +74,6 @@ pub enum Command {
         #[arg(long)]
         confirm_authorized: bool,
     },
-    /// Resume interrupted prepared or multipart uploads.
-    Resume { run_id: Option<String> },
     /// Show local progress for the latest run or a specific run ID.
     Status {
         run_id: Option<String>,
@@ -176,20 +174,9 @@ pub async fn execute(cli: Cli) -> Result<()> {
                     return Ok(());
                 }
             }
-            println!("\nValidating {}…", folder.display());
-            let run_id = runtime.upload(folder, dry_run).await?;
+            println!("\nSyncing {}…", folder.display());
+            let run_id = runtime.sync_folder(folder, dry_run).await?;
             crate::terminal::print_run_summary(&runtime, &run_id, &mut std::io::stdout())
-        }
-        Some(Command::Resume { run_id }) => {
-            let completed = runtime.resume(run_id.as_deref()).await?;
-            if completed.is_empty() {
-                println!("no interrupted uploads need resuming");
-            } else {
-                for run_id in completed {
-                    println!("completed: {run_id}");
-                }
-            }
-            Ok(())
         }
         Some(Command::Status { run_id, json }) => {
             let run = runtime
@@ -263,12 +250,9 @@ mod tests {
     }
 
     #[test]
-    fn resume_remains_an_unambiguous_subcommand() {
+    fn former_recovery_token_is_an_ordinary_folder_argument() {
         let cli = Cli::try_parse_from(["neuro-sync", "resume"]).unwrap();
-        assert!(cli.folder.is_none());
-        assert!(matches!(
-            cli.command,
-            Some(Command::Resume { run_id: None })
-        ));
+        assert_eq!(cli.folder, Some(PathBuf::from("resume")));
+        assert!(cli.command.is_none());
     }
 }

@@ -3,7 +3,7 @@ use std::{
     fs::{self, File, OpenOptions},
     io::Write,
     path::{Path, PathBuf},
-    sync::{Arc, Mutex},
+    sync::Arc,
     time::{Duration, Instant},
 };
 
@@ -113,20 +113,6 @@ pub struct Runtime {
     pub paths: AppPaths,
     pub state: StateStore,
     _instance_lock: Arc<File>,
-    active_runs: Arc<Mutex<HashSet<String>>>,
-}
-
-struct ActiveRunGuard {
-    active_runs: Arc<Mutex<HashSet<String>>>,
-    run_id: String,
-}
-
-impl Drop for ActiveRunGuard {
-    fn drop(&mut self) {
-        if let Ok(mut active_runs) = self.active_runs.lock() {
-            active_runs.remove(&self.run_id);
-        }
-    }
 }
 
 impl Runtime {
@@ -143,29 +129,7 @@ impl Runtime {
             paths,
             state,
             _instance_lock: Arc::new(instance_lock),
-            active_runs: Arc::new(Mutex::new(HashSet::new())),
         })
-    }
-
-    fn claim_active_run(&self, run_id: &str) -> Result<Option<ActiveRunGuard>> {
-        let mut active_runs = self
-            .active_runs
-            .lock()
-            .map_err(|_| anyhow::anyhow!("active upload state is unavailable"))?;
-        if active_runs.contains(run_id) || !active_runs.is_empty() {
-            return Ok(None);
-        }
-        active_runs.insert(run_id.to_owned());
-        Ok(Some(ActiveRunGuard {
-            active_runs: Arc::clone(&self.active_runs),
-            run_id: run_id.to_owned(),
-        }))
-    }
-
-    pub fn is_run_active(&self, run_id: &str) -> bool {
-        self.active_runs
-            .lock()
-            .is_ok_and(|active_runs| active_runs.contains(run_id))
     }
 
     pub async fn enroll(
@@ -278,7 +242,7 @@ impl Runtime {
         Ok(config)
     }
 
-    pub async fn upload(&self, source: PathBuf, dry_run: bool) -> Result<String> {
+    pub async fn sync_folder(&self, source: PathBuf, dry_run: bool) -> Result<String> {
         let canonical_source = source
             .canonicalize()
             .with_context(|| format!("could not open selected folder: {}", source.display()))?;
@@ -292,6 +256,59 @@ impl Runtime {
             }
             Err(error) => return Err(error),
         };
+        if let Some(run) = self
+            .state
+            .continuable_run_for_source(&canonical_source, dry_run)?
+        {
+            return self
+                .continue_or_reprepare_folder_run(run, canonical_source, config)
+                .await;
+        }
+        if let Some(run) = self
+            .state
+            .interrupted_preparation_for_source(&canonical_source, dry_run)?
+        {
+            tracing::info!(
+                run_id = %run.id,
+                "Continuing the interrupted local folder check"
+            );
+            self.state.restart_interrupted_preparation(&run.id)?;
+            self.process_existing_run(&run.id, canonical_source, dry_run, config, None)
+                .await?;
+            return Ok(run.id);
+        }
+        if let Some(completed) = self
+            .state
+            .completed_run_for_source(&canonical_source, dry_run)?
+            && completed_run_matches_config(&completed, &config)
+            && let Some(previous) = self.state.source_fingerprint(&completed.id)?
+        {
+            tracing::info!(
+                files = previous.file_count,
+                "Checking whether this folder changed since its completed sync"
+            );
+            let current_snapshot = snapshot_source_with_progress(&canonical_source, |progress| {
+                tracing::info!(
+                    files_checked = progress.files_seen,
+                    "Completed folder comparison progress"
+                );
+            })?;
+            let current = current_snapshot.fingerprint(&canonical_source)?;
+            if current == previous {
+                tracing::info!(
+                    run_id = %completed.id,
+                    files = current.file_count,
+                    "Folder is already fully synced; nothing will be converted or uploaded"
+                );
+                return Ok(completed.id);
+            }
+            tracing::info!(
+                previous_files = previous.file_count,
+                current_files = current.file_count,
+                "Folder contents changed; checking the current export for new eligible scans"
+            );
+        }
+
         let run_id = Uuid::new_v4().to_string();
         self.state.create_run(&run_id, &canonical_source, dry_run)?;
         self.process_existing_run(&run_id, canonical_source, dry_run, config, None)
@@ -299,120 +316,50 @@ impl Runtime {
         Ok(run_id)
     }
 
-    pub async fn upload_in_background(&self, source: PathBuf, dry_run: bool) -> Result<String> {
-        let canonical_source = source.canonicalize()?;
-        if !canonical_source.is_dir() {
-            bail!("selected source is not a folder");
-        }
-        let config = match ClientConfig::load(&self.paths) {
-            Ok(config) => config,
-            Err(_) if dry_run => {
-                ClientConfig::unenrolled_local(load_or_create_dry_run_key(&self.paths)?)
-            }
-            Err(error) => return Err(error),
-        };
-        let run_id = Uuid::new_v4().to_string();
-        let active_run = self
-            .claim_active_run(&run_id)?
-            .context("new upload run unexpectedly has an active task")?;
-        self.state.create_run(&run_id, &canonical_source, dry_run)?;
-        let runtime = self.clone();
-        let background_id = run_id.clone();
-        tokio::spawn(async move {
-            let _active_run = active_run;
-            if let Err(error) = runtime
-                .process_existing_run(&background_id, canonical_source, dry_run, config, None)
-                .await
-            {
-                tracing::error!(run_id = %background_id, error = %error, "upload run failed");
-            }
-        });
-        Ok(run_id)
-    }
-
-    pub fn resume_in_background(&self, run_id: String, summary: SourceSummary) -> Result<bool> {
-        let Some(active_run) = self.claim_active_run(&run_id)? else {
-            return Ok(false);
-        };
-        self.state
-            .update_run(&run_id, "uploading", &summary, None)?;
-        let runtime = self.clone();
-        tokio::spawn(async move {
-            let _active_run = active_run;
-            if let Err(error) = runtime.resume(Some(&run_id)).await {
-                let _ = runtime.state.update_run(
-                    &run_id,
-                    "upload_failed",
-                    &summary,
-                    Some("upload_failed"),
-                );
-                tracing::warn!(run_id, error = %error, "background resume failed");
-            }
-        });
-        Ok(true)
-    }
-
-    pub fn run_requires_privacy_repreparation(&self, run: &RunRecord) -> bool {
-        load_checkpoint_manifest(run)
-            .map(|manifest| !manifest_uses_current_privacy_contract(&manifest))
-            .unwrap_or(true)
-    }
-
-    pub fn reprepare_in_background(&self, old_run_id: &str) -> Result<Option<String>> {
-        let old_run = self
-            .state
-            .resumable_runs(Some(old_run_id))?
-            .into_iter()
-            .next()
-            .context("the requested run is not eligible for privacy repreparation")?;
-        let manifest = load_checkpoint_manifest(&old_run)?;
+    async fn continue_or_reprepare_folder_run(
+        &self,
+        run: RunRecord,
+        source: PathBuf,
+        config: ClientConfig,
+    ) -> Result<String> {
+        let manifest = load_checkpoint_manifest(&run)?;
+        validate_manifest_context(&manifest, &config)?;
         if manifest_uses_current_privacy_contract(&manifest) {
-            bail!("the requested run already uses the current privacy contract");
+            tracing::info!(
+                run_id = %run.id,
+                previous_status = %run.status,
+                "Found checkpointed work for this folder; continuing without reconversion"
+            );
+            self.continue_prepared_run(&run, &manifest, &config).await?;
+            return Ok(run.id);
         }
-        let config = ClientConfig::load(&self.paths)?;
-        if manifest.site_id != config.site_id || manifest.project_id != config.project_id {
-            bail!("the prepared run belongs to a different enrolled site or project");
-        }
-        if manifest.consent_policy_version != config.consent_policy_version {
-            bail!("the project contribution policy changed; select the source folder again");
-        }
+
         let expected_bundle_ids = manifest
             .bundles
             .iter()
             .map(|bundle| bundle.bundle_id.clone())
             .collect::<HashSet<_>>();
         if expected_bundle_ids.is_empty() {
-            bail!("the outdated checkpoint has no prepared EPI bundles");
-        }
-        let source = PathBuf::from(&old_run.source_path);
-        if !source.is_absolute() {
-            bail!("the private source checkpoint is invalid");
+            bail!("the outdated local checkpoint has no prepared EPI bundles");
         }
         let run_id = Uuid::new_v4().to_string();
-        let Some(active_run) = self.claim_active_run(&run_id)? else {
-            return Ok(None);
-        };
+        tracing::info!(
+            old_run_id = %run.id,
+            new_run_id = %run_id,
+            "The privacy contract changed; safely re-preparing the same folder"
+        );
         self.state
-            .supersede_run_for_repreparation(old_run_id, &run_id)?;
-        remove_bundle_cache(&self.paths, old_run_id);
-        let runtime = self.clone();
-        let background_id = run_id.clone();
-        tokio::spawn(async move {
-            let _active_run = active_run;
-            if let Err(error) = runtime
-                .process_existing_run(
-                    &background_id,
-                    source,
-                    old_run.dry_run,
-                    config,
-                    Some(expected_bundle_ids),
-                )
-                .await
-            {
-                tracing::error!(run_id = %background_id, error = %error, "privacy repreparation failed");
-            }
-        });
-        Ok(Some(run_id))
+            .supersede_run_for_repreparation(&run.id, &run_id)?;
+        remove_bundle_cache(&self.paths, &run.id);
+        self.process_existing_run(
+            &run_id,
+            source,
+            run.dry_run,
+            config,
+            Some(expected_bundle_ids),
+        )
+        .await?;
+        Ok(run_id)
     }
 
     async fn process_existing_run(
@@ -642,7 +589,7 @@ impl Runtime {
                     .await?
                 }
                 Ok(status) if status.status == "withdrawn" => {
-                    bail!("archive upload was withdrawn and cannot be resumed");
+                    bail!("archive upload was withdrawn and cannot be continued");
                 }
                 Ok(_) => Some(match api.refresh_credentials(upload_id).await {
                     Ok(refreshed) => (
@@ -759,58 +706,47 @@ impl Runtime {
         Ok(())
     }
 
-    pub async fn resume(&self, requested_id: Option<&str>) -> Result<Vec<String>> {
-        let config = ClientConfig::load(&self.paths)?;
-        let runs = self.state.resumable_runs(requested_id)?;
-        if runs.is_empty() && requested_id.is_some() {
-            bail!("the requested run is not resumable");
-        }
-        let mut completed = Vec::new();
-        for run in runs {
-            let manifest_path = run
-                .manifest_path
-                .as_deref()
-                .context("resumable run has no manifest")?;
-            let manifest: LocalManifest = serde_json::from_slice(&fs::read(manifest_path)?)?;
-            match self.continue_upload(&run.id, &manifest, &config).await {
-                Ok(()) => {
-                    self.state
-                        .update_run(&run.id, "complete", &manifest.source_summary, None)?;
-                    let chunks = self.state.run_uploads(&run.id)?;
-                    let worker_upload_ids = chunks
-                        .iter()
-                        .filter_map(|chunk| chunk.worker_upload_id.clone())
-                        .collect();
-                    let committed = chunks
-                        .iter()
-                        .filter(|chunk| {
-                            chunk.status == "committed" && chunk.worker_upload_id.is_some()
-                        })
-                        .count() as u64;
-                    let existing_bundles = self.state.existing_bundles(&run.id)?;
-                    update_report_status(
-                        &self.paths,
-                        &run.id,
-                        "complete",
-                        worker_upload_ids,
-                        existing_bundles,
-                        committed,
-                    )?;
-                    remove_bundle_cache(&self.paths, &run.id);
-                    completed.push(run.id);
-                }
-                Err(error) => {
-                    self.state.update_run(
-                        &run.id,
-                        "upload_failed",
-                        &manifest.source_summary,
-                        Some("upload_failed"),
-                    )?;
-                    return Err(error);
-                }
+    async fn continue_prepared_run(
+        &self,
+        run: &RunRecord,
+        manifest: &LocalManifest,
+        config: &ClientConfig,
+    ) -> Result<()> {
+        match self.continue_upload(&run.id, manifest, config).await {
+            Ok(()) => {
+                self.state
+                    .update_run(&run.id, "complete", &manifest.source_summary, None)?;
+                let chunks = self.state.run_uploads(&run.id)?;
+                let worker_upload_ids = chunks
+                    .iter()
+                    .filter_map(|chunk| chunk.worker_upload_id.clone())
+                    .collect();
+                let committed = chunks
+                    .iter()
+                    .filter(|chunk| chunk.status == "committed" && chunk.worker_upload_id.is_some())
+                    .count() as u64;
+                let existing_bundles = self.state.existing_bundles(&run.id)?;
+                update_report_status(
+                    &self.paths,
+                    &run.id,
+                    "complete",
+                    worker_upload_ids,
+                    existing_bundles,
+                    committed,
+                )?;
+                remove_bundle_cache(&self.paths, &run.id);
+                Ok(())
+            }
+            Err(error) => {
+                self.state.update_run(
+                    &run.id,
+                    "upload_failed",
+                    &manifest.source_summary,
+                    Some("upload_failed"),
+                )?;
+                Err(error)
             }
         }
-        Ok(completed)
     }
 
     pub fn run_record(&self, id: Option<&str>) -> Result<Option<RunRecord>> {
@@ -1153,7 +1089,7 @@ fn privacy_client_version_supported(value: &str) -> bool {
     version >= minimum
 }
 
-fn validate_manifest_enrollment(manifest: &LocalManifest, config: &ClientConfig) -> Result<()> {
+fn validate_manifest_context(manifest: &LocalManifest, config: &ClientConfig) -> Result<()> {
     if manifest.site_id != config.site_id || manifest.project_id != config.project_id {
         bail!("prepared run belongs to a different enrolled site or project");
     }
@@ -1162,10 +1098,24 @@ fn validate_manifest_enrollment(manifest: &LocalManifest, config: &ClientConfig)
     {
         bail!("prepared run requires approval under the current contribution policy");
     }
+    Ok(())
+}
+
+fn validate_manifest_enrollment(manifest: &LocalManifest, config: &ClientConfig) -> Result<()> {
+    validate_manifest_context(manifest, config)?;
     if !manifest_uses_current_privacy_contract(manifest) {
         bail!("prepared run requires repreparation under the current privacy contract");
     }
     Ok(())
+}
+
+fn completed_run_matches_config(run: &RunRecord, config: &ClientConfig) -> bool {
+    load_checkpoint_manifest(run).is_ok_and(|manifest| {
+        manifest.site_id == config.site_id
+            && manifest.project_id == config.project_id
+            && !manifest.consent_policy_version.is_empty()
+            && manifest.consent_policy_version == config.consent_policy_version
+    })
 }
 
 fn session_from_created(created: CreateUploadResponse, revived: bool) -> UploadSessionPlan {
@@ -1273,7 +1223,7 @@ async fn complete_with_recovery(
         }
         if started.elapsed() >= ARCHIVE_VERIFICATION_WAIT {
             bail!(
-                "archive verification is still pending after 30 minutes; run `neuro-sync resume` to continue without reuploading files"
+                "archive verification is still pending after 30 minutes; rerun the same `neuro-sync <folder>` command to continue without reconversion or reuploading completed files"
             );
         }
         tokio::time::sleep(Duration::from_secs(5)).await;
@@ -1548,6 +1498,7 @@ fn prepare_run(
             &pseudonymizer,
         );
     }
+    state.set_source_fingerprint(run_id, &final_snapshot.fingerprint(source)?)?;
     tracing::info!(
         accepted = summary.accepted,
         held = summary.held,
@@ -1951,6 +1902,66 @@ mod tests {
         }
     }
 
+    fn sync_test_config() -> ClientConfig {
+        ClientConfig {
+            api_url: crate::DEFAULT_API_URL.into(),
+            device_token: "sn_device_fixture".into(),
+            site_id: "site".into(),
+            project_id: "project".into(),
+            project_name: "Project".into(),
+            consent_policy_version: "policy".into(),
+            pseudonym_key_b64: "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=".into(),
+        }
+    }
+
+    fn write_empty_sync_checkpoint(runtime: &Runtime, run_id: &str, status: &str) {
+        let config = sync_test_config();
+        let manifest = LocalManifest {
+            schema_version: MANIFEST_SCHEMA_VERSION.into(),
+            run_id: run_id.into(),
+            site_id: config.site_id.clone(),
+            project_id: config.project_id.clone(),
+            consent_policy_version: config.consent_policy_version.clone(),
+            client_version: crate::CLIENT_VERSION.into(),
+            metadata_policy: crate::model::MetadataPolicy {
+                policy_id: METADATA_POLICY_ID.into(),
+                policy_version: METADATA_POLICY_VERSION.into(),
+            },
+            created_at: "2026-07-18T00:00:00Z".into(),
+            source_summary: SourceSummary::default(),
+            bundles: Vec::new(),
+        };
+        let report = RunReport {
+            run_id: run_id.into(),
+            status: status.into(),
+            site_id: config.site_id,
+            project_id: config.project_id,
+            project_name: config.project_name,
+            consent_policy_version: config.consent_policy_version,
+            started_at: "2026-07-18T00:00:00Z".into(),
+            completed_at: None,
+            source_summary: SourceSummary::default(),
+            bundles: Vec::new(),
+            held_series: Vec::new(),
+            errors: Vec::new(),
+            worker_upload_id: None,
+            worker_upload_ids: Vec::new(),
+            existing_bundles: Vec::new(),
+            archive_commit_count: 0,
+        };
+        let manifest_path = runtime
+            .paths
+            .reports
+            .join(format!("{run_id}.manifest.json"));
+        let report_path = runtime.paths.reports.join(format!("{run_id}.json"));
+        write_json(&manifest_path, &manifest).unwrap();
+        write_json(&report_path, &report).unwrap();
+        runtime
+            .state
+            .set_artifacts(run_id, &manifest_path, &report_path)
+            .unwrap();
+    }
+
     #[test]
     fn multi_echo_labels_prefer_unique_explicit_echo_numbers() {
         let images = [
@@ -2089,7 +2100,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn completion_race_is_reconciled_without_manual_resume() {
+    async fn completion_race_is_reconciled_without_manual_recovery() {
         use axum::{Json, Router, http::StatusCode, routing::post};
 
         let prior_bundle = upload_test_bundle('6', '7');
@@ -2258,22 +2269,73 @@ mod tests {
         assert!(validate_existing_bundles(&[requested], &[mismatched]).is_err());
     }
 
-    #[test]
-    fn active_run_claim_prevents_concurrent_resume_and_releases_on_drop() {
-        let directory = tempfile::tempdir().unwrap();
-        let runtime = Runtime::initialize(Some(directory.path())).unwrap();
+    #[tokio::test]
+    async fn same_folder_command_continues_the_existing_failed_upload_run() {
+        let state_root = tempfile::tempdir().unwrap();
+        let source = tempfile::tempdir().unwrap();
+        let runtime = Runtime::initialize(Some(state_root.path())).unwrap();
+        sync_test_config().save(&runtime.paths).unwrap();
+        let canonical_source = source.path().canonicalize().unwrap();
         runtime
             .state
-            .create_run("run", Path::new("/private/source"), false)
+            .create_run("checkpointed-run", &canonical_source, false)
             .unwrap();
-        let active = runtime.claim_active_run("run").unwrap().unwrap();
-        assert!(runtime.is_run_active("run"));
-        assert!(runtime.claim_active_run("run").unwrap().is_none());
-        assert!(runtime.claim_active_run("other-run").unwrap().is_none());
-        assert_eq!(runtime.state.in_progress_runs().unwrap().len(), 1);
-        drop(active);
-        assert!(!runtime.is_run_active("run"));
-        assert!(runtime.claim_active_run("run").unwrap().is_some());
+        write_empty_sync_checkpoint(&runtime, "checkpointed-run", "upload_failed");
+        runtime
+            .state
+            .update_run(
+                "checkpointed-run",
+                "upload_failed",
+                &SourceSummary::default(),
+                Some("upload_failed"),
+            )
+            .unwrap();
+
+        let selected = runtime
+            .sync_folder(source.path().to_path_buf(), false)
+            .await
+            .unwrap();
+        assert_eq!(selected, "checkpointed-run");
+        let completed = runtime.state.latest_run().unwrap().unwrap();
+        assert_eq!(completed.id, "checkpointed-run");
+        assert_eq!(completed.status, "complete");
+    }
+
+    #[tokio::test]
+    async fn unchanged_completed_folder_is_a_local_no_op() {
+        let state_root = tempfile::tempdir().unwrap();
+        let source = tempfile::tempdir().unwrap();
+        fs::write(source.path().join("scan.dcm"), b"stable source fixture").unwrap();
+        let runtime = Runtime::initialize(Some(state_root.path())).unwrap();
+        sync_test_config().save(&runtime.paths).unwrap();
+        let canonical_source = source.path().canonicalize().unwrap();
+        runtime
+            .state
+            .create_run("completed-run", &canonical_source, false)
+            .unwrap();
+        write_empty_sync_checkpoint(&runtime, "completed-run", "complete");
+        runtime
+            .state
+            .update_run("completed-run", "complete", &SourceSummary::default(), None)
+            .unwrap();
+        let fingerprint = snapshot_source_with_progress(&canonical_source, |_| {})
+            .unwrap()
+            .fingerprint(&canonical_source)
+            .unwrap();
+        runtime
+            .state
+            .set_source_fingerprint("completed-run", &fingerprint)
+            .unwrap();
+
+        let selected = runtime
+            .sync_folder(source.path().to_path_buf(), false)
+            .await
+            .unwrap();
+        assert_eq!(selected, "completed-run");
+        assert_eq!(
+            runtime.state.latest_run().unwrap().unwrap().id,
+            "completed-run"
+        );
     }
 
     #[cfg(unix)]
@@ -2293,7 +2355,7 @@ mod tests {
     }
 
     #[test]
-    fn resume_requires_current_privacy_and_original_enrollment() {
+    fn automatic_continuation_requires_current_privacy_and_original_enrollment() {
         let config = ClientConfig {
             api_url: crate::DEFAULT_API_URL.into(),
             device_token: "sn_device_fixture".into(),

@@ -3,13 +3,14 @@ use std::{
     fs::File,
     io::Read,
     path::{Path, PathBuf},
-    time::{Duration, Instant, SystemTime},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 use anyhow::{Context, Result, bail};
 use dicom_core::Tag;
 use dicom_object::{DefaultDicomObject, OpenFileOptions};
 use serde_json::{Value, json};
+use sha2::{Digest, Sha256};
 use walkdir::WalkDir;
 
 use crate::model::SourceSummary;
@@ -106,6 +107,12 @@ pub struct SourceSnapshot {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SourceFingerprint {
+    pub sha256: String,
+    pub file_count: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 struct FileFingerprint {
     path: PathBuf,
     size: u64,
@@ -115,6 +122,46 @@ struct FileFingerprint {
 impl SourceSnapshot {
     pub fn is_stable_with(&self, later: &Self) -> bool {
         !self.changed_while_reading && !later.changed_while_reading && self.files == later.files
+    }
+
+    pub fn fingerprint(&self, root: &Path) -> Result<SourceFingerprint> {
+        if self.changed_while_reading {
+            bail!("the selected folder changed while its local sync identity was being checked");
+        }
+        let mut digest = Sha256::new();
+        digest.update(b"scaling-neuro-source-snapshot-v1\0");
+        for file in &self.files {
+            let relative = file.path.strip_prefix(root).with_context(|| {
+                format!(
+                    "source snapshot entry is outside the selected folder: {}",
+                    file.path.display()
+                )
+            })?;
+            let encoded_path = relative.as_os_str().as_encoded_bytes();
+            digest.update((encoded_path.len() as u64).to_le_bytes());
+            digest.update(encoded_path);
+            digest.update(file.size.to_le_bytes());
+            match file.modified {
+                None => digest.update([0]),
+                Some(modified) => match modified.duration_since(UNIX_EPOCH) {
+                    Ok(duration) => {
+                        digest.update([1]);
+                        digest.update(duration.as_secs().to_le_bytes());
+                        digest.update(duration.subsec_nanos().to_le_bytes());
+                    }
+                    Err(error) => {
+                        let duration = error.duration();
+                        digest.update([2]);
+                        digest.update(duration.as_secs().to_le_bytes());
+                        digest.update(duration.subsec_nanos().to_le_bytes());
+                    }
+                },
+            }
+        }
+        Ok(SourceFingerprint {
+            sha256: hex::encode(digest.finalize()),
+            file_count: self.files.len() as u64,
+        })
     }
 }
 
@@ -675,6 +722,7 @@ fn looks_like_dicom(path: &Path) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tempfile::tempdir;
 
     #[test]
     fn protocol_text_is_local_only_join() {
@@ -707,5 +755,29 @@ mod tests {
             ..Default::default()
         };
         assert!(representative_precedes(&same_instance_a, &later));
+    }
+
+    #[test]
+    fn source_fingerprint_is_stable_and_detects_folder_changes() {
+        let directory = tempdir().unwrap();
+        std::fs::write(directory.path().join("one.dcm"), b"first").unwrap();
+        let first = snapshot_source_with_progress(directory.path(), |_| {})
+            .unwrap()
+            .fingerprint(directory.path())
+            .unwrap();
+        let unchanged = snapshot_source_with_progress(directory.path(), |_| {})
+            .unwrap()
+            .fingerprint(directory.path())
+            .unwrap();
+        assert_eq!(first, unchanged);
+        assert_eq!(first.file_count, 1);
+
+        std::fs::write(directory.path().join("two.dcm"), b"second").unwrap();
+        let changed = snapshot_source_with_progress(directory.path(), |_| {})
+            .unwrap()
+            .fingerprint(directory.path())
+            .unwrap();
+        assert_ne!(first, changed);
+        assert_eq!(changed.file_count, 2);
     }
 }

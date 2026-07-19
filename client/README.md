@@ -26,7 +26,10 @@ irm https://scalingneuro.com/install.ps1 | iex
 ```
 
 ```text
-# guided terminal registration and upload flow
+# normal folder sync; first use performs registration in this terminal
+neuro-sync /path/to/completed-dicom-folder
+
+# guided fallback when the folder path is not supplied yet
 neuro-sync
 
 # explicit commands for headless or automated scanner-server use
@@ -34,7 +37,6 @@ neuro-sync register --email researcher@example.edu --name "Researcher Name" \
   --institution "Example University" --lab "Example Neuroimaging Lab" --accept-policy
 neuro-sync upload /path/to/completed-dicom-folder
 neuro-sync status
-neuro-sync resume
 neuro-sync report
 ```
 
@@ -92,14 +94,16 @@ and device identifiers, free-text descriptions/comments, demographics, dates/tim
 numbers, and DICOM UIDs are dropped. The bundle records compressed and scrubbed-uncompressed
 SHA-256 hashes plus deterministic converter/client/policy provenance.
 
-## Resumability and integrity
+## Automatic continuity and integrity
 
 Private state lives in the OS application-data directory (`ScalingNeuro/neuro-sync`) in SQLite WAL
 mode. The database records prepared bundles, server-owned multipart IDs, and each uploaded part's
-bare ETag. On restart, `resume` sends only locally uncheckpointed 64 MiB-class parts sequentially
-bounded concurrency and resends a locally persisted completion request if the prior response was
-interrupted. If R2 accepted a part immediately before a crash, re-PUT to the same multipart part
-number safely replaces it.
+bare ETag. Rerunning `neuro-sync /the/same/folder` selects that folder's unfinished run before any
+DICOM discovery or conversion. It sends only locally uncheckpointed 64 MiB-class parts with bounded
+sequential concurrency and resends a locally persisted completion request if the prior response was
+interrupted. If the folder already completed and its private file fingerprint is unchanged, the
+command is a local no-op. If R2 accepted a part immediately before a crash, re-PUT to the same
+multipart part number safely replaces it.
 
 On Unix, state directories are mode `0700` and secret-bearing files plus SQLite state/sidecars are
 mode `0600`. On Windows, the default state is inside the current user's LocalAppData profile and
@@ -119,8 +123,8 @@ report code.
 Only one client process may use a state directory at a time. Temporary DICOM staging is private,
 removed after each conversion, and cleaned after an interrupted process on the next launch.
 Prepared bundle bytes are removed after every archive chunk commits; hashes and the local report
-remain for audit. Interrupted uploads and dry-run bundles remain local so they can be resumed or
-inspected.
+remain for audit. Interrupted uploads and dry-run bundles remain local so they can be continued or
+inspected through the same folder command.
 
 ## Build and test
 

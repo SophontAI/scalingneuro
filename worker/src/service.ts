@@ -1560,7 +1560,7 @@ export async function createUpload(
     throw new AppError(
       "CONFLICT",
       409,
-      "This device already has an active upload; resume it before starting another",
+      "This device already has an active upload; rerun the same folder command to continue it before syncing another folder",
       { upload_id: activeUpload.id },
     );
   }

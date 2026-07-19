@@ -12,7 +12,10 @@ use anyhow::{Context, Result};
 use chrono::Utc;
 use rusqlite::{Connection, OptionalExtension, params};
 
-use crate::model::{ExistingArchiveBundle, SourceSummary};
+use crate::{
+    dicom::SourceFingerprint,
+    model::{ExistingArchiveBundle, SourceSummary},
+};
 
 #[derive(Debug, Clone)]
 pub struct StateStore {
@@ -132,6 +135,12 @@ impl StateStore {
                 updated_at TEXT NOT NULL
             );
             CREATE INDEX IF NOT EXISTS runs_status_updated ON runs(status, updated_at DESC);
+            CREATE TABLE IF NOT EXISTS source_fingerprints (
+                run_id TEXT PRIMARY KEY REFERENCES runs(id) ON DELETE CASCADE,
+                sha256 TEXT NOT NULL,
+                file_count INTEGER NOT NULL,
+                created_at TEXT NOT NULL
+            );
             CREATE TABLE IF NOT EXISTS upload_objects (
                 worker_upload_id TEXT NOT NULL,
                 object_key TEXT NOT NULL,
@@ -208,6 +217,58 @@ impl StateStore {
             ],
         )?;
         Ok(())
+    }
+
+    pub fn restart_interrupted_preparation(&self, id: &str) -> Result<()> {
+        let mut connection = self.connection()?;
+        let transaction = connection.transaction()?;
+        transaction.execute("DELETE FROM source_fingerprints WHERE run_id=?1", [id])?;
+        let updated = transaction.execute(
+            "UPDATE runs SET status='discovering',summary_json=?2,manifest_path=NULL,report_path=NULL,worker_upload_id=NULL,error_code=NULL,updated_at=?3 WHERE id=?1 AND status='failed' AND error_code IN ('local_preparation_interrupted','local_preparation_failed')",
+            params![
+                id,
+                serde_json::to_string(&SourceSummary::default())?,
+                Utc::now().to_rfc3339()
+            ],
+        )?;
+        if updated != 1 {
+            anyhow::bail!("the selected interrupted preparation is no longer retryable");
+        }
+        transaction.commit()?;
+        Ok(())
+    }
+
+    pub fn set_source_fingerprint(
+        &self,
+        run_id: &str,
+        fingerprint: &SourceFingerprint,
+    ) -> Result<()> {
+        self.connection()?.execute(
+            "INSERT INTO source_fingerprints (run_id,sha256,file_count,created_at) VALUES (?1,?2,?3,?4) ON CONFLICT(run_id) DO UPDATE SET sha256=excluded.sha256,file_count=excluded.file_count,created_at=excluded.created_at",
+            params![
+                run_id,
+                fingerprint.sha256,
+                fingerprint.file_count,
+                Utc::now().to_rfc3339()
+            ],
+        )?;
+        Ok(())
+    }
+
+    pub fn source_fingerprint(&self, run_id: &str) -> Result<Option<SourceFingerprint>> {
+        self.connection()?
+            .query_row(
+                "SELECT sha256,file_count FROM source_fingerprints WHERE run_id=?1",
+                [run_id],
+                |row| {
+                    Ok(SourceFingerprint {
+                        sha256: row.get(0)?,
+                        file_count: row.get::<_, i64>(1)? as u64,
+                    })
+                },
+            )
+            .optional()
+            .map_err(Into::into)
     }
 
     pub fn supersede_run_for_repreparation(&self, old_id: &str, new_id: &str) -> Result<()> {
@@ -410,34 +471,49 @@ impl StateStore {
             .map_err(Into::into)
     }
 
-    pub fn resumable_runs(&self, id: Option<&str>) -> Result<Vec<RunRecord>> {
-        let connection = self.connection()?;
-        let sql = if id.is_some() {
-            "SELECT id,source_path,status,dry_run,summary_json,manifest_path,report_path,worker_upload_id,error_code,created_at,updated_at FROM runs WHERE id=?1 AND status IN ('prepared','uploading','upload_failed')"
-        } else {
-            "SELECT id,source_path,status,dry_run,summary_json,manifest_path,report_path,worker_upload_id,error_code,created_at,updated_at FROM runs WHERE status IN ('prepared','uploading','upload_failed') ORDER BY created_at"
-        };
-        let mut statement = connection.prepare(sql)?;
-        let mapped = if let Some(id) = id {
-            statement
-                .query_map([id], row_to_run)?
-                .collect::<rusqlite::Result<Vec<_>>>()?
-        } else {
-            statement
-                .query_map([], row_to_run)?
-                .collect::<rusqlite::Result<Vec<_>>>()?
-        };
-        Ok(mapped)
+    pub fn continuable_run_for_source(
+        &self,
+        source: &Path,
+        dry_run: bool,
+    ) -> Result<Option<RunRecord>> {
+        self.connection()?
+            .query_row(
+                "SELECT r.id,r.source_path,r.status,r.dry_run,r.summary_json,r.manifest_path,r.report_path,r.worker_upload_id,r.error_code,r.created_at,r.updated_at FROM runs r WHERE r.source_path=?1 AND r.dry_run=?2 AND r.status IN ('prepared','uploading','upload_failed') AND NOT EXISTS (SELECT 1 FROM runs newer WHERE newer.source_path=r.source_path AND newer.dry_run=r.dry_run AND newer.created_at>r.created_at AND newer.status IN ('complete','complete_no_eligible_series','dry_run_complete')) ORDER BY r.created_at DESC LIMIT 1",
+                params![source.to_string_lossy(), dry_run],
+                row_to_run,
+            )
+            .optional()
+            .map_err(Into::into)
     }
 
-    pub fn in_progress_runs(&self) -> Result<Vec<RunRecord>> {
-        let connection = self.connection()?;
-        let mut statement = connection.prepare(
-            "SELECT id,source_path,status,dry_run,summary_json,manifest_path,report_path,worker_upload_id,error_code,created_at,updated_at FROM runs WHERE status IN ('discovering','converting','prepared','uploading') ORDER BY created_at",
-        )?;
-        Ok(statement
-            .query_map([], row_to_run)?
-            .collect::<rusqlite::Result<Vec<_>>>()?)
+    pub fn interrupted_preparation_for_source(
+        &self,
+        source: &Path,
+        dry_run: bool,
+    ) -> Result<Option<RunRecord>> {
+        self.connection()?
+            .query_row(
+                "SELECT r.id,r.source_path,r.status,r.dry_run,r.summary_json,r.manifest_path,r.report_path,r.worker_upload_id,r.error_code,r.created_at,r.updated_at FROM runs r WHERE r.source_path=?1 AND r.dry_run=?2 AND r.status='failed' AND r.error_code IN ('local_preparation_interrupted','local_preparation_failed') AND NOT EXISTS (SELECT 1 FROM runs newer WHERE newer.source_path=r.source_path AND newer.dry_run=r.dry_run AND newer.created_at>r.created_at AND newer.status IN ('complete','complete_no_eligible_series','dry_run_complete')) ORDER BY r.created_at DESC LIMIT 1",
+                params![source.to_string_lossy(), dry_run],
+                row_to_run,
+            )
+            .optional()
+            .map_err(Into::into)
+    }
+
+    pub fn completed_run_for_source(
+        &self,
+        source: &Path,
+        dry_run: bool,
+    ) -> Result<Option<RunRecord>> {
+        self.connection()?
+            .query_row(
+                "SELECT id,source_path,status,dry_run,summary_json,manifest_path,report_path,worker_upload_id,error_code,created_at,updated_at FROM runs WHERE source_path=?1 AND dry_run=?2 AND ((?2=1 AND status='dry_run_complete') OR (?2=0 AND status IN ('complete','complete_no_eligible_series'))) ORDER BY created_at DESC LIMIT 1",
+                params![source.to_string_lossy(), dry_run],
+                row_to_run,
+            )
+            .optional()
+            .map_err(Into::into)
     }
 
     pub fn interrupted_preparation_runs(&self) -> Result<Vec<RunRecord>> {
@@ -779,7 +855,104 @@ mod tests {
         );
         assert_eq!(new.status, "discovering");
         assert_eq!(new.source_path, "/private/source");
-        assert!(store.resumable_runs(None).unwrap().is_empty());
+        assert!(
+            store
+                .continuable_run_for_source(Path::new("/private/source"), false)
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn folder_history_selects_checkpointed_work_and_completed_snapshots() {
+        let directory = tempdir().unwrap();
+        let store = StateStore::open(&directory.path().join("state.sqlite3")).unwrap();
+        let source = Path::new("/private/dicoms");
+        store.create_run("partial", source, false).unwrap();
+        store
+            .update_run(
+                "partial",
+                "upload_failed",
+                &SourceSummary {
+                    files_seen: 40,
+                    dicom_files: 40,
+                    accepted: 1,
+                    ..Default::default()
+                },
+                Some("upload_failed"),
+            )
+            .unwrap();
+        assert_eq!(
+            store
+                .continuable_run_for_source(source, false)
+                .unwrap()
+                .unwrap()
+                .id,
+            "partial"
+        );
+        assert!(
+            store
+                .continuable_run_for_source(Path::new("/private/other"), false)
+                .unwrap()
+                .is_none()
+        );
+
+        store.create_run("complete", source, false).unwrap();
+        store
+            .update_run("complete", "complete", &SourceSummary::default(), None)
+            .unwrap();
+        let fingerprint = SourceFingerprint {
+            sha256: "a".repeat(64),
+            file_count: 40,
+        };
+        store
+            .set_source_fingerprint("complete", &fingerprint)
+            .unwrap();
+        assert_eq!(
+            store.source_fingerprint("complete").unwrap(),
+            Some(fingerprint)
+        );
+        assert_eq!(
+            store
+                .completed_run_for_source(source, false)
+                .unwrap()
+                .unwrap()
+                .id,
+            "complete"
+        );
+        assert!(
+            store
+                .continuable_run_for_source(source, false)
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn interrupted_local_preparation_reuses_its_run_identity() {
+        let directory = tempdir().unwrap();
+        let store = StateStore::open(&directory.path().join("state.sqlite3")).unwrap();
+        let source = Path::new("/private/dicoms");
+        store.create_run("interrupted", source, false).unwrap();
+        store
+            .update_run(
+                "interrupted",
+                "failed",
+                &SourceSummary::default(),
+                Some("local_preparation_interrupted"),
+            )
+            .unwrap();
+        let selected = store
+            .interrupted_preparation_for_source(source, false)
+            .unwrap()
+            .unwrap();
+        assert_eq!(selected.id, "interrupted");
+        store
+            .restart_interrupted_preparation("interrupted")
+            .unwrap();
+        let restarted = store.run("interrupted").unwrap().unwrap();
+        assert_eq!(restarted.status, "discovering");
+        assert!(restarted.error_code.is_none());
     }
 
     #[cfg(unix)]

@@ -27,7 +27,9 @@ fn automation_flags_are_documented_in_command_help() {
         .output()
         .unwrap();
     assert!(primary.status.success());
-    assert!(String::from_utf8_lossy(&primary.stdout).contains("[DICOM_FOLDER]"));
+    let primary_help = String::from_utf8_lossy(&primary.stdout);
+    assert!(primary_help.contains("[DICOM_FOLDER]"));
+    assert!(!primary_help.contains("resume"));
 
     let register = Command::new(env!("CARGO_BIN_EXE_neuro-sync"))
         .args(["register", "--help"])

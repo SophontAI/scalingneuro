@@ -70,7 +70,7 @@ Before sharing a package:
 1. The release workflow's blocking verification job must pass schema/policy consistency, strict Ajv compilation, Rust formatting/clippy/tests, and Worker type/tests.
 2. The release workflow must verify the pinned converter and produce SBOMs and `SHA256SUMS`.
 3. The terminal-installer tests must pass on macOS, Linux, and Windows, including a user-level install, bundled-converter presence, repeat installation, and rejection of a tampered archive.
-4. Run clean-machine smoke tests for each promised OS: terminal enrollment and folder entry, dry run, accepted/held separation, upload, forced interruption, resume, commit, and report.
+4. Run clean-machine smoke tests for each promised OS: terminal enrollment and folder entry, dry run, accepted/held separation, upload, forced interruption, rerunning the same folder command, automatic continuation, commit, and report.
 5. Inspect the stored sidecar and manifest for schema validity, metadata retention, absence of seeded PHI, and exact local/R2 hashes.
 6. Prefer notarized macOS and Authenticode-signed Windows builds for institution-managed machines. Until signing is configured, keep `UNSIGNED-PILOT` and `CODESIGNED-PILOT` filenames in release evidence; terminal installation must not claim to override endpoint-security policy.
 

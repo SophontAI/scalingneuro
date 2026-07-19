@@ -1,6 +1,6 @@
 # Scaling Neuro
 
-Scaling Neuro is a privacy-first ingestion path for building a scientifically usable, acquisition-space functional MRI archive. The current `0.2.6` open beta is a working EPI-only system: a researcher installs with one terminal command, registers their lab once, points the client at a folder of newly exported DICOMs, and lets it classify, convert, quality-check, resume, and commit eligible scans to Cloudflare R2.
+Scaling Neuro is a privacy-first ingestion path for building a scientifically usable, acquisition-space functional MRI archive. The current `0.2.7` open beta is a working EPI-only system: a researcher installs with one terminal command, registers their lab once, points the client at a folder of newly exported DICOMs, and lets it classify, convert, quality-check, automatically continue, and commit eligible scans to Cloudflare R2.
 
 This is no longer a static workflow mockup. The repository contains the cross-platform Rust client, Cloudflare control plane, D1 migrations, R2 multipart transport, strict public schemas, release automation, and the Scaling Neuro site. Self-service registration is open to any lab; the tool is not a clinical device or a substitute for IRB, consent, or data-use review.
 
@@ -9,7 +9,7 @@ This is no longer a static workflow mockup. The repository contains the cross-pl
 1. Paste the installer shown at [scalingneuro.com/downloads](https://scalingneuro.com/downloads/) into Terminal or PowerShell. It selects the correct release, verifies its pinned SHA-256, installs under the user’s home/application-data directory, adds `neuro-sync` to the user PATH, and returns control to the shell without launching setup.
 2. Find or copy the top-level DICOM export-folder path. When ready, run `neuro-sync /path/to/dicom-export` as printed by the installer.
 3. On the first run only, answer the lab-registration prompts and review the policy summary, then confirm authorization for the folder already supplied. No browser or web form is opened.
-4. Leave the command running. If the network drops or the process closes, run `neuro-sync resume`; completed work is checkpointed locally.
+4. Leave the command running. If the network drops or the process closes, rerun the same `neuro-sync /path/to/dicom-export` command. The folder path selects its checkpointed work automatically; prepared files and completed parts are reused.
 
 Researchers do not install Python, Docker, FSL, an AWS CLI, or Cloudflare credentials. The terminal installer fetches the complete release bundle, including the pinned multi-vendor `dcm2niix v1.0.20260416` converter under `libexec/`.
 
@@ -54,7 +54,7 @@ Scientific identity uses the uncompressed NIfTI SHA-256, not a multipart ETag or
 
 ## Command line
 
-The primary command takes the DICOM folder directly. Running `neuro-sync` with no arguments remains a guided fallback; explicit subcommands support managed and automated deployments.
+The primary command takes the DICOM folder directly. It is idempotent: the same folder command automatically continues compatible unfinished work, and an unchanged folder that already completed is recognized locally without reconversion or network access. Running `neuro-sync` with no arguments remains a guided fallback; explicit subcommands support managed and automated deployments.
 
 ```bash
 # Normal interactive use. First use registers the workstation in this terminal.
@@ -72,10 +72,6 @@ neuro-sync upload /path/to/dicom-export --confirm-authorized
 
 # Run the complete local privacy/QC path without contacting the API or R2.
 neuro-sync upload /path/to/dicom-export --dry-run
-
-# Resume all unfinished runs, or one local run ID.
-neuro-sync resume
-neuro-sync resume RUN_ID
 
 neuro-sync status --json
 neuro-sync report RUN_ID --json
@@ -123,7 +119,7 @@ cargo +1.85.0 test --locked --manifest-path client/Cargo.toml --all-features
 node --check dist/_worker.js
 ```
 
-The Worker tests exercise lost-response enrollment replay, invite exhaustion, strict request parsing, multipart allocation, part signing, authoritative post-completion HEAD verification, manifest/schema validity, idempotency, withdrawal/tombstones, cleanup, and hostile cases using local Cloudflare bindings. The Rust suite includes owner-only pending enrollment recovery, resume-context binding, synthetic Part 10 DICOM discovery/classification, and a full offline conversion/scrubbing/bundling dry run.
+The Worker tests exercise lost-response enrollment replay, invite exhaustion, strict request parsing, multipart allocation, part signing, authoritative post-completion HEAD verification, manifest/schema validity, idempotency, withdrawal/tombstones, cleanup, and hostile cases using local Cloudflare bindings. The Rust suite includes owner-only pending enrollment recovery, folder-keyed continuation and privacy-context binding, synthetic Part 10 DICOM discovery/classification, and a full offline conversion/scrubbing/bundling dry run.
 
 ### Local Worker and registration
 
@@ -200,7 +196,7 @@ See [docs/client-release.md](docs/client-release.md) for signing/notarization se
 The implementation is deliberately honest about what remains before broad academic rollout:
 
 - Scanner support comes from dcm2niix plus fail-closed validation, not a claim that every historical or malformed export works. Build a PHI-free compatibility matrix across Siemens classic/enhanced/XA, Philips classic/enhanced, and GE classic/enhanced exports.
-- Complete clean-machine smoke tests on each promised OS, including terminal folder entry, interruption/resume, commit, report, and operating-system trust prompts.
+- Complete clean-machine smoke tests on each promised OS, including terminal folder entry, interruption followed by the same folder command, automatic continuation, commit, report, and operating-system trust prompts.
 - Run at least one institution-approved fresh scanner export end to end and independently inspect the stored sidecar/manifest, metadata retention, PHI absence, native affine/voxel hashes, withdrawal, and cleanup.
 - Keep the R2 live smoke in the release gate. The deployed implementation has completed an ordinary-client Siemens fixture upload, independently reproduced the compressed/uncompressed/sidecar/manifest hashes after R2 download, and rejected wrong-part, expired, wrong-hash, and wrong same-length payloads. Repeat that evidence for every release and each named collaborator environment.
 - Before any non-public participant data, rotate the current production signer credential and independently verify that the replacement is dedicated to Scaling Neuro with Object Read & Write access to only its archive bucket. The current credential has not yet been verified as dedicated and bucket-scoped; the successful transport smoke does not establish that permission boundary.
