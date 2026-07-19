@@ -46,6 +46,16 @@ assert_before "$phase_one" "$phase_one_verify"
 assert_before "$phase_one_verify" "$legacy_registration"
 assert_before "$legacy_registration" "$candidate_smoke"
 assert_before "$candidate_smoke" "$phase_two"
+
+if [[ $(grep -cF '.status == "complete"' "$WORKFLOW") -ne 2 ]]; then
+  echo "release workflow must validate both candidate run snapshots as complete" >&2
+  exit 1
+fi
+
+if grep -qF '.status == "committed"' "$WORKFLOW"; then
+  echo "release workflow must not confuse local run completion with remote chunk commit state" >&2
+  exit 1
+fi
 assert_before "$phase_two" "$phase_two_verify"
 assert_before "$phase_two_verify" "$publish"
 assert_before "$publish" "$publish_verify"

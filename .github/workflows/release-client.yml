@@ -913,7 +913,7 @@ jobs:
           "$client" status --json > "$first_status"
           run_id=$(jq -r '.id' "$first_status")
           jq --exit-status '
-            .status == "committed" and
+            .status == "complete" and
             .summary.accepted == 1 and
             .summary.held == 0 and
             .summary.excluded == 0 and
@@ -946,7 +946,7 @@ jobs:
           "$client" upload "$fixture" --confirm-authorized
           "$client" status --json > "$smoke_root/replay-status.json"
           jq --exit-status --arg run_id "$run_id" '
-            .id == $run_id and .status == "committed" and
+            .id == $run_id and .status == "complete" and
             .dicom.status == "processed" and .dicom.processed_series == 1
           ' "$smoke_root/replay-status.json" >/dev/null
 
