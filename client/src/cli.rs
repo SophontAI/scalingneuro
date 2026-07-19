@@ -182,10 +182,32 @@ pub async fn execute(cli: Cli) -> Result<()> {
             let run = runtime
                 .run_record(run_id.as_deref())?
                 .context("no matching run was found")?;
+            let dicom = match runtime.dicom_processing_status(&run).await {
+                Ok(status) => status,
+                Err(error) => {
+                    if !json {
+                        println!(
+                            "processing: temporarily unavailable ({})",
+                            error.root_cause()
+                        );
+                    }
+                    None
+                }
+            };
             if json {
+                #[derive(serde::Serialize)]
+                struct StatusOutput {
+                    #[serde(flatten)]
+                    local: PublicRunStatus,
+                    #[serde(skip_serializing_if = "Option::is_none")]
+                    dicom: Option<crate::pipeline::DicomProcessingStatus>,
+                }
                 println!(
                     "{}",
-                    serde_json::to_string_pretty(&PublicRunStatus::from(&run))?
+                    serde_json::to_string_pretty(&StatusOutput {
+                        local: PublicRunStatus::from(&run),
+                        dicom,
+                    })?
                 );
             } else {
                 println!("run: {}", run.id);
@@ -200,6 +222,23 @@ pub async fn execute(cli: Cli) -> Result<()> {
                 );
                 if let Some(error) = run.error_code {
                     println!("error: {error}");
+                }
+                if let Some(dicom) = dicom {
+                    println!(
+                        "receipt: {} DICOM series received",
+                        dicom.receipt_received_series
+                    );
+                    println!("processing: {}", dicom.status);
+                    if dicom.processing_total_series > 0 {
+                        println!(
+                            "cluster: {} queued, {} processing, {} processed, {} failed, {} purged",
+                            dicom.queued_series,
+                            dicom.processing_series,
+                            dicom.processed_series,
+                            dicom.failed_series,
+                            dicom.purged_series
+                        );
+                    }
                 }
             }
             Ok(())

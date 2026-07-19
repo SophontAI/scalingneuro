@@ -18,7 +18,7 @@
     "bundles"
   ],
   "properties": {
-    "schema_version": { "const": "1.0.0" },
+    "schema_version": { "const": "2.0.0" },
     "run_id": {
       "$ref": "https://scalingneuro.com/schemas/common-v1.schema.json#/$defs/uuid"
     },
@@ -124,6 +124,52 @@
         }
       ]
     },
+    "localArchiveObject": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "relative_key",
+        "local_path",
+        "size",
+        "sha256",
+        "format",
+        "dicom_instance_count",
+        "deidentification_profile",
+        "deidentification_profile_version"
+      ],
+      "properties": {
+        "relative_key": {
+          "type": "string",
+          "minLength": 38,
+          "maxLength": 38,
+          "pattern": "^[a-f0-9]{24}/dicom\\.tar\\.zst$"
+        },
+        "local_path": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 8192
+        },
+        "size": {
+          "type": "integer",
+          "minimum": 32,
+          "maximum": 68719476736
+        },
+        "sha256": {
+          "$ref": "https://scalingneuro.com/schemas/common-v1.schema.json#/$defs/sha256"
+        },
+        "uncompressed_sha256": false,
+        "format": { "const": "dicom-tar-zstd" },
+        "dicom_instance_count": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 500000
+        },
+        "deidentification_profile": {
+          "const": "scaling-neuro.dicom-deidentification"
+        },
+        "deidentification_profile_version": { "const": "1.0.0" }
+      }
+    },
     "manifestBundle": {
       "type": "object",
       "additionalProperties": false,
@@ -133,8 +179,6 @@
         "subject_id",
         "session_id",
         "protocol_group_id",
-        "nifti",
-        "metadata",
         "source_dicom_count",
         "classification",
         "qc"
@@ -187,9 +231,13 @@
             }
           ]
         },
+        "archive": {
+          "$ref": "#/$defs/localArchiveObject"
+        },
         "source_dicom_count": {
           "type": "integer",
-          "minimum": 1
+          "minimum": 1,
+          "maximum": 500000
         },
         "classification": {
           "$ref": "https://scalingneuro.com/schemas/common-v1.schema.json#/$defs/classification"
@@ -197,7 +245,17 @@
         "qc": {
           "$ref": "https://scalingneuro.com/schemas/common-v1.schema.json#/$defs/qualityControl"
         }
-      }
+      },
+      "oneOf": [
+        {
+          "required": ["nifti", "metadata"],
+          "properties": { "nifti": {}, "metadata": {}, "archive": false }
+        },
+        {
+          "required": ["archive"],
+          "properties": { "archive": {}, "nifti": false, "metadata": false }
+        }
+      ]
     }
   }
 }

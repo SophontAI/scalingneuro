@@ -8,29 +8,29 @@ We propose a community‑led effort to build the largest open neuroimaging datas
 
 ### **Workflow overview**
 
-1. **Automatic data capture** – After each scanning session at a collaborating MRI facility, a local tool identifies all newly acquired, approved MRI outputs—including T1-weighted structural scans and EPI/fMRI series—and prepares them for transfer to a secure cloud storage location. It can watch a scanner’s DICOM output directory or run once against a selected folder, identifying sequences from metadata such as sequence names, acquisition types and vendor-specific tags.
+1. **Automatic data capture** – In the first production route, a researcher runs one terminal command against a completed DICOM export folder. The local tool identifies confidently supported EPI/fMRI series and prepares them for transfer to secure cloud storage. Structural, diffusion, ASL, field-map, reference, derived, and uncertain series remain local. A later unattended watcher can use the same deterministic folder/series identities without changing the archive contract.
 
-2. **Automatic local defacing** – T1-weighted structural scans and EPI/fMRI series are included in the upload. Before transfer, the script automatically defaces scans in which facial anatomy may be present and verifies both face removal and brain preservation. Scans without facial anatomy in the field of view pass unchanged. Any processing error or failed quality check is quarantined locally rather than uploaded.
+2. **Modality-specific privacy** – The initial EPI-only route does not upload structural scans and therefore does not pretend to solve defacing. It recursively de-identifies DICOM headers, preserves scanner-native Pixel Data exactly, and fails closed on burned-in annotation or unsupported metadata. Structural MRI will use a separate future route with validated defacing and quantitative brain-preservation QC before transfer.
 
-3. **Deidentification of metadata** – Subject identifiers (names, medical record numbers, session dates) are removed. Only minimal metadata useful for self‑supervised training (e.g., scanner manufacturer, field strength, TR/TE) are retained.
+3. **Deidentification without scientific metadata loss** – Names, medical record numbers, dates, accessions, administrative text, source UIDs, and unsafe private fields are removed or pseudonymized locally. Standard geometry, pixel semantics, scanner manufacturer/model/software, field strength, coils, sequence encodings, TR/TE, acceleration, phase-encoding, and other reviewed acquisition metadata are retained. Vendor-private fields are default-deny and enabled only through fixture-backed, bounded reconstruction rules.
 
-4. **Unlabeled, research-raw data sharing** – Because the dataset is intended for self-supervised foundation models, no manual labeling is required. Researchers who contribute data get immediate access to the shared dataset via access keys. The archive retains acquisition-level metadata and minimally transformed voxel data while clearly recording any privacy transformation.
+4. **Unlabeled, research-raw data sharing** – Because the dataset is intended for self-supervised foundation models, no manual labeling, BIDS naming, task annotation, or local curation is required. The canonical archive retains privacy-cleared scanner-native DICOM pixels, acquisition metadata, a deterministic instance inventory, and explicit privacy/classification provenance. Governed contributor access to the aggregated archive is a separate product surface rather than a credential distributed by the ingestion command.
 
-5. **Data format and storage** – Source DICOMs remain unchanged at the institution. The open archive stores privacy-cleared NIfTI volumes and minimized metadata sidecars in secure, redundant cloud buckets, with checksums and processing provenance. To reduce size, we are also exploring additional gray-matter focused representations, but the privacy-cleared full volumes remain available for researchers who need them.
+5. **Data format and storage** – Source DICOMs remain unchanged at the institution. Cloudflare R2 stores one immutable, deterministic, privacy-cleared DICOM archive per accepted series, with complete hashes and provenance. Sophont asynchronously verifies those exact bytes, repeats the privacy and EPI-purpose audit, runs a pinned converter, and publishes deterministic NIfTI, minimized sidecar, and processing-manifest derivatives. Derived representations and training caches never replace the canonical source archive.
 
 6. **Compute integration** – Training jobs can pull data directly from the cloud storage.
 
 ### **Implementation details**
 
-* **Portable deployment** – The production experience should be one downloaded launcher for macOS, Windows or Linux, with no manual Python, FSL, Docker or GPU setup. The same tool can run once on a grad student’s laptop or continuously on a scanner-adjacent server. A signed, versioned privacy pack is fetched and cached only if structural processing is needed.
+* **Portable deployment** – The production experience is a readable terminal installer followed by `neuro-sync /path/to/dicoms`, with no browser, administrator access, manual Python, FSL, Docker, converter, cloud CLI, or GPU setup. The same terminal client can run on a laptop or scanner-adjacent workstation. Platform packages are checksum-bound implementation details selected by the installer.
 
 * **Low-resource execution** – CPU-only operation is the baseline. The tool processes one series at a time by default, caps memory use, checkpoints completed work and resumes safely after interruption. Faster machines may opt into bounded parallelism, but the privacy decisions and outputs remain identical.
 
-* **Fail-closed upload** – DICOM conversion, metadata de-identification, structural privacy processing and automated quality checks happen locally. Only a consented output with a complete privacy-pass record can enter the upload queue; unknown sequences and uncertain outputs remain on the source machine.
+* **Fail-closed upload** – Functional-EPI selection, DICOM metadata de-identification, privacy checks, and archive construction happen locally. Conversion and scientific validation happen asynchronously on the research cluster, against the exact received archive. Only an authorized series with a complete local privacy-pass record can enter the upload queue; unsupported or uncertain sequences remain on the source machine.
 
-* **Sequence recognition** – For Siemens scanners, sequence names follow standardized naming conventions, enabling reliable identification of T1, EPI/fMRI and other MRI sequences. 
+* **Measured sequence recognition** – Classification uses standard DICOM image/acquisition/temporal evidence plus exact scanner-family compatibility gates. Free-text sequence descriptions and vendor names alone are never sufficient. Scanner support is expanded only with non-PHI fixtures, recursive privacy tests, pixel equality, and conversion-equivalence evidence.
 
-* **Security** – Data transfer uses encrypted connections (AWS S3 with server‑side encryption).
+* **Security** – Control-plane and object transfer use encrypted connections. The workstation receives only short-lived, object- and checksum-scoped R2 upload capabilities; it never receives reusable cloud credentials. Processor jobs similarly receive short-lived object-scoped capabilities, while the canonical archive and derived outputs live in Cloudflare R2.
 
 ## **Legal, privacy and ethical considerations**
 
@@ -71,4 +71,4 @@ To sustain a petabyte‑scale neuroimaging resource, dedicated infrastructure fu
 
 ## **Next steps**
 
-Refine the automatic upload script, recruit more pilot sites, draft grant proposals, outreach with more partners
+Run the EPI-only terminal workflow with pilot laboratories; expand the fixture-backed scanner matrix; independently audit retained metadata and privacy on real authorized exports; build governed archive discovery/access and compatibility dashboards; and design the structural route separately around validated defacing and brain-preservation QC. In parallel, recruit pilot sites, develop IRB/consent guidance, and pursue infrastructure funding and institutional partnerships.

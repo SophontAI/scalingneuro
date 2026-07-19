@@ -8,6 +8,12 @@ export interface PresignedUploadPart {
   expires_at: string;
 }
 
+export interface PresignedObjectRequest {
+  url: string;
+  headers: Record<string, string>;
+  expires_at: string;
+}
+
 function boundedInteger(
   value: string | undefined,
   fallback: number,
@@ -166,6 +172,133 @@ export async function presignUploadPart(
   };
 }
 
+async function presignObjectRequest(
+  env: Env,
+  input: {
+    method: "GET" | "PUT";
+    key: string;
+    headers?: Readonly<Record<string, string>>;
+  },
+  issuedAt = new Date(),
+): Promise<PresignedObjectRequest> {
+  if (
+    !env.R2_ACCOUNT_ID ||
+    !env.R2_PARENT_ACCESS_KEY_ID ||
+    !env.R2_PARENT_SECRET_ACCESS_KEY ||
+    !env.R2_BUCKET_NAME
+  ) {
+    throw new AppError(
+      "CREDENTIALS_UNAVAILABLE",
+      503,
+      "Object URL signing is not configured",
+    );
+  }
+
+  const ttlSeconds = credentialTtl(env);
+  const expiresAt = new Date(issuedAt.getTime() + ttlSeconds * 1000);
+  const host = `${env.R2_ACCOUNT_ID}.r2.cloudflarestorage.com`;
+  const amzDate = issuedAt.toISOString().replace(/[:-]|\.\d{3}/gu, "");
+  const date = amzDate.slice(0, 8);
+  const scope = `${date}/auto/s3/aws4_request`;
+  const requestHeaders = Object.fromEntries(
+    Object.entries(input.headers ?? {}).map(([key, value]) => [
+      key.toLowerCase(),
+      value.trim().replace(/\s+/gu, " "),
+    ]),
+  );
+  const signedHeaderNames = [...Object.keys(requestHeaders), "host"].sort();
+  const signedHeaders = signedHeaderNames.join(";");
+  const canonicalHeaders = signedHeaderNames
+    .map((name) => `${name}:${name === "host" ? host : requestHeaders[name]}\n`)
+    .join("");
+  const query = new Map<string, string>([
+    ["X-Amz-Algorithm", "AWS4-HMAC-SHA256"],
+    ["X-Amz-Credential", `${env.R2_PARENT_ACCESS_KEY_ID}/${scope}`],
+    ["X-Amz-Date", amzDate],
+    ["X-Amz-Expires", String(ttlSeconds)],
+    ["X-Amz-SignedHeaders", signedHeaders],
+  ]);
+  const canonicalQuery = [...query.entries()]
+    .map(([key, value]) => [awsEncode(key), awsEncode(value)] as const)
+    .sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0))
+    .map(([key, value]) => `${key}=${value}`)
+    .join("&");
+  const canonicalUri = `/${awsEncode(env.R2_BUCKET_NAME)}/${input.key
+    .split("/")
+    .map(awsEncode)
+    .join("/")}`;
+  const canonicalRequest = [
+    input.method,
+    canonicalUri,
+    canonicalQuery,
+    canonicalHeaders,
+    signedHeaders,
+    "UNSIGNED-PAYLOAD",
+  ].join("\n");
+  const stringToSign = [
+    "AWS4-HMAC-SHA256",
+    amzDate,
+    scope,
+    await sha256Hex(canonicalRequest),
+  ].join("\n");
+  try {
+    const dateKey = await hmacSha256(
+      `AWS4${env.R2_PARENT_SECRET_ACCESS_KEY}`,
+      date,
+    );
+    const regionKey = await hmacSha256(dateKey, "auto");
+    const serviceKey = await hmacSha256(regionKey, "s3");
+    const signingKey = await hmacSha256(serviceKey, "aws4_request");
+    const signature = hex(await hmacSha256(signingKey, stringToSign));
+    return {
+      url: `https://${host}${canonicalUri}?${canonicalQuery}&X-Amz-Signature=${signature}`,
+      headers: requestHeaders,
+      expires_at: expiresAt.toISOString(),
+    };
+  } catch {
+    throw new AppError(
+      "CREDENTIALS_UNAVAILABLE",
+      503,
+      "Unable to sign object URL",
+    );
+  }
+}
+
+export async function presignGetObject(
+  env: Env,
+  key: string,
+): Promise<PresignedObjectRequest> {
+  return presignObjectRequest(env, { method: "GET", key });
+}
+
+export async function presignPutObject(
+  env: Env,
+  input: {
+    key: string;
+    size: number;
+    sha256: string;
+    contentType: string;
+    customMetadata: Readonly<Record<string, string>>;
+  },
+): Promise<PresignedObjectRequest> {
+  const metadataHeaders = Object.fromEntries(
+    Object.entries(input.customMetadata).map(([key, value]) => [
+      `x-amz-meta-${key.replaceAll("_", "-")}`,
+      value,
+    ]),
+  );
+  return presignObjectRequest(env, {
+    method: "PUT",
+    key: input.key,
+    headers: {
+      "content-length": String(input.size),
+      "content-type": input.contentType,
+      "x-amz-content-sha256": input.sha256,
+      ...metadataHeaders,
+    },
+  });
+}
+
 export async function deletePrefix(
   env: Pick<
     Env,
@@ -178,10 +311,10 @@ export async function deletePrefix(
   prefix: string,
   request: typeof fetch = fetch,
 ): Promise<void> {
-  // An upload prefix is bounded to 64 objects by the public contract. Restart
-  // from the beginning after every pass: cursors are not stable when the page
-  // they describe is being deleted, and a successful batch call does not give
-  // us per-key confirmation.
+  // Restart from the beginning after every pass: cursors are not stable when
+  // the page they describe is being deleted, and a successful batch call does
+  // not give us per-key confirmation. Four 1,000-object passes cover the raw
+  // archives plus all processor outputs at the public session limit.
   for (let pass = 0; pass < 4; pass += 1) {
     const page = await env.ARCHIVE.list({ prefix, limit: 1000 });
     if (page.objects.length === 0 && !page.truncated) return;

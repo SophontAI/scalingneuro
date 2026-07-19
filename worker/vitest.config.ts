@@ -20,6 +20,8 @@ export default defineConfig({
           R2_BUCKET_NAME: "scaling-neuro-test",
           R2_PARENT_SECRET_ACCESS_KEY: "test-parent-secret-access-key",
           ADMIN_API_TOKEN: "test-admin-token-with-sufficient-entropy",
+          PROCESSOR_API_TOKEN:
+            "test-processor-token-with-sufficient-entropy",
           SITE_KEY_ENCRYPTION_KEY_B64:
             "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=",
           CREDENTIAL_TTL_SECONDS: "900",

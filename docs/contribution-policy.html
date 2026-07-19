@@ -22,15 +22,18 @@
 
   <h2>What leaves the workstation</h2>
   <ul>
-    <li><strong>voxels</strong> — deterministic native-space NIfTI, without registration, masking, resampling, or lossy transforms;</li>
-    <li><strong>metadata</strong> — a default-deny acquisition allowlist covering scanner context, timing, geometry, conversion provenance, classifier evidence, QC, and hashes;</li>
+    <li><strong>scanner-native voxels</strong> — functional EPI DICOM pixel data, without registration, masking, resampling, quantization, or local NIfTI conversion;</li>
+    <li><strong>acquisition metadata</strong> — privacy-cleared DICOM attributes needed to interpret the pixels, plus a normalized default-deny manifest covering scanner context, timing, geometry, classifier evidence, and hashes;</li>
     <li><strong>linkage</strong> — site-scoped pseudonymous subject, session, series, protocol-group, and bundle IDs; and</li>
     <li><strong>operations</strong> — client version, upload state, checksums, and a contributor contact stored separately from scan metadata.</li>
   </ul>
-  <p>Source DICOM files are never uploaded. Names, medical-record and accession numbers, birth dates, source dates and times, DICOM UIDs, institution/station/operator fields, source filenames and paths, free-text protocol descriptions, and private-tag dumps are not permitted in an uploaded bundle.</p>
+  <p>The original source files stay local and unchanged. Before any DICOM copy leaves the workstation, neuro-sync recursively removes direct identifiers, medical-record and accession numbers, birth dates, source dates and times, institution/station/operator fields, source filenames and paths, free-text protocol descriptions, overlays, graphics, and unsafe private data. Patient and instance identifiers are replaced with site-scoped pseudonyms, referential DICOM UIDs are remapped consistently, file metadata is rebuilt, and the result is audited before it becomes uploadable. A series with declared burned-in annotation or another unsupported privacy condition remains local.</p>
+
+  <h2>Server processing</h2>
+  <p>A completed upload means the locally privacy-cleared DICOM archives have been received durably with exact byte and multipart receipts. Scaling Neuro then verifies the whole archive hash, parses and re-audits every DICOM, converts the series with a pinned multi-vendor converter, validates the native-space functional NIfTI and minimized sidecar, and records those outputs as derived artifacts. This processing is asynchronous and does not keep the contributing workstation open. If the server finds a privacy, archive-boundary, hash, or functional-EPI purpose violation, it deletes that rejected source object and retains a non-identifying audit tombstone; converter or scientific-compatibility failures retain the de-identified source for review.</p>
 
   <h2>Archive stewardship</h2>
-  <p>Scaling Neuro may validate, deduplicate, quarantine, preserve, and analyze accepted bundles and may include them in documented, governed research datasets. The beta does not by itself promise immediate public release or a specific final data license. Dataset access and licensing terms must be published before a governed release; the canonical raw archive and its provenance remain distinct from derived training caches and model artifacts.</p>
+  <p>Scaling Neuro may validate, deduplicate, quarantine, preserve, and analyze accepted bundles and may include them in documented, governed research datasets. Objects rejected by the server privacy, archive-integrity, or functional-EPI purpose checks may instead be purged as described above. The beta does not by itself promise immediate public release or a specific final data license. Dataset access and licensing terms must be published before a governed release; the canonical privacy-cleared source archive and its provenance remain distinct from derived training caches and model artifacts.</p>
 
   <h2>Withdrawal and contact</h2>
   <p>A lab may request that its device be revoked or a contributed upload be withdrawn by emailing <a href="mailto:admin@sophont.med?subject=Scaling%20Neuro%20contribution">admin@sophont.med</a> with the pseudonymous upload ID from its local report. Withdrawal removes the archived objects and leaves a non-identifying audit tombstone so the same bundle is not silently reintroduced. Separately distributed governed datasets or research derived before a withdrawal may not always be retractable; release-specific terms will describe that boundary.</p>

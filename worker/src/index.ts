@@ -1,6 +1,19 @@
 import { AppError } from "./errors";
 import type { Env } from "./env";
 import {
+  claimProcessingJob,
+  cleanupPendingRejectedDicomInputs,
+  completeDicomUpload,
+  completeProcessingJob,
+  createDicomUpload,
+  createDicomUploadPartUrl,
+  failProcessingJob,
+  getDicomUploadStatus,
+  grantProcessingOutputs,
+  heartbeatProcessingJob,
+  refreshDicomUploadCredentials,
+} from "./dicom";
+import {
   adminCleanup,
   cleanupAbandoned,
   completeUpload,
@@ -21,10 +34,16 @@ import {
 import {
   parseAdminInviteRequest,
   parseCompleteUploadRequest,
+  parseCreateDicomUploadRequest,
   parseCreateUploadRequest,
   parseEnrollRequest,
   parseJsonText,
   parsePublicRegistrationRequest,
+  parseProcessorClaimRequest,
+  parseProcessorCompleteRequest,
+  parseProcessorFailRequest,
+  parseProcessorLeaseRequest,
+  parseProcessorOutputRequest,
   parseSignPartRequest,
 } from "./validation";
 
@@ -37,6 +56,32 @@ const uploadCredentialsRoute = new RegExp(
 const uploadCompleteRoute = new RegExp(`^/v1/uploads/${UUID}/complete$`, "u");
 const uploadPartRoute = new RegExp(`^/v1/uploads/${UUID}/parts$`, "u");
 const uploadStatusRoute = new RegExp(`^/v1/uploads/${UUID}$`, "u");
+const dicomCredentialsRoute = new RegExp(
+  `^/v1/dicom-uploads/${UUID}/credentials$`,
+  "u",
+);
+const dicomCompleteRoute = new RegExp(
+  `^/v1/dicom-uploads/${UUID}/complete$`,
+  "u",
+);
+const dicomPartRoute = new RegExp(`^/v1/dicom-uploads/${UUID}/parts$`, "u");
+const dicomStatusRoute = new RegExp(`^/v1/dicom-uploads/${UUID}$`, "u");
+const processorHeartbeatRoute = new RegExp(
+  `^/v1/processor/jobs/${UUID}/heartbeat$`,
+  "u",
+);
+const processorOutputsRoute = new RegExp(
+  `^/v1/processor/jobs/${UUID}/outputs$`,
+  "u",
+);
+const processorCompleteRoute = new RegExp(
+  `^/v1/processor/jobs/${UUID}/complete$`,
+  "u",
+);
+const processorFailRoute = new RegExp(
+  `^/v1/processor/jobs/${UUID}/fail$`,
+  "u",
+);
 const inviteRevokeRoute = new RegExp(`^/v1/admin/invites/${UUID}/revoke$`, "u");
 const deviceRevokeRoute = new RegExp(`^/v1/admin/devices/${UUID}/revoke$`, "u");
 const uploadWithdrawRoute = new RegExp(
@@ -118,6 +163,8 @@ function routeLabel(pathname: string): string {
     pathname === "/v1/enroll" ||
     pathname === "/v1/register" ||
     pathname === "/v1/uploads" ||
+    pathname === "/v1/dicom-uploads" ||
+    pathname === "/v1/processor/jobs/claim" ||
     pathname === "/v1/admin/invites" ||
     pathname === "/v1/admin/registrations" ||
     pathname === "/v1/admin/cleanup"
@@ -129,6 +176,20 @@ function routeLabel(pathname: string): string {
   if (uploadCompleteRoute.test(pathname)) return "/v1/uploads/:id/complete";
   if (uploadPartRoute.test(pathname)) return "/v1/uploads/:id/parts";
   if (uploadStatusRoute.test(pathname)) return "/v1/uploads/:id";
+  if (dicomCredentialsRoute.test(pathname))
+    return "/v1/dicom-uploads/:id/credentials";
+  if (dicomCompleteRoute.test(pathname))
+    return "/v1/dicom-uploads/:id/complete";
+  if (dicomPartRoute.test(pathname)) return "/v1/dicom-uploads/:id/parts";
+  if (dicomStatusRoute.test(pathname)) return "/v1/dicom-uploads/:id";
+  if (processorHeartbeatRoute.test(pathname))
+    return "/v1/processor/jobs/:id/heartbeat";
+  if (processorOutputsRoute.test(pathname))
+    return "/v1/processor/jobs/:id/outputs";
+  if (processorCompleteRoute.test(pathname))
+    return "/v1/processor/jobs/:id/complete";
+  if (processorFailRoute.test(pathname))
+    return "/v1/processor/jobs/:id/fail";
   if (inviteRevokeRoute.test(pathname))
     return "/v1/admin/invites/:id/revoke";
   if (deviceRevokeRoute.test(pathname))
@@ -157,7 +218,10 @@ export async function fetchHandler(
       return json(result, requestId);
     }
     if (request.method === "GET" && path === "/v1/contribution") {
-      return json(publicContributionInfo(), requestId);
+      return json(
+        publicContributionInfo(request.headers.get("user-agent")),
+        requestId,
+      );
     }
     if (request.method === "POST" && path === "/v1/register") {
       return json(
@@ -183,6 +247,24 @@ export async function fetchHandler(
         parseCreateUploadRequest(await requestJson(request)),
       );
       return json(result.body, requestId, result.created ? 201 : 200);
+    }
+    if (request.method === "POST" && path === "/v1/dicom-uploads") {
+      const result = await createDicomUpload(
+        request,
+        env,
+        parseCreateDicomUploadRequest(await requestJson(request)),
+      );
+      return json(result.body, requestId, result.created ? 201 : 200);
+    }
+    if (request.method === "POST" && path === "/v1/processor/jobs/claim") {
+      const result = await claimProcessingJob(
+        request,
+        env,
+        parseProcessorClaimRequest(await requestJson(request)),
+      );
+      return result === null
+        ? new Response(null, { status: 204, headers: apiHeaders(requestId) })
+        : json(result, requestId);
     }
 
     const credentialsUploadId = idMatch(uploadCredentialsRoute, path);
@@ -223,6 +305,97 @@ export async function fetchHandler(
         requestId,
       );
     }
+    const dicomCredentialsUploadId = idMatch(dicomCredentialsRoute, path);
+    if (request.method === "POST" && dicomCredentialsUploadId) {
+      return json(
+        await refreshDicomUploadCredentials(
+          request,
+          env,
+          dicomCredentialsUploadId,
+        ),
+        requestId,
+      );
+    }
+    const dicomCompleteUploadId = idMatch(dicomCompleteRoute, path);
+    if (request.method === "POST" && dicomCompleteUploadId) {
+      return json(
+        await completeDicomUpload(
+          request,
+          env,
+          dicomCompleteUploadId,
+          parseCompleteUploadRequest(await requestJson(request)),
+        ),
+        requestId,
+      );
+    }
+    const dicomPartUploadId = idMatch(dicomPartRoute, path);
+    if (request.method === "POST" && dicomPartUploadId) {
+      return json(
+        await createDicomUploadPartUrl(
+          request,
+          env,
+          dicomPartUploadId,
+          parseSignPartRequest(await requestJson(request)),
+        ),
+        requestId,
+      );
+    }
+    const dicomStatusUploadId = idMatch(dicomStatusRoute, path);
+    if (request.method === "GET" && dicomStatusUploadId) {
+      return json(
+        await getDicomUploadStatus(request, env, dicomStatusUploadId),
+        requestId,
+      );
+    }
+
+    const heartbeatJobId = idMatch(processorHeartbeatRoute, path);
+    if (request.method === "POST" && heartbeatJobId) {
+      return json(
+        await heartbeatProcessingJob(
+          request,
+          env,
+          heartbeatJobId,
+          parseProcessorLeaseRequest(await requestJson(request)),
+        ),
+        requestId,
+      );
+    }
+    const outputsJobId = idMatch(processorOutputsRoute, path);
+    if (request.method === "POST" && outputsJobId) {
+      return json(
+        await grantProcessingOutputs(
+          request,
+          env,
+          outputsJobId,
+          parseProcessorOutputRequest(await requestJson(request)),
+        ),
+        requestId,
+      );
+    }
+    const completedJobId = idMatch(processorCompleteRoute, path);
+    if (request.method === "POST" && completedJobId) {
+      return json(
+        await completeProcessingJob(
+          request,
+          env,
+          completedJobId,
+          parseProcessorCompleteRequest(await requestJson(request)),
+        ),
+        requestId,
+      );
+    }
+    const failedJobId = idMatch(processorFailRoute, path);
+    if (request.method === "POST" && failedJobId) {
+      return json(
+        await failProcessingJob(
+          request,
+          env,
+          failedJobId,
+          parseProcessorFailRequest(await requestJson(request)),
+        ),
+        requestId,
+      );
+    }
 
     if (request.method === "POST" && path === "/v1/admin/invites") {
       return json(
@@ -239,7 +412,9 @@ export async function fetchHandler(
       return json(await listContributorRegistrations(request, env), requestId);
     }
     if (request.method === "POST" && path === "/v1/admin/cleanup") {
-      return json(await adminCleanup(request, env), requestId);
+      const result = await adminCleanup(request, env);
+      await cleanupPendingRejectedDicomInputs(env, 50);
+      return json(result, requestId);
     }
     const inviteId = idMatch(inviteRevokeRoute, path);
     if (request.method === "POST" && inviteId) {
@@ -292,10 +467,15 @@ const worker = {
     ctx: ExecutionContext,
   ): Promise<void> {
     ctx.waitUntil(
-      cleanupAbandoned(env).catch(() => {
-        console.error(
-          JSON.stringify({ event: "cleanup_failed", source: "scheduled" }),
-        );
+      Promise.allSettled([
+        cleanupAbandoned(env),
+        cleanupPendingRejectedDicomInputs(env, 50),
+      ]).then((results) => {
+        if (results.some((result) => result.status === "rejected")) {
+          console.error(
+            JSON.stringify({ event: "cleanup_failed", source: "scheduled" }),
+          );
+        }
       }),
     );
   },

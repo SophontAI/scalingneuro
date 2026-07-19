@@ -7,7 +7,7 @@ use anyhow::{Context, Result, bail};
 use directories::ProjectDirs;
 use serde::{Deserialize, Serialize};
 
-use crate::DEFAULT_API_URL;
+use crate::{DEFAULT_API_URL, privacy};
 
 #[derive(Debug, Clone)]
 pub struct AppPaths {
@@ -51,8 +51,12 @@ impl AppPaths {
         for path in [&self.root, &self.work, &self.bundles, &self.reports] {
             fs::create_dir_all(path)
                 .with_context(|| format!("failed to create {}", path.display()))?;
-            restrict_dir(path)?;
+            privacy::restrict_dir(path)?;
         }
+        // Windows directory ACL changes do not necessarily rewrite existing
+        // descendants. Sweep the private state tree so a custom directory
+        // cannot retain older inherited access on reports or archive files.
+        privacy::restrict_state_tree(&self.root)?;
         Ok(())
     }
 }
@@ -89,10 +93,10 @@ impl ClientConfig {
         let bytes = serde_json::to_vec_pretty(self)?;
         fs::write(&temporary, bytes)
             .with_context(|| format!("failed to write {}", temporary.display()))?;
-        restrict_file(&temporary)?;
+        privacy::restrict_file(&temporary)?;
         fs::rename(&temporary, &paths.config)
             .with_context(|| format!("failed to replace {}", paths.config.display()))?;
-        restrict_file(&paths.config)?;
+        privacy::restrict_file(&paths.config)?;
         Ok(())
     }
 
@@ -130,30 +134,6 @@ impl ClientConfig {
             pseudonym_key_b64: key_b64,
         }
     }
-}
-
-#[cfg(unix)]
-fn restrict_file(path: &Path) -> Result<()> {
-    use std::os::unix::fs::PermissionsExt;
-    fs::set_permissions(path, fs::Permissions::from_mode(0o600))?;
-    Ok(())
-}
-
-#[cfg(not(unix))]
-fn restrict_file(_path: &Path) -> Result<()> {
-    Ok(())
-}
-
-#[cfg(unix)]
-fn restrict_dir(path: &Path) -> Result<()> {
-    use std::os::unix::fs::PermissionsExt;
-    fs::set_permissions(path, fs::Permissions::from_mode(0o700))?;
-    Ok(())
-}
-
-#[cfg(not(unix))]
-fn restrict_dir(_path: &Path) -> Result<()> {
-    Ok(())
 }
 
 #[cfg(test)]

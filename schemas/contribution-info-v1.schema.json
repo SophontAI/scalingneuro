@@ -31,8 +31,10 @@
       "pattern": "^https://scalingneuro\\.com/"
     },
     "self_service_quota_bytes": {
-      "type": "integer",
-      "minimum": 1
+      "description": "Canonical cumulative public-workstation allowance in bytes, or null when uncapped. During the 0.2-to-0.3 transition, an exact legacy neuro-sync user agent may receive the JSON-safe maximum integer as an uncapped parsing sentinel while backend quota remains null.",
+      "type": ["integer", "null"],
+      "minimum": 1,
+      "maximum": 9007199254740991
     },
     "minimum_client_version": {
       "type": "string",

@@ -1,5 +1,5 @@
 {
-  "schema_version": "1.0.0",
+  "schema_version": "2.0.0",
   "run_id": "0190f86f-e0de-7f2a-a24c-0a6abf16ec84",
   "site_id": "0190f870-1111-7f2a-a24c-0a6abf16ec81",
   "project_id": "0190f870-2222-7f2a-a24c-0a6abf16ec81",
@@ -11,10 +11,10 @@
   },
   "created_at": "2026-07-12T03:14:02Z",
   "source_summary": {
-    "files_seen": 1200,
-    "dicom_files": 1200,
-    "series_found": 1,
-    "accepted": 1,
+    "files_seen": 1500,
+    "dicom_files": 1500,
+    "series_found": 2,
+    "accepted": 2,
     "held": 0,
     "excluded": 0
   },
@@ -56,6 +56,46 @@
         "checks": [
           {
             "code": "privacy_allowlist",
+            "status": "pass"
+          }
+        ],
+        "warnings": []
+      }
+    },
+    {
+      "bundle_id": "8d3b6a88f4bc7d7e0f122345",
+      "series_id": "4e6b098d125ef730af122345",
+      "subject_id": "a4b73d9e6f12a2b011223344",
+      "session_id": "b9e5cf2f5a74a3f811223344",
+      "protocol_group_id": "cc2d5fa34ca8e913af122345",
+      "archive": {
+        "relative_key": "8d3b6a88f4bc7d7e0f122345/dicom.tar.zst",
+        "local_path": "/private/var/neuro-sync/bundles/8d3b6a88f4bc7d7e0f122345/dicom.tar.zst",
+        "size": 104857600,
+        "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "format": "dicom-tar-zstd",
+        "dicom_instance_count": 300,
+        "deidentification_profile": "scaling-neuro.dicom-deidentification",
+        "deidentification_profile_version": "1.0.0"
+      },
+      "source_dicom_count": 300,
+      "classification": {
+        "decision": "accepted",
+        "kind": "functional_epi",
+        "confidence": 0.99,
+        "evidence": [
+          {
+            "code": "mr_image_storage",
+            "source": "dicom_header",
+            "effect": "supports"
+          }
+        ]
+      },
+      "qc": {
+        "passed": true,
+        "checks": [
+          {
+            "code": "recursive_public_attribute_allowlist",
             "status": "pass"
           }
         ],

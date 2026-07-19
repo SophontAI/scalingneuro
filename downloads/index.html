@@ -17,6 +17,7 @@
     .eyebrow { margin-top:66px; text-transform:uppercase; color:var(--muted); }
     h1 { max-width:820px; margin:14px 0 18px; font-size:clamp(42px,8vw,76px); line-height:.98; letter-spacing:-.035em; }
     .lede { max-width:740px; margin-bottom:18px; color:#42475a; font-size:22px; }
+    .boundary { max-width:820px; margin:0 0 18px; padding:13px 15px; border-left:3px solid #77728c; color:#42475a; background:#f6f5f8; font-size:16px; }
     .status { display:inline-block; margin:0 0 34px; padding:7px 10px; border:1px solid var(--line); border-radius:999px; }
     .commands { display:grid; grid-template-columns:1fr 1fr; gap:16px; }
     .command-card { min-width:0; padding:22px; border:1px solid var(--line); border-radius:14px; background:#f6f5f8; }
@@ -59,21 +60,22 @@
     <div class="eyebrow">Open self-service beta · functional EPI only</div>
     <h1>Install now. Start when ready.</h1>
     <p class="lede">Paste the command for your computer. It installs and verifies neuro-sync, then returns you to the shell—no browser, administrator access, or dependencies to configure. Find or copy your DICOM folder path, then start neuro-sync when you are ready.</p>
+    <p class="boundary"><strong>Measured beta boundary:</strong> classic Siemens Prisma_fit/E11 mosaic and Philips Achieva dStream/5.1.1 functional EPI only. Unverified scanner families and all structural, diffusion, reference, derived, and ambiguous scans remain local.</p>
     <div class="status" id="releaseStatus">Checking the current verified release…</div>
 
     <section class="commands" aria-label="Terminal installation commands">
       <article class="command-card" data-installer="unix">
-        <div class="command-head"><h2>macOS or Linux</h2><span class="badge" hidden>Recommended</span></div>
+        <div class="command-head"><h2>macOS or Linux x64</h2><span class="badge" hidden>Recommended</span></div>
         <div class="command">
           <code>curl -fsSL https://scalingneuro.com/install.sh | sh</code>
           <button class="copy" type="button" data-copy="curl -fsSL https://scalingneuro.com/install.sh | sh">Copy</button>
         </div>
-        <p>Uses <code>~/.local</code>, adds <code>neuro-sync</code> to your user PATH, then prints the exact command to run later.</p>
+        <p>Supports Intel and Apple-silicon macOS, plus x86-64 Linux. Uses <code>~/.local</code>, adds <code>neuro-sync</code> to your user PATH, then prints the exact command to run later.</p>
         <a class="inspect" href="/install.sh">Inspect the installer</a>
       </article>
 
       <article class="command-card" data-installer="windows">
-        <div class="command-head"><h2>Windows PowerShell</h2><span class="badge" hidden>Recommended</span></div>
+        <div class="command-head"><h2>Windows x64 PowerShell</h2><span class="badge" hidden>Recommended</span></div>
         <div class="command">
           <code>irm https://scalingneuro.com/install.ps1 | iex</code>
           <button class="copy" type="button" data-copy="irm https://scalingneuro.com/install.ps1 | iex">Copy</button>
@@ -84,7 +86,7 @@
     </section>
 
     <div class="assurance" aria-label="Installer properties">
-      <span>No sudo or admin</span><span>No browser required</span><span>SHA-256 verified</span><span>Pinned dcm2niix included</span>
+      <span>No sudo or admin</span><span>No browser required</span><span>SHA-256 verified</span><span>One executable</span>
     </div>
 
     <section class="box">
@@ -93,12 +95,12 @@
         <li>The installer finishes and returns control to your terminal. It does not launch neuro-sync automatically.</li>
         <li>Find or copy the completed DICOM export-folder path, then run the command printed by the installer.</li>
         <li>Complete the one-minute terminal registration and authorization confirmation. Nothing opens in a browser.</li>
-        <li>Type, paste, or drag in the folder path. neuro-sync handles classification, local conversion, metadata minimization, QC, and resumable upload.</li>
+        <li>Run <code>neuro-sync /path/to/dicom-export</code>. neuro-sync selects compatible functional EPI, removes identifying DICOM fields, and uploads with a live progress bar, speed, ETA, and automatic continuation.</li>
       </ol>
-      <p>Source DICOMs never leave the machine. Only native-space functional 4D NIfTI, approved acquisition metadata, and checksum/provenance manifests upload. Structural, diffusion, reference, derived, and ambiguous scans stay local.</p>
+      <p>The original files remain unchanged. Privacy-cleared functional DICOM copies retain scanner-native pixel data and useful acquisition metadata; identifying fields, dates, raw UIDs, free text, and unsafe private data are removed or remapped before upload. Structural, diffusion, reference, derived, and ambiguous scans stay local. The current beta has real-fixture support for strict Siemens classic and Philips classic routes; GE, Enhanced MR, and unverified export families are safely held locally with a report code. Conversion and scientific validation run asynchronously on Scaling Neuro's research cluster after the upload receipt is complete. <a href="/docs/vendor-qa.md">See the measured scanner matrix.</a></p>
     </section>
 
-    <p class="meta"><a href="/docs/contribution-policy">Contribution policy</a> · The registration creates a private, revocable upload identity; it is not evidence of participant consent or authorization.</p>
+    <p class="meta"><a href="/docs/contribution-policy">Contribution policy</a> · <a href="/docs/dicom-deidentification-policy.md">DICOM de-identification details</a> · Registration creates a private, revocable upload identity; it is not evidence of participant consent or authorization.</p>
   </main>
   <div class="toast" id="toast" role="status" aria-live="polite"></div>
   <script>

@@ -1,124 +1,98 @@
-# EPI ingestion contract
+# Functional EPI ingestion contract
 
-## The unit Scaling Neuro preserves
+## Canonical source and derived artifacts
 
-The beta archives one **scan bundle** per confidently identified functional EPI time series:
+The beta’s canonical ingest unit is one confidently identified functional-EPI DICOM series. It is stored as an immutable, deterministic `dicom.tar.zst` containing:
 
-- an immutable, acquisition-space `.nii.gz` containing the converted voxel array and native geometry; and
-- a same-basename `.json` containing privacy-filtered DICOM acquisition metadata, conversion provenance, classifier evidence, QC results, and cryptographic hashes.
+- newly written, recursively de-identified DICOM Part 10 instances with scanner-native Pixel Data; and
+- `manifest.json`, containing only pseudonymous identity, normalized scanner/acquisition context, classifier and privacy-policy evidence, an ordered instance inventory, and cryptographic hashes.
 
-This is intentionally narrower than BIDS and more useful than a pile of DICOM files. It does not invent task labels, require a heuristic file, or upload events, behavioral data, subject demographics, structural scans, DWI, ASL, fieldmaps, SBRefs, or derived images. It also does not call NIfTI byte-for-byte DICOM “raw”: the canonical beta artifact is a minimally converted acquisition-space scan whose scientific content and relevant acquisition context are preserved.
+The exact scanner/PACS export is never uploaded. The original remains local and unchanged. “Raw” in this project means the earliest privacy-cleared scanner-native source artifact: pixels and essential acquisition semantics are preserved, but identifying and unsafe metadata is removed or pseudonymized.
 
-The source DICOMs stay local and unmodified. Scaling Neuro never uploads a raw DICOM header dump or an unfiltered dcm2niix sidecar.
+Cluster-created NIfTI, minimized sidecar, and processing manifest are deterministic derived artifacts. They are scientifically useful and independently verified, but they do not replace the canonical source archive.
 
-## One-folder pipeline
+## One-folder path
 
-1. Recursively inventory regular files without following directory symlinks. Read only the DICOM fields required to group, classify, pseudonymize, and enforce privacy.
-2. Group instances by Series Instance UID in local memory. Conflicting modality, geometry, timing, subject linkage, or series identity holds the group locally.
-3. Apply cheap local exclusion gates before conversion. Definite non-MR, privacy-unsafe, structural, DWI, ASL, fieldmap, SBRef, localizer, or derived series stay local. Otherwise-safe MR—including ambiguous series—is eligible for local conversion so vendor differences do not cause false rejection.
-4. Convert one candidate series at a time with the bundled `dcm2niix v1.0.20260416`, including `-x i` so it neither crops nor rotates to canonical space. Preserve native sampling and geometry; do not register, normalize, crop, reorient, mask, smooth, filter, motion-correct, slice-time-correct, or quantize.
-5. Re-read the NIfTI and the anonymized converter output. Serialize a new sidecar from the explicit metadata policy, sanitize NIfTI text fields, prohibit NIfTI extensions, and compute SHA-256 for compressed and uncompressed NIfTI bytes.
-6. Pass local QC. A failed or ambiguous series remains local with a code-only report.
-7. Partition accepted bundles into one-subject upload sessions, initialize each upload, request one checksum-and-length-bound presigned URL per multipart part, send only the accepted NIfTI/sidecar bytes, and ask the Worker to commit them.
-8. Consider the run complete only after the Worker verifies every object and writes an immutable archive manifest.
+1. Resolve and checkpoint the canonical source-folder path. Inventory regular files recursively without following symlinks.
+2. Read bounded DICOM headers, group by Series Instance UID, and reject inconsistent identities, modalities, transfer syntax, geometry, or duplicate SOP Instance UIDs.
+3. Exclude definite non-MR, structural, diffusion, ASL, field-map, SBRef, localizer, secondary-capture, derived, and presentation series. Hold uncertain or unsupported formats.
+4. Accept only original/primary MR with strong EPI and temporal/functional evidence, explicit privacy eligibility, and classifier confidence at least `0.90`.
+5. For each accepted series, write new Part 10 headers under `scaling-neuro.dicom-deidentification` version `1.0.0`, copy Pixel Data byte-for-byte, recursively audit the result, and stream it into a deterministic zstd-compressed tar archive.
+6. Initialize an idempotent DICOM upload, upload missing multipart parts through checksum-and-length-bound capabilities, and checkpoint every accepted ETag.
+7. Complete the multipart objects. The Worker performs authoritative R2 `HEAD` checks, records the receipt atomically, and queues one processing job per series.
+8. Return success to the workstation. The Sophont consumer later verifies and extracts the archive, runs pinned conversion, validates the functional NIfTI and sidecar, publishes derived objects, and commits processing state under an exclusive lease.
 
-The local state database makes the pipeline idempotent. The canonical source-folder path is the recovery key: rerunning the same `neuro-sync <folder>` command selects compatible unfinished work before DICOM discovery, rather than reconverting or restarting an object. Stable private file fingerprints also make an unchanged, already completed folder a local no-op; a changed folder is inspected as a new sync and server-side bundle identity prevents retransmission of exact archived matches. The owner-only preparation manifest binds each run to its enrolled site, project, displayed contribution-policy version, client version, and metadata-policy provenance. Automatic continuation fails closed if any binding differs. When a release tightens the privacy contract, the client supersedes the old checkpoint and re-prepares from the private stored source path; exact bundle identities must match the old checkpoint before upload. Parts whose ETags reached a compatible local checkpoint are reused. In the narrow crash window after R2 accepted a part but before its ETag was checkpointed, the client safely replaces that same part number instead of requiring bucket-list access.
+Discovery and archive generation expose byte progress, rate, and ETA. Archive generation streams each DICOM and never stages a second rewritten DICOM tree. Upload reads the prepared archive once. Receipt never waits for conversion or reads the archive through a Worker request.
 
-The normalized converter provenance is pinned to `-b y -ba y -g i -i n -l o -m 2 -p y -t n -x i -z n -f series`. In particular, `-l o` retains original datatype/scaling, `-p y` uses Philips precise scaling, `-x i` preserves native space, and compression happens only after local header scrubbing. Private input/output path operands are deliberately absent from the sidecar.
+## Selection semantics
 
-## Functional EPI classifier
+Exclusion evidence always wins. Inclusion does not use vendor names or unrestricted description text. Evidence may include standard DICOM fields such as:
 
-Classification is fail-closed and evidence-based. Raw `SeriesDescription` and `ProtocolName` may be inspected locally as weak evidence, but are never copied to an uploaded artifact.
+- `Modality = MR`;
+- original/primary Image Type;
+- EPI scanning/sequence encodings;
+- functional Image Type terms from standardized values;
+- repetition/temporal-position/frame organization consistent with a time series; and
+- multi-frame temporal structure for Enhanced MR.
 
-An accepted series must have all of the following:
+The client does not infer a task label, BIDS entity, diagnosis, demographics, or behavioral context. A generic single-volume EPI, ambiguous echo-planar image, or series lacking strong temporal/functional evidence is held rather than uploaded.
 
-- MR modality and original/primary image semantics;
-- consistent series identity, dimensions, orientation, and timing;
-- positive EPI evidence from standard DICOM attributes or normalized converter metadata;
-- exactly one valid 4D NIfTI with at least 10 volumes, TR in `0.1–20` seconds, and TE in `(0, 2]` seconds; and
-- confidence of at least `0.90`, with no exclusion or privacy signal.
+An accepted archive must also satisfy:
 
-The following always prevent upload:
+- consistent patient/study/series linkage within the group;
+- unique nonempty SOP Instance UIDs;
+- supported explicit Pixel Data boundaries and transfer syntax;
+- no overlays, curves, graphic annotations, or disallowed presentation content;
+- `BurnedInAnnotation` compatible with the active fail-closed policy for every instance; and
+- successful recursive de-identification and post-write audit for every instance.
 
-- structural, diffusion, ASL/perfusion, fieldmap, SBRef, localizer, secondary-capture, derived, segmentation, or non-MR classification;
-- diffusion gradient outputs, ASL context, fieldmap-only semantics, or single-volume EPI ambiguity;
-- `BurnedInAnnotation=YES`, secondary-capture semantics, or derived-image semantics;
-- inconsistent or incomplete series, invalid timing/geometry, unsupported transfer syntax, converter failure, or privacy-policy failure; and
-- any classifier disagreement that lowers the result below the acceptance threshold.
+The `0.3.0` measured compatibility boundary is:
 
-Multi-echo functional EPI is represented as one scan bundle per converted echo, retaining `echo_number` and `te_seconds`. Definite non-target series are `excluded`; potentially valuable but uncertain series are `held`. Neither state uploads bytes.
+- tested Siemens Prisma/E11 classic mosaic may proceed only when every CSA image header is boundedly parsed and canonically rebuilt from the reviewed seven-field numeric/vector allowlist;
+- tested Philips 5.1.1 classic may proceed with the reviewed PS3.15 physical values and, when present, a verified whole-series dynamic-timing transformation;
+- GE classic is held as `ge_classic_requires_verified_private_metadata_reconstruction` rather than accepting conversion-degraded metadata; and
+- all Enhanced MR and Extended Offset Table objects are held pending exact conversion-equivalence and pixel-pairing evidence.
 
-Classifier evidence is code-only: `{code, source, effect}`. It must never include observed free text, source paths, raw tag values, or DICOM identifiers.
+Other scanner models, software releases, PACS rewrites, and private-tag layouts are not implied by those two validated fixture families. Unknown or malformed vendor metadata fails closed.
 
-## QC contract
+## Metadata and pixels
 
-Every uploaded bundle has `qc.passed=true`. At minimum the client verifies:
+The client preserves enough standard metadata to decode and reinterpret a supported acquisition: transfer syntax and SOP class; manufacturer/model/software; MR sequence/acquisition codes; field strength and coils; numeric TR/TE/TI/flip angle/bandwidth/acceleration; matrix and bit-depth semantics; pixel spacing; orientation/position and frame of reference; and required references. Private retention is an exact creator/tag/VR/cardinality/value-shape allowlist, not a general numeric-private policy. Any intentional public-tag suppression or private-block rebuild is recorded in transformation provenance.
 
-- the NIfTI header parses, declares a supported numeric datatype, has four dimensions, and agrees with the volume count;
-- spatial dimensions, voxel sizes, affine entries, TR, and TE are finite and plausible;
-- the affine is usable and native geometry is retained;
-- the voxel stream decodes fully, has finite non-constant signal, and matches the declared uncompressed hash;
-- compressed output is valid deterministic gzip and matches the declared file hash and size;
-- text header fields are sanitized and no NIfTI extensions remain;
-- DICOM instance/volume accounting and converter outputs are internally consistent; and
-- the sidecar validates against `scan-sidecar-v1.schema.json` and the default-deny metadata policy.
+It removes DICOM dates/times, people, identifiers, accessions, clinical/admin text, institution/station/operator/device identity, descriptions/comments, source paths and filenames, original UIDs, presentation graphics, unknown private data, private text, and opaque private binary data. The complete executable claim boundary is [dicom-deidentification-policy.md](dicom-deidentification-policy.md).
 
-QC reports use stable codes, not free-text values. This keeps cloud metadata queryable without creating another path for identifiers.
+Pixel Data is copied exactly in the original transfer syntax. It is not decoded, recompressed, rescaled, reoriented, masked, cropped, normalized, registered, motion-corrected, slice-time-corrected, filtered, smoothed, or quantized locally.
 
-## DICOM metadata retention and privacy
+## Determinism and identity
 
-The sidecar retains the acquisition context researchers need to interpret, stratify, and reverse-index scans:
+Site-scoped HMAC pseudonyms define subject, session, series, protocol group, and series-archive identities. Source values and the site key never cross the API. All source UIDs—including references inside sequences—map consistently under the site key.
 
-| Category | Retained examples |
-|---|---|
-| Scanner | manufacturer, model, software versions, field strength, receive/transmit coil |
-| Sequence | sequence name, scanning sequence/variant/options, acquisition type, image type |
-| Timing | TR, TE, inversion time, flip angle, slice timing, echo number |
-| Readout | phase-encoding direction, effective echo spacing, total readout time, dwell time, pixel bandwidth |
-| Acceleration | multiband factor, in-plane parallel factor, partial Fourier, echo-train length |
-| Sampling | dimensions, voxel sizes, acquisition/reconstruction matrices, slice thickness/spacing, averages |
-| Geometry | full affine, orientation, volume count, datatype, bits per voxel |
-| Provenance | source DICOM count, pinned converter/version/options, client version, content hashes |
+Archive entries are ordered, ordinally named, and written with fixed tar ownership/mode/timestamps. The manifest JSON is canonical and the zstd frame includes a checksum. Archive identity is based on the ordered rewritten-instance hashes and sizes. The same unchanged series under the same site and policy therefore produces the same identity.
 
-`schemas/metadata-policy-v1.json` is executable documentation for every allowed output path and its source. The default action for everything not named there is `drop`. Vendor-private information may cross the boundary only when the pinned converter emits a named, normalized field that is explicitly allowlisted; private tags themselves never do.
+Transport identity uses the complete compressed archive SHA-256 and exact byte length. Scientific processing records the verified source archive hash plus derived compressed/uncompressed NIfTI and sidecar hashes. Multipart ETags are transport receipts, never scientific identity.
 
-No raw DICOM text value is uploadable merely because its characters look safe. Equipment strings are reduced to semantic, schema-enforced values: a known manufacturer, a curated scanner-model family, a vendor-qualified software release token, a canonical coil family/channel count, a recognized EPI sequence family, or a known nucleus. Standard DICOM code fields are intersected with field-specific enumerations. Unknown values are omitted rather than copied, and numeric fields must parse to finite values inside their schema ranges. The policy's `canonicalize_*` and `allowlist_dicom_codes` transforms are executable rules, not permission to forward an LO, SH, or CS value.
+## Continuation and concurrent devices
 
-Patient identifiers, demographics, dates/times from the source acquisition, accession numbers, all raw UIDs, institution/address/station/device identifiers, operators, free-text descriptions/comments, unknown tags, private tags, source filenames, and source paths are prohibited. Patient ID, issuer, study UID, series UID, and protocol strings are used only locally to produce domain-separated, site-scoped HMAC identifiers, then discarded. Every scientific pseudonym field is exactly 24 lowercase hexadecimal characters (96 HMAC bits); semantic prefixes such as `sub-` appear only in filenames, never inside the identifier value. Converter provenance contains the exact normalized behavior options but omits the private output/input path operands. Operational upload timestamps live in the control plane; volatile conversion timestamps stay in the local report so identical input produces identical sidecar bytes.
+The canonical folder path is the local recovery key. Before rediscovery, the client searches for a compatible unfinished run bound to the same site, project, contribution-policy version, DICOM de-identification policy, and client compatibility. A rerun reuses completed archives, upload allocation, multipart ETags, and received series.
 
-## Cloud commit and archive invariants
+If the folder is unchanged and its receipt is complete, the command is a local no-op except for an optional processing-status refresh. If content or a privacy binding changed, the client re-evaluates it rather than appending bytes to the old attempt.
 
-The create-upload request declares every pseudonymous series, subject, session, and protocol-group ID plus every relative object key, size, and SHA-256. The Worker requires every bundle in one upload session to have the same `subject_id`, validates a deterministic flat `{bundle_id}/{same-basename}.{nii.gz|json}` layout, creates each R2 multipart upload itself, and attaches trusted `sha256` and `upload_id` object metadata. One device has at most one active upload; a session holds at most 32 bundles/32 GiB and each compressed NIfTI at most 5 GiB, so larger or multi-subject folders are committed as automatic sequential sessions.
+The Worker treats creation and completion as idempotent. Authenticated devices that share a managed site/project may race on the same series: an exact match is success-by-reconciliation and the losing uncommitted R2 prefix is purged. Public workstation registrations are separate site-scoped privacy domains, even when contributors enter the same lab name, so they do not collide or share pseudonym keys. A withdrawn tombstone, policy mismatch, pseudonymous-identity mismatch, or hash mismatch fails closed.
 
-The Worker returns only the exact full key, unguessable R2 multipart upload ID, and allocated part size for each object—never an R2 access key, secret, or session token. Before each transfer the authenticated client requests a capability for `{key, part_number, size, sha256}`. The Worker proves that the key and part belong to the active upload, that the part number/range and size match the allocated object, and then returns a 15-minute presigned `UploadPart` URL plus the exact signed `content-length` and `x-amz-content-sha256` headers.
+## Cluster validation
 
-Each URL can write only that one payload to one part of one pre-created multipart upload. It cannot create or complete an object, write a different key/part/length/hash, read/copy/delete data, or list the bucket. Presigned URLs are bearer capabilities until expiry and must never enter logs or reports. Automatic continuation uses locally checkpointed ETags; it intentionally has no broad `ListParts` credential.
+For each DICOM job, the processor:
 
-Completion lists exactly all initialized full keys, sizes, hashes, and consecutive `{part_number, etag}` receipts. The Worker—not the client—completes multipart uploads through its R2 binding, then performs a fresh authoritative HEAD of each persisted object before checking identity/size/metadata. It hashes compressed bytes while feeding the same backpressured stream through gzip/NIfTI inspection, avoiding an unbounded `tee()` buffer under the Worker memory limit. Only after the NIfTI, minimized sidecar, uncompressed hash, and cross-file geometry agree does one atomic D1 batch checkpoint that pair. Interrupted verification skips checkpointed pairs on retry; it never retransmits them. The immediate multipart-completion return object is never treated as authoritative because live bindings may omit its custom metadata. An ETag is transport evidence, never a content hash. A verification failure expires and purges the uncommitted session; scheduled cleanup and withdrawal abort incomplete multipart uploads server-side.
+- verifies the archive byte length and SHA-256 before trusting it;
+- stream-extracts a strict tar layout with path, type, count, and size bounds;
+- validates the manifest schema, every member hash/size, every SOP UID, and all de-identification/classification attestations;
+- runs `dcm2niix v1.0.20260416` in the pinned processor container;
+- requires exactly one finite, nonconstant, numeric 4D NIfTI with at least 10 volumes, valid dimensions/voxel sizes/affine/orientation, and plausible TR/TE consistent with the minimized sidecar;
+- strips NIfTI text fields, prohibits extensions, and deterministically gzips with `mtime=0`; and
+- publishes the NIfTI, sidecar, and processing manifest only while its job lease is current.
 
-The Worker then stores canonical key-sorted UTF-8 JSON plus a trailing LF at `manifests/v1/{site_id}/{project_id}/{upload_id}.json`. The reported manifest SHA-256 covers those exact stored bytes.
+Permanent failures remain visible as stable processing codes. A server-side privacy, archive-boundary, hash, or functional-EPI purpose rejection deletes the rejected source object and tombstones its stable identity so it cannot be silently reintroduced. A converter or scientific-compatibility failure retains the de-identified source archive for review. In either case the workstation receipt remains a faithful record that transfer completed; processing status separately reports whether the source was processed, retained after failure, or purged after rejection.
 
-`bundle_hash` is the SHA-256 of canonical JSON containing:
+## Scope
 
-```json
-{
-  "series_id": "...",
-  "subject_id": "...",
-  "session_id": "...",
-  "nii": { "uncompressed_sha256": "..." }
-}
-```
-
-Compressed NIfTI size/hash, sidecar hash, keys, ETags, and local bundle IDs are deliberately excluded from that digest. In particular, the sidecar contains compressed transport fields, so including its byte hash would make scientifically identical recompressions look different. The uncompressed NIfTI hash is scientific-content identity; compressed and sidecar hashes remain byte-integrity checks in the manifest.
-
-The stable deduplication and tombstone key is `(site_id, project_id, bundle_id)`. `bundle_id` is a site-scoped HMAC over the source-series/content/echo identity, so retries, client-version changes, metadata enrichment, and deterministic recompression converge without conflating institutions or multi-echo outputs. When the catalog already contains an active bundle, the Worker returns its pseudonymous identity and uncompressed NIfTI hash only if the stored series/subject/session/protocol identity, scientific-content hash, and server-validated metadata-policy ID/version all match. The client verifies every returned field, checkpoints it as already archived, and initializes multipart objects only for the remaining new bundles. The same reconciliation applies if two workstations allocate the bundle before either commits: the Worker purges the losing prefix, and its client records the winner without a manual retry. A bundle-ID collision, stale privacy policy, or withdrawn tombstone fails closed. `protocol_group_id` and metadata-policy provenance are carried into the catalog so related acquisitions can be grouped and privacy versions audited without revealing raw protocol text or fetching every sidecar.
-
-## Boundary for later modalities
-
-Structural MRI is not accepted by this beta. A future structural route may reuse the bundle, upload, and manifest contracts only after adding a separate local face-privacy decision, `mri_reface` provenance, quantitative brain-preservation QC, and a fail-closed review state. Derived training formats belong under a separate cache namespace and never replace the canonical acquisition-space bundle.
-
-## Pilot acceptance and compatibility evidence
-
-“Works with any scanner” is not an honest acceptance criterion. The pilot instead publishes evidence: clean-machine macOS/Windows/Linux results plus a growing, PHI-free compatibility matrix for Siemens classic/enhanced/XA, Philips classic/enhanced, and GE classic/enhanced functional EPI. Each entry records scanner family/software, transfer syntax, converter/client versions, fixture provenance, conversion/QC outcome, native geometry/volume agreement, and interruption/automatic-continuation/commit result.
-
-A release is collaborator-ready only when golden fixtures prove voxel/affine stability and metadata retention, adversarial fixtures prove PHI/default-deny behavior, non-target modalities never upload, interrupted multipart transfers reuse checkpointed parts (and safely replace only the narrow uncheckpointed crash window), sidecar/manifest hashes verify from downloaded R2 bytes, and one institution-approved fresh scanner export completes through the no-arguments folder-picker flow. Unsupported data must yield a code-only held report that can improve the next compatibility release without asking a lab to email DICOMs.
+This route uploads only functional EPI. Structural T1w/T2w, diffusion, ASL, field maps, reference images, localizers, derived data, events/behavioral data, and uncertain series stay local. Structural scans require a separate face-privacy design with validated defacing and brain-preservation QC.

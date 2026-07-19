@@ -1,166 +1,81 @@
 # neuro-sync
 
-`neuro-sync` is the local Scaling Neuro contribution client. A researcher registers a workstation
-once, enters a completed DICOM-folder path in the terminal, attests that the scans are approved
-under the displayed project policy, and leaves the rest to the client. Registration creates a
-private, revocable upload identity; neither
-registration nor this per-upload attestation authorizes data sharing or substitutes for participant consent.
+`neuro-sync` is the single-executable Scaling Neuro workstation client. It accepts a completed DICOM export folder, identifies functional EPI conservatively, writes privacy-cleared DICOM copies into deterministic per-series archives, and uploads them with automatic continuation, progress, speed, and ETA. It does not convert scans to NIfTI locally.
 
-The current beta is deliberately EPI-only. It never uploads source DICOMs. It converts eligible
-functional EPI to minimally transformed acquisition-space NIfTI, preserves a strict set of useful
-scanner/acquisition metadata, and uploads only bundles that pass the local default-deny gate.
+## Install and run
 
-## Researcher workflow
-
-The public terminal installer downloads and verifies the platform release, installs it without
-administrator access, and returns control to the shell. It never launches setup or opens a browser;
-when the DICOM folder path is ready, run the exact command it prints. The verified bundle contains
-`neuro-sync` (`neuro-sync.exe` on Windows) and the pinned converter at `libexec/dcm2niix`.
-
-```text
-# macOS or Linux
+```sh
 curl -fsSL https://scalingneuro.com/install.sh | sh
-
-# Windows PowerShell
-irm https://scalingneuro.com/install.ps1 | iex
-```
-
-```text
-# normal folder sync; first use performs registration in this terminal
 neuro-sync /path/to/completed-dicom-folder
+```
 
-# guided fallback when the folder path is not supplied yet
-neuro-sync
+On Windows PowerShell:
 
-# explicit commands for headless or automated scanner-server use
+```powershell
+irm https://scalingneuro.com/install.ps1 | iex
+neuro-sync "C:\path\to\completed-dicom-folder"
+```
+
+The installer downloads one SHA-256-pinned package and returns to the shell. First-use registration, lab details, the policy summary, and authorization confirmation all stay in the terminal. Multiple workstations from the same lab register independently.
+
+Rerun the same folder command after any interruption. Its canonical path and privacy context select the unfinished local checkpoint; existing archives, uploaded parts, and completed receipts are reused. There is no separate resume operation.
+
+Useful explicit forms:
+
+```sh
 neuro-sync register --email researcher@example.edu --name "Researcher Name" \
-  --institution "Example University" --lab "Example Neuroimaging Lab" --accept-policy
-neuro-sync upload /path/to/completed-dicom-folder
-neuro-sync status
-neuro-sync report
+  --institution "Example University" --lab "Example Lab" --accept-policy
+neuro-sync upload /path/to/dicoms
+neuro-sync upload /path/to/dicoms --confirm-authorized
+neuro-sync upload /path/to/dicoms --dry-run
+neuro-sync status --json
+neuro-sync report RUN_ID --json
 ```
 
-`run` is retained as an alias for `upload`. `upload --dry-run` performs discovery, conversion,
-privacy filtering, and QC without contacting the ingest service or R2. Interactive uploads show
-the enrolled project and policy version and request authorization before transmitting. Automated
-uploads must add `--confirm-authorized` after the lab has independently completed that check.
+## Local privacy boundary
 
-## Local decision gate
+The source folder is never modified. Before any copy leaves the workstation, the client:
 
-The client recursively reads DICOM headers without reading pixel payloads, groups by Study and
-Series Instance UID, and HMAC-pseudonymizes subject, session, series, protocol-group, and bundle
-identifiers with the enrolled site's secret. Raw IDs, UIDs, dates, paths, protocol descriptions,
-and patient fields never enter archive filenames, sidecars, manifests, or API requests.
+- requires strong functional-EPI evidence and rejects/holds structural, diffusion, field-map, SBRef, derived, secondary-capture, ambiguous, or privacy-unsafe series;
+- recursively allowlists DICOM attributes, pseudonymizes identity and UIDs consistently, removes dates/times and unsafe text/private data, rebuilds Part 10 metadata, and audits the rewritten object;
+- byte-copies Pixel Data in its original transfer syntax without decoding or recompression; and
+- writes one deterministic `dicom.tar.zst` containing ordinal DICOM filenames plus `manifest.json` and hashes.
 
-Explicit structural, diffusion, ASL/perfusion, field-map, SBRef, localizer/scout, derived, and
-secondary series are held locally. Otherwise-safe ambiguous MR may be converted locally so unusual
-enhanced Philips/GE/Siemens exports are not rejected merely for missing a top-level vendor tag. It
-still uploads only when converter and NIfTI evidence confirms a valid functional EPI time series.
+The policy is [../docs/dicom-deidentification-policy.md](../docs/dicom-deidentification-policy.md).
 
-The final gate requires:
+The 0.3.0 scanner gates are intentionally explicit:
 
-- one verified 4D output, or a set of multi-echo outputs with unique explicit EchoNumber/TE;
-- at least 10 volumes, TR in 0.1–20 seconds, and TE in (0, 2] seconds;
-- no diffusion or ASL outputs/context;
-- finite positive voxel sizes, plausible dimensions, a finite nondegenerate native affine, exact
-  NIfTI payload size, supported datatype/bit depth, and finite nonconstant signal across the full payload;
-- no NIfTI extensions and zeroed NIfTI text fields (`data_type`, `db_name`, `descrip`, `aux_file`,
-  and `intent_name`).
+- the verified classic Siemens route is limited to series-wide `Prisma_fit`/`MAGNETOM Prisma_fit` model identity with `syngo MR E11`, mosaic image form, and a successfully rebuilt narrow CSA numeric geometry contract; the measured native and RLE Lossless fixtures retain conversion-equivalent voxels, geometry, timing, phase encoding, and multiband metadata;
+- the verified classic Philips route is limited to series-wide `Achieva dStream` model identity with software `5.1.1`/`5.1.1.0`, the exact reviewed PS3.15 scaling/slice/water-fat values on every instance, and its complete dynamic-series timing contract; redundant scanner `TriggerTime` is suppressed only after all of those gates pass;
+- classic GE MR is held locally pending a separately hostile-tested private-metadata reconstruction contract; and
+- missing, mixed, unknown, other scanner manufacturers, unmeasured Siemens/Philips model or software families, Enhanced MR, Legacy Converted Enhanced MR, and any object using an Extended Offset Table are held locally. They must not be described as supported until real conversion-equivalence gates pass.
 
-Multi-echo runs create one bundle per echo with a shared pseudonymous series ID. Any ambiguous or
-failed echo holds the entire source series.
+Unsupported or malformed vendor metadata is never uploaded speculatively. The report names the hold reason so support can be widened with fixtures and tests instead of silently weakening the privacy or scientific-metadata boundary.
 
-## Archived data and metadata
+Release-equivalence checks convert raw and privacy-cleared validation fixtures with the same pinned converter. The Siemens native/RLE paths produced the same voxel SHA-256 `7934115b9a6bba2d72f4f60bcfadc3772c3d6de8a286bb542eedb1d322c89c85`; the Philips classic path produced `13eab53cb50d0dfa00d011b8106a9cc9123f0596330454b307bda0d1fb5fc429`. Dimensions, affine, datatype, scaling, TR/TE, and the vendor-specific preprocessing metadata listed above were compared separately rather than inferred from the voxel hash.
 
-Each immutable bundle contains a deterministic `.nii.gz` and same-basename `.json`. The sidecar is
-not a DICOM dump or a raw dcm2niix sidecar. It follows
-`../schemas/scan-sidecar-v1.schema.json` and the `scaling-neuro-epi-default-deny` policy.
+## Transfer boundary
 
-Typed allowlisted metadata includes, when present and valid:
+The Worker allocates each archive object. Raw series archives are admitted up to the server’s 64 GiB object limit and transparently grouped into same-subject receipts of at most eight series and 250 GiB; the legacy NIfTI route retains its separate 32 GiB transaction limit. For every multipart part, the client computes a SHA-256 while reading that part and requests a short-lived signed URL bound to its exact key, part number, byte length, and hash. Bare ETags are checkpointed in owner-only SQLite state. Completion is multipart completion plus authoritative R2 metadata receipt—not synchronous conversion.
 
-- scanner manufacturer/model/software, field strength, patient position, and receive/transmit coil;
-- sequence name, standardized scanning/variant/options/image-type codes, acquisition type and
-  series/acquisition/echo numbers;
-- dimensions, voxel sizes, datatype, affine/orientation and volume count;
-- TR, TE, inversion time, flip angle, slice timing/thickness/spacing, phase-encoding direction,
-  echo spacing, readout/dwell time, bandwidth, matrices, multiband/parallel acceleration, partial
-  Fourier, echo-train length, averages, imaging frequency, and nucleus.
+A successful client run means all selected, de-identified archives are durable and queued. The Sophont processor separately verifies source hashes, runs pinned `dcm2niix`, validates functional NIfTI/metadata, and publishes derived artifacts. `neuro-sync status` can report that asynchronous processing state, but the workstation need not remain online.
 
-Raw DICOM text never becomes uploadable merely because its characters look safe. Equipment text
-is reduced to schema-enforced manufacturer/model families, vendor-qualified release tokens,
-canonical coil and sequence families, and known nuclei; DICOM code fields use field-specific
-enumerations. Every numeric field is finite and range-filtered. Unknown keys, private tags, institution/station
-and device identifiers, free-text descriptions/comments, demographics, dates/times, accession
-numbers, and DICOM UIDs are dropped. The bundle records compressed and scrubbed-uncompressed
-SHA-256 hashes plus deterministic converter/client/policy provenance.
+The expected data-read path for a new series is one source pixel pass while creating the archive and one archive pass while uploading it. A fresh archive is not redundantly rehashed before that upload because its streaming creator already recorded the exact digest and completed the post-write audit. A checkpoint reused by a later process is rehashed once before any resumed transfer. Discovery reads headers only. Memory use is bounded by one sanitized DICOM header plus streaming buffers; multi-frame Pixel Data is not loaded wholesale.
 
-## Automatic continuity and integrity
+## Private state
 
-Private state lives in the OS application-data directory (`ScalingNeuro/neuro-sync`) in SQLite WAL
-mode. The database records prepared bundles, server-owned multipart IDs, and each uploaded part's
-bare ETag. Rerunning `neuro-sync /the/same/folder` selects that folder's unfinished run before any
-DICOM discovery or conversion. It sends only locally uncheckpointed 64 MiB-class parts with bounded
-sequential concurrency and resends a locally persisted completion request if the prior response was
-interrupted. If the folder already completed and its private file fingerprint is unchanged, the
-command is a local no-op. If R2 accepted a part immediately before a crash, re-PUT to the same
-multipart part number safely replaces it.
+State lives in the OS application-data directory (`ScalingNeuro/neuro-sync`) using SQLite WAL plus owner-only manifests/archive staging. Unix state is forced to owner-only file/directory modes. Windows state receives a protected current-account-only ACL, including a recursive repair of pre-existing descendants; a custom path on storage that cannot retain those ACLs fails clearly before use. Reports omit source paths, credentials, arbitrary DICOM values, and signed URLs. Device secrets are stored locally; the control plane stores only token hashes. The client never receives a reusable R2 credential.
 
-On Unix, state directories are mode `0700` and secret-bearing files plus SQLite state/sidecars are
-mode `0600`. On Windows, the default state is inside the current user's LocalAppData profile and
-inherits its per-user ACL. Managed deployments that set the hidden `NEURO_SYNC_STATE_DIR` override
-must provision that directory with an equivalent user-private ACL.
+The folder checkpoint is bound to site, project, consent policy, DICOM privacy policy, and client compatibility. A policy change forces safe re-preparation rather than continuing old bytes. Exact series identity supports duplicate reconciliation between authenticated devices that share a managed site/project; identity mismatches fail closed. Independently registered public workstations remain separate privacy domains and never conflict merely because their users entered the same lab name.
 
-The Worker owns multipart creation/completion and embeds trusted `sha256` and `upload_id` object
-metadata. For each exact part, the client declares the allocated key, part number, byte length, and
-SHA-256; the Worker returns a short-lived UploadPart URL signed for precisely those values. The
-client never receives a reusable R2 credential and cannot create, complete, read, list, or overwrite
-archive objects. Upload transactions are grouped by pseudonymous subject and then split
-sequentially at 32 bundles or 32 GiB, whichever comes first, so a Worker session never mixes
-subjects while the whole folder remains one researcher-visible run. A
-compressed NIfTI above the pilot service's 5 GiB per-object limit is held locally with an explicit
-report code.
+## Development
 
-Only one client process may use a state directory at a time. Temporary DICOM staging is private,
-removed after each conversion, and cleaned after an interrupted process on the next launch.
-Prepared bundle bytes are removed after every archive chunk commits; hashes and the local report
-remain for audit. Interrupted uploads and dry-run bundles remain local so they can be continued or
-inspected through the same folder command.
-
-## Build and test
-
-Rust 1.85 or newer is supported.
-
-```bash
-cargo build --release --manifest-path client/Cargo.toml
-cargo fmt --check --manifest-path client/Cargo.toml --all
-cargo clippy --manifest-path client/Cargo.toml --all-targets -- -D warnings
-cargo test --manifest-path client/Cargo.toml
+```sh
+cargo +1.85.0 fmt --manifest-path Cargo.toml --all -- --check
+cargo +1.85.0 clippy --locked --manifest-path Cargo.toml --all-targets --all-features -- -D warnings
+cargo +1.85.0 test --locked --manifest-path Cargo.toml --all-features
 ```
 
-Tests include synthetic non-PHI DICOM Part 10 fixtures, classification exclusions, NIfTI
-scrubbing/geometry/QC, deterministic gzip, published sidecar contract round-tripping, exact
-per-part upload grants and multipart state, terminal prompt guards, and an end-to-end local dry run through a pinned fake
-converter. `../schemas/validate.py` separately validates public examples and metadata-policy paths.
+Tests use synthetic non-PHI Part 10 fixtures and local HTTP/R2 simulations. They cover recursive rewriting, exclusions, deterministic archives, exact Pixel Data preservation, bounded streaming, folder-keyed continuation, multipart retry, lost responses, duplicate reconciliation, and receipt semantics.
 
-## Packaging contract
-
-Release archives are named:
-
-- `neuro-sync-vVERSION-macos-universal[-UNSIGNED-PILOT].zip`
-- `neuro-sync-vVERSION-windows-x86_64[-UNSIGNED-PILOT].zip`
-- `neuro-sync-vVERSION-linux-x86_64[-UNSIGNED-PILOT].tar.gz`
-
-Each release also contains `install.sh` and `install.ps1` with the exact versioned archive names
-and package SHA-256 values embedded. Their default locations are `~/.local/share/neuro-sync` plus
-`~/.local/bin` on macOS/Linux and `%LOCALAPPDATA%\ScalingNeuro\neuro-sync\bin` on Windows. Direct
-archives remain available for managed environments that do not allow bootstrap scripts.
-
-The binary searches for dcm2niix in this order: `NEURO_SYNC_DCM2NIIX`,
-`<executable>/libexec/dcm2niix[.exe]`, beside the executable, then `PATH`. Production uploads
-require exactly `v1.0.20260416`; `NEURO_SYNC_ALLOW_UNPINNED_DCM2NIIX=1` exists only for local dry-run
-development. The default API is `https://scalingneuro.com`; `--server` supports a different
-HTTPS deployment and loopback HTTP test servers.
-
-This software is a research data-contribution tool, not a clinical device. Structural MRI remains
-out of scope until the future local defacing and fail-closed face/brain-preservation QC route is
-implemented and independently validated.
+Release archives contain `neuro-sync[.exe]`, licenses, onboarding, release metadata, and SPDX/CycloneDX SBOMs. Linux researchers receive one fully static x86-64 package rather than a distribution-specific choice. No local DICOM converter, GUI framework, Python runtime, or browser integration is packaged.

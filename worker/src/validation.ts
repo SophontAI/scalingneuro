@@ -17,6 +17,16 @@ const MAX_BUNDLES = 32;
 const MAX_NIFTI_BYTES = 5 * 1024 ** 3;
 const MAX_METADATA_BYTES = 8 * 1024 ** 2;
 const MAX_UPLOAD_BYTES = 32 * 1024 ** 3;
+// A raw receipt may require HEAD + multipart completion + authoritative HEAD
+// for every object. Eight keeps even an untrusted/custom client inside the
+// Cloudflare Free per-invocation subrequest and D1 query ceilings.
+const MAX_DICOM_SERIES = 8;
+const MAX_DICOM_INSTANCES_PER_SERIES = 500_000;
+const MAX_DICOM_ARCHIVE_BYTES = 64 * 1024 ** 3;
+const MAX_DICOM_UPLOAD_BYTES = 250 * 1024 ** 3;
+const MAX_COMPLETION_OBJECTS = Math.max(MAX_BUNDLES * 2, MAX_DICOM_SERIES);
+const PROCESSOR_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,95}$/u;
+const ERROR_CODE = /^[A-Z0-9][A-Z0-9_]{0,63}$/u;
 
 export interface EnrollRequest {
   invite_code: string;
@@ -67,6 +77,27 @@ export interface CreateUploadRequest {
   client_version: string;
 }
 
+export interface DicomArchiveDescriptor extends ObjectDescriptor {
+  format: "dicom-tar-zstd";
+}
+
+export interface DicomSeriesDescriptor {
+  series_archive_id: string;
+  series_id: string;
+  subject_id: string;
+  session_id: string;
+  protocol_group_id: string;
+  dicom_count: number;
+  archive: DicomArchiveDescriptor;
+}
+
+export interface CreateDicomUploadRequest {
+  format: "dicom-series-v1";
+  client_version: string;
+  deidentification: { policy_id: string; policy_version: string };
+  series: DicomSeriesDescriptor[];
+}
+
 export interface CompletedObject {
   key: string;
   size: number;
@@ -88,6 +119,65 @@ export interface SignPartRequest {
   part_number: number;
   size: number;
   sha256: string;
+}
+
+export interface ProcessorClaimRequest {
+  processor_id: string;
+  lease_seconds: number;
+}
+
+export type ProcessorOutputKind =
+  | "nifti"
+  | "sidecar"
+  | "processing_manifest";
+
+export interface ProcessorOutputDescriptor {
+  kind: ProcessorOutputKind;
+  size_bytes: number;
+  sha256: string;
+  content_type: string;
+  uncompressed_sha256?: string;
+}
+
+export interface ProcessorLeaseRequest {
+  lease_token: string;
+  lease_seconds: number;
+}
+
+export interface ProcessorOutputRequest {
+  lease_token: string;
+  outputs: ProcessorOutputDescriptor[];
+}
+
+export interface DicomProcessorValidation {
+  archive_sha256_verified: boolean;
+  dicom_count: number;
+  dicom_parse_succeeded: boolean;
+  functional_epi_confirmed: boolean;
+}
+
+export interface NiftiProcessorValidation {
+  nifti_sha256_verified: boolean;
+  nifti_uncompressed_sha256_verified: boolean;
+  sidecar_sha256_verified: boolean;
+  nifti_header_valid: boolean;
+  sidecar_valid: boolean;
+  nifti_sidecar_consistent: boolean;
+}
+
+export interface ProcessorCompleteRequest {
+  lease_token: string;
+  processor_version: string;
+  dcm2niix_version: string;
+  outputs: ProcessorOutputDescriptor[];
+  validation: DicomProcessorValidation | NiftiProcessorValidation;
+}
+
+export interface ProcessorFailRequest {
+  lease_token: string;
+  retryable: boolean;
+  error_code: string;
+  error_message: string;
 }
 
 export interface AdminInviteRequest {
@@ -465,6 +555,145 @@ export function parseCreateUploadRequest(value: unknown): CreateUploadRequest {
   };
 }
 
+export function parseCreateDicomUploadRequest(
+  value: unknown,
+): CreateDicomUploadRequest {
+  const input = record(value, "request");
+  exactKeys(
+    input,
+    ["format", "client_version", "deidentification", "series"],
+    [],
+    "request",
+  );
+  if (input.format !== "dicom-series-v1") {
+    invalid("format must be dicom-series-v1");
+  }
+  const deidentification = record(
+    input.deidentification,
+    "deidentification",
+  );
+  exactKeys(
+    deidentification,
+    ["policy_id", "policy_version"],
+    [],
+    "deidentification",
+  );
+  if (
+    !Array.isArray(input.series) ||
+    input.series.length < 1 ||
+    input.series.length > MAX_DICOM_SERIES
+  ) {
+    invalid(`series must contain 1-${MAX_DICOM_SERIES} entries`);
+  }
+  const archiveIds = new Set<string>();
+  const seriesIds = new Set<string>();
+  const relativeKeys = new Set<string>();
+  const series = input.series.map((raw, index): DicomSeriesDescriptor => {
+    const label = `series[${index}]`;
+    const item = record(raw, label);
+    exactKeys(
+      item,
+      [
+        "series_archive_id",
+        "series_id",
+        "subject_id",
+        "session_id",
+        "protocol_group_id",
+        "dicom_count",
+        "archive",
+      ],
+      [],
+      label,
+    );
+    const archiveInput = record(item.archive, `${label}.archive`);
+    exactKeys(
+      archiveInput,
+      ["format", "relative_key", "size", "sha256"],
+      [],
+      `${label}.archive`,
+    );
+    if (archiveInput.format !== "dicom-tar-zstd") {
+      invalid(`${label}.archive.format must be dicom-tar-zstd`);
+    }
+    const seriesArchiveId = pseudonymId(
+      item.series_archive_id,
+      `${label}.series_archive_id`,
+    );
+    const seriesId = pseudonymId(item.series_id, `${label}.series_id`);
+    const relativeKey = validateRelativeKey(
+      archiveInput.relative_key,
+      `${label}.archive.relative_key`,
+    );
+    if (
+      relativeKey !== `${seriesArchiveId}/dicom.tar.zst` ||
+      archiveIds.has(seriesArchiveId) ||
+      seriesIds.has(seriesId) ||
+      relativeKeys.has(relativeKey)
+    ) {
+      invalid(`${label} has a duplicate identity or non-canonical archive path`);
+    }
+    archiveIds.add(seriesArchiveId);
+    seriesIds.add(seriesId);
+    relativeKeys.add(relativeKey);
+    return {
+      series_archive_id: seriesArchiveId,
+      series_id: seriesId,
+      subject_id: pseudonymId(item.subject_id, `${label}.subject_id`),
+      session_id: pseudonymId(item.session_id, `${label}.session_id`),
+      protocol_group_id: pseudonymId(
+        item.protocol_group_id,
+        `${label}.protocol_group_id`,
+      ),
+      dicom_count: integer(
+        item.dicom_count,
+        `${label}.dicom_count`,
+        1,
+        MAX_DICOM_INSTANCES_PER_SERIES,
+      ),
+      archive: {
+        format: "dicom-tar-zstd",
+        relative_key: relativeKey,
+        size: integer(
+          archiveInput.size,
+          `${label}.archive.size`,
+          32,
+          MAX_DICOM_ARCHIVE_BYTES,
+        ),
+        sha256: text(archiveInput.sha256, `${label}.archive.sha256`, {
+          max: 64,
+          pattern: SHA256,
+        }),
+      },
+    };
+  });
+  if (series.some((item) => item.subject_id !== series[0]?.subject_id)) {
+    invalid("all series in an upload session must belong to one subject_id");
+  }
+  const totalBytes = series.reduce((sum, item) => sum + item.archive.size, 0);
+  if (!Number.isSafeInteger(totalBytes) || totalBytes > MAX_DICOM_UPLOAD_BYTES) {
+    invalid("total declared DICOM upload size exceeds 250 GiB");
+  }
+  return {
+    format: "dicom-series-v1",
+    client_version: text(input.client_version, "client_version", {
+      max: 64,
+      pattern: CLIENT_VERSION,
+    }),
+    deidentification: {
+      policy_id: text(deidentification.policy_id, "deidentification.policy_id", {
+        max: 64,
+        pattern: VERSION,
+      }),
+      policy_version: text(
+        deidentification.policy_version,
+        "deidentification.policy_version",
+        { max: 64, pattern: VERSION },
+      ),
+    },
+    series,
+  };
+}
+
 export function parseCompleteUploadRequest(
   value: unknown,
 ): CompleteUploadRequest {
@@ -473,9 +702,9 @@ export function parseCompleteUploadRequest(
   if (
     !Array.isArray(input.objects) ||
     input.objects.length < 1 ||
-    input.objects.length > MAX_BUNDLES * 2
+    input.objects.length > MAX_COMPLETION_OBJECTS
   ) {
-    invalid(`objects must contain 1-${MAX_BUNDLES * 2} entries`);
+    invalid(`objects must contain 1-${MAX_COMPLETION_OBJECTS} entries`);
   }
   const keys = new Set<string>();
   const objects = input.objects.map((rawObject, index): CompletedObject => {
@@ -487,7 +716,12 @@ export function parseCompleteUploadRequest(
     keys.add(key);
     const result: CompletedObject = {
       key,
-      size: integer(object.size, `${label}.size`, 2, MAX_NIFTI_BYTES),
+      size: integer(
+        object.size,
+        `${label}.size`,
+        2,
+        MAX_DICOM_ARCHIVE_BYTES,
+      ),
       sha256: text(object.sha256, `${label}.sha256`, {
         max: 64,
         pattern: SHA256,
@@ -534,6 +768,238 @@ export function parseSignPartRequest(value: unknown): SignPartRequest {
     part_number: integer(input.part_number, "part_number", 1, 10_000),
     size: integer(input.size, "size", 1, MAX_NIFTI_BYTES),
     sha256: text(input.sha256, "sha256", { max: 64, pattern: SHA256 }),
+  };
+}
+
+function leaseToken(value: unknown, label = "lease_token"): string {
+  return text(value, label, { min: 36, max: 36, pattern: UUID });
+}
+
+function processorOutputDescriptor(
+  value: unknown,
+  label: string,
+): ProcessorOutputDescriptor {
+  const input = record(value, label);
+  exactKeys(
+    input,
+    ["kind", "size_bytes", "sha256", "content_type"],
+    ["uncompressed_sha256"],
+    label,
+  );
+  if (!(["nifti", "sidecar", "processing_manifest"] as unknown[]).includes(input.kind)) {
+    invalid(`${label}.kind is invalid`);
+  }
+  const kind = input.kind as ProcessorOutputKind;
+  const expectedContentType =
+    kind === "nifti" ? "application/gzip" : "application/json";
+  if (input.content_type !== expectedContentType) {
+    invalid(`${label}.content_type must be ${expectedContentType}`);
+  }
+  if (kind === "nifti" && input.uncompressed_sha256 === undefined) {
+    invalid(`${label}.uncompressed_sha256 is required for nifti`);
+  }
+  if (kind !== "nifti" && input.uncompressed_sha256 !== undefined) {
+    invalid(`${label}.uncompressed_sha256 is only valid for nifti`);
+  }
+  return {
+    kind,
+    size_bytes: integer(
+      input.size_bytes,
+      `${label}.size_bytes`,
+      kind === "nifti" ? 32 : 2,
+      kind === "nifti" ? MAX_NIFTI_BYTES : MAX_METADATA_BYTES,
+    ),
+    sha256: text(input.sha256, `${label}.sha256`, {
+      max: 64,
+      pattern: SHA256,
+    }),
+    content_type: expectedContentType,
+    ...(kind === "nifti"
+      ? {
+          uncompressed_sha256: text(
+            input.uncompressed_sha256,
+            `${label}.uncompressed_sha256`,
+            { max: 64, pattern: SHA256 },
+          ),
+        }
+      : {}),
+  };
+}
+
+function processorOutputs(
+  value: unknown,
+  label: string,
+  minimum: number,
+): ProcessorOutputDescriptor[] {
+  if (!Array.isArray(value) || value.length < minimum || value.length > 3) {
+    invalid(`${label} must contain ${minimum}-3 entries`);
+  }
+  const outputs = value.map((item, index) =>
+    processorOutputDescriptor(item, `${label}[${index}]`),
+  );
+  if (new Set(outputs.map((output) => output.kind)).size !== outputs.length) {
+    invalid(`${label} kinds must be unique`);
+  }
+  return outputs;
+}
+
+export function parseProcessorClaimRequest(
+  value: unknown,
+): ProcessorClaimRequest {
+  const input = record(value, "request");
+  exactKeys(input, ["processor_id", "lease_seconds"], [], "request");
+  return {
+    processor_id: text(input.processor_id, "processor_id", {
+      max: 96,
+      pattern: PROCESSOR_ID,
+    }),
+    lease_seconds: integer(input.lease_seconds, "lease_seconds", 60, 3600),
+  };
+}
+
+export function parseProcessorLeaseRequest(
+  value: unknown,
+): ProcessorLeaseRequest {
+  const input = record(value, "request");
+  exactKeys(input, ["lease_token", "lease_seconds"], [], "request");
+  return {
+    lease_token: leaseToken(input.lease_token),
+    lease_seconds: integer(input.lease_seconds, "lease_seconds", 60, 3600),
+  };
+}
+
+export function parseProcessorOutputRequest(
+  value: unknown,
+): ProcessorOutputRequest {
+  const input = record(value, "request");
+  exactKeys(input, ["lease_token", "outputs"], [], "request");
+  return {
+    lease_token: leaseToken(input.lease_token),
+    outputs: processorOutputs(input.outputs, "outputs", 3),
+  };
+}
+
+export function parseProcessorCompleteRequest(
+  value: unknown,
+): ProcessorCompleteRequest {
+  const input = record(value, "request");
+  exactKeys(
+    input,
+    [
+      "lease_token",
+      "processor_version",
+      "dcm2niix_version",
+      "outputs",
+      "validation",
+    ],
+    [],
+    "request",
+  );
+  const validation = record(input.validation, "validation");
+  let parsedValidation: DicomProcessorValidation | NiftiProcessorValidation;
+  if ("archive_sha256_verified" in validation) {
+    exactKeys(
+      validation,
+      [
+        "archive_sha256_verified",
+        "dicom_count",
+        "dicom_parse_succeeded",
+        "functional_epi_confirmed",
+      ],
+      [],
+      "validation",
+    );
+    parsedValidation = {
+      archive_sha256_verified: boolean(
+        validation.archive_sha256_verified,
+        "validation.archive_sha256_verified",
+      ),
+      dicom_count: integer(
+        validation.dicom_count,
+        "validation.dicom_count",
+        1,
+        MAX_DICOM_INSTANCES_PER_SERIES,
+      ),
+      dicom_parse_succeeded: boolean(
+        validation.dicom_parse_succeeded,
+        "validation.dicom_parse_succeeded",
+      ),
+      functional_epi_confirmed: boolean(
+        validation.functional_epi_confirmed,
+        "validation.functional_epi_confirmed",
+      ),
+    };
+  } else {
+    exactKeys(
+      validation,
+      [
+        "nifti_sha256_verified",
+        "nifti_uncompressed_sha256_verified",
+        "sidecar_sha256_verified",
+        "nifti_header_valid",
+        "sidecar_valid",
+        "nifti_sidecar_consistent",
+      ],
+      [],
+      "validation",
+    );
+    parsedValidation = {
+      nifti_sha256_verified: boolean(
+        validation.nifti_sha256_verified,
+        "validation.nifti_sha256_verified",
+      ),
+      nifti_uncompressed_sha256_verified: boolean(
+        validation.nifti_uncompressed_sha256_verified,
+        "validation.nifti_uncompressed_sha256_verified",
+      ),
+      sidecar_sha256_verified: boolean(
+        validation.sidecar_sha256_verified,
+        "validation.sidecar_sha256_verified",
+      ),
+      nifti_header_valid: boolean(
+        validation.nifti_header_valid,
+        "validation.nifti_header_valid",
+      ),
+      sidecar_valid: boolean(validation.sidecar_valid, "validation.sidecar_valid"),
+      nifti_sidecar_consistent: boolean(
+        validation.nifti_sidecar_consistent,
+        "validation.nifti_sidecar_consistent",
+      ),
+    };
+  }
+  return {
+    lease_token: leaseToken(input.lease_token),
+    processor_version: text(input.processor_version, "processor_version", {
+      max: 64,
+      pattern: VERSION,
+    }),
+    dcm2niix_version: text(input.dcm2niix_version, "dcm2niix_version", {
+      max: 64,
+      pattern: VERSION,
+    }),
+    outputs: processorOutputs(input.outputs, "outputs", 0),
+    validation: parsedValidation,
+  };
+}
+
+export function parseProcessorFailRequest(
+  value: unknown,
+): ProcessorFailRequest {
+  const input = record(value, "request");
+  exactKeys(
+    input,
+    ["lease_token", "retryable", "error_code", "error_message"],
+    [],
+    "request",
+  );
+  return {
+    lease_token: leaseToken(input.lease_token),
+    retryable: boolean(input.retryable, "retryable"),
+    error_code: text(input.error_code, "error_code", {
+      max: 64,
+      pattern: ERROR_CODE,
+    }),
+    error_message: humanLabel(input.error_message, "error_message", 512),
   };
 }
 

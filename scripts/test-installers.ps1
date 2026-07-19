@@ -12,9 +12,8 @@ $package = "$packageStem.zip"
 
 try {
   $packageRoot = Join-Path $stage $packageStem
-  New-Item -ItemType Directory -Force -Path (Join-Path $packageRoot "libexec"), $assets | Out-Null
+  New-Item -ItemType Directory -Force -Path $packageRoot, $assets | Out-Null
   Set-Content -Encoding ascii (Join-Path $packageRoot "neuro-sync.exe") "test client"
-  Set-Content -Encoding ascii (Join-Path $packageRoot "libexec\dcm2niix.exe") "test converter"
   Add-Type -AssemblyName System.IO.Compression.FileSystem
   $archive = Join-Path $assets $package
   [IO.Compression.ZipFile]::CreateFromDirectory($stage, $archive)
@@ -50,10 +49,6 @@ try {
   if (-not (Test-Path -PathType Leaf (Join-Path $env:NEURO_SYNC_BIN_DIR "neuro-sync.exe"))) {
     throw "neuro-sync.exe was not installed"
   }
-  if (-not (Test-Path -PathType Leaf (Join-Path $env:NEURO_SYNC_BIN_DIR "libexec\dcm2niix.exe"))) {
-    throw "dcm2niix.exe was not installed"
-  }
-
   Add-Content -Encoding ascii $archive "tampered"
   $env:NEURO_SYNC_INSTALL_ROOT = Join-Path $testRoot "bad-install"
   $env:NEURO_SYNC_BIN_DIR = Join-Path $env:NEURO_SYNC_INSTALL_ROOT "bin"

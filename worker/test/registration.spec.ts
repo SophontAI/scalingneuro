@@ -14,11 +14,13 @@ async function call(
   body?: unknown,
   token?: string,
   clientIp?: string,
+  userAgent?: string,
 ): Promise<Response> {
   const headers = new Headers();
   if (body !== undefined) headers.set("content-type", "application/json");
   if (token) headers.set("authorization", `Bearer ${token}`);
   if (clientIp) headers.set("cf-connecting-ip", clientIp);
+  if (userAgent) headers.set("user-agent", userAgent);
   const request = new Request(`https://scalingneuro.com${path}`, {
     method,
     headers,
@@ -43,7 +45,7 @@ function registration(): Record<string, unknown> {
     registration_id: crypto.randomUUID(),
     device_token: deviceToken(),
     device_name: "scanner-transfer-workstation",
-    client_version: "0.2.0",
+    client_version: "0.3.0",
     platform: "linux-x64",
     contact_email: `Researcher+${suffix}@Example.edu`,
     contact_name: "Example Researcher",
@@ -64,8 +66,8 @@ describe("open contributor registration", () => {
       project_name: "Scaling Neuro public EPI contribution",
       consent_policy_version: "open-epi-1.0.0",
       policy_url: "https://scalingneuro.com/docs/contribution-policy",
-      self_service_quota_bytes: 268_435_456_000,
-      minimum_client_version: "0.2.0",
+      self_service_quota_bytes: null,
+      minimum_client_version: "0.2.8",
     });
 
     const request = registration();
@@ -94,19 +96,19 @@ describe("open contributor registration", () => {
         email_hash: string;
         email_ciphertext: string;
         invite_id: string | null;
-        upload_quota_bytes: number;
+        upload_quota_bytes: number | null;
       }>();
     expect(stored?.email_hash).toMatch(/^[a-f0-9]{64}$/u);
     expect(stored?.email_ciphertext).not.toContain(normalizedEmail);
     expect(stored?.invite_id).toBeNull();
-    expect(stored?.upload_quota_bytes).toBe(268_435_456_000);
+    expect(stored?.upload_quota_bytes).toBeNull();
 
     const replay = await call("POST", "/v1/register", request);
     expect(replay.status).toBe(201);
     expect(await replay.json()).toEqual(enrollment);
     const upgradedReplay = await call("POST", "/v1/register", {
       ...request,
-      client_version: "0.2.1",
+      client_version: "0.3.1",
       platform: "macos-aarch64",
     });
     expect(upgradedReplay.status).toBe(201);
@@ -136,12 +138,53 @@ describe("open contributor registration", () => {
           lab_name: "Example Neuroimaging Lab",
           contact_opt_in: true,
           platform: "macos-aarch64",
-          client_version: "0.2.1",
+          client_version: "0.3.1",
           committed_uploads: 0,
           committed_series: 0,
           committed_bytes: 0,
         },
       ],
+    });
+  });
+
+  it("keeps the exact public 0.2 client transition-compatible without restoring a quota", async () => {
+    const info = await call(
+      "GET",
+      "/v1/contribution",
+      undefined,
+      undefined,
+      undefined,
+      "neuro-sync/0.2.8",
+    );
+    expect(info.status).toBe(200);
+    expect(await info.json()).toMatchObject({
+      self_service_quota_bytes: 9_007_199_254_740_991,
+      minimum_client_version: "0.2.8",
+    });
+
+    const request = registration();
+    request.client_version = "0.2.8";
+    const created = await call("POST", "/v1/register", request);
+    expect(created.status).toBe(201);
+    const enrollment = await created.json<Record<string, unknown>>();
+    const quota = await env.DB.prepare(
+      "SELECT upload_quota_bytes FROM projects WHERE id = ?1",
+    )
+      .bind(enrollment.project_id)
+      .first<number | null>("upload_quota_bytes");
+    expect(quota).toBeNull();
+
+    const modernInfo = await call(
+      "GET",
+      "/v1/contribution",
+      undefined,
+      undefined,
+      undefined,
+      "neuro-sync/0.3.0",
+    );
+    expect(await modernInfo.json()).toMatchObject({
+      self_service_quota_bytes: null,
+      minimum_client_version: "0.2.8",
     });
   });
 
@@ -183,15 +226,15 @@ describe("open contributor registration", () => {
     expect(registrations?.count).toBe(2);
   });
 
-  it("rejects stale clients, policy drift, changed replays, and over-quota uploads", async () => {
+  it("rejects stale clients, policy drift, and changed replays without reviving a public quota", async () => {
     const stale = registration();
-    stale.client_version = "0.1.1";
+    stale.client_version = "0.2.7";
     const staleResponse = await call("POST", "/v1/register", stale);
     expect(staleResponse.status).toBe(426);
     expect(await staleResponse.json()).toMatchObject({
       error: {
         code: "CLIENT_UPDATE_REQUIRED",
-        details: { minimum_client_version: "0.2.0" },
+        details: { minimum_client_version: "0.2.8" },
       },
     });
 
@@ -248,13 +291,8 @@ describe("open contributor registration", () => {
       },
       enrollment.device_token as string,
     );
-    expect(upload.status).toBe(413);
-    expect(await upload.json()).toMatchObject({
-      error: {
-        code: "QUOTA_EXCEEDED",
-        details: { quota_bytes: 33, used_bytes: 0, requested_bytes: 34 },
-      },
-    });
+    expect(upload.status).toBe(201);
+    expect(await upload.json()).toMatchObject({ status: "uploading" });
   });
 
   it("allows many workstations to register behind one network address", async () => {

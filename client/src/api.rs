@@ -48,6 +48,12 @@ pub fn has_error_code(error: &anyhow::Error, expected: &str) -> bool {
         .is_some_and(|failure| failure.code == expected)
 }
 
+pub fn is_not_found_api_error(error: &anyhow::Error) -> bool {
+    error
+        .downcast_ref::<ApiFailure>()
+        .is_some_and(|failure| failure.status == 404)
+}
+
 pub fn is_transient_api_error(error: &anyhow::Error) -> bool {
     error
         .downcast_ref::<ApiFailure>()
@@ -80,7 +86,7 @@ pub struct ContributionInfo {
     pub project_name: String,
     pub consent_policy_version: String,
     pub policy_url: String,
-    pub self_service_quota_bytes: u64,
+    pub self_service_quota_bytes: Option<u64>,
     pub minimum_client_version: String,
 }
 
@@ -126,6 +132,54 @@ pub struct CreateUploadRequest {
 }
 
 #[derive(Debug, Serialize)]
+pub struct CreateDicomUploadRequest {
+    pub format: &'static str,
+    pub client_version: String,
+    pub deidentification: DicomDeidentificationRequest,
+    pub series: Vec<DicomSeriesUploadRequest>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct DicomDeidentificationRequest {
+    pub policy_id: String,
+    pub policy_version: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct DicomSeriesUploadRequest {
+    pub series_archive_id: String,
+    pub series_id: String,
+    pub subject_id: String,
+    pub session_id: String,
+    pub protocol_group_id: String,
+    pub dicom_count: u64,
+    pub archive: DicomArchiveUploadRequest,
+}
+
+#[derive(Debug, Serialize)]
+pub struct DicomArchiveUploadRequest {
+    pub relative_key: String,
+    pub size: u64,
+    pub sha256: String,
+    pub format: String,
+}
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub enum UploadRoute {
+    Legacy,
+    Dicom,
+}
+
+impl UploadRoute {
+    fn base(self) -> &'static str {
+        match self {
+            Self::Legacy => "/v1/uploads",
+            Self::Dicom => "/v1/dicom-uploads",
+        }
+    }
+}
+
+#[derive(Debug, Serialize)]
 pub struct UploadBundleRequest {
     pub bundle_id: String,
     pub series_id: String,
@@ -147,6 +201,14 @@ pub struct UploadObjectRequest {
 
 impl From<&ManifestBundle> for UploadBundleRequest {
     fn from(bundle: &ManifestBundle) -> Self {
+        let nifti = bundle
+            .nifti
+            .as_ref()
+            .expect("legacy upload request requires a NIfTI object");
+        let metadata = bundle
+            .metadata
+            .as_ref()
+            .expect("legacy upload request requires a metadata object");
         Self {
             bundle_id: bundle.bundle_id.clone(),
             series_id: bundle.series_id.clone(),
@@ -154,15 +216,15 @@ impl From<&ManifestBundle> for UploadBundleRequest {
             session_id: bundle.session_id.clone(),
             protocol_group_id: bundle.protocol_group_id.clone(),
             nii: UploadObjectRequest {
-                relative_key: bundle.nifti.relative_key.clone(),
-                size: bundle.nifti.size,
-                sha256: bundle.nifti.sha256.clone(),
-                uncompressed_sha256: bundle.nifti.uncompressed_sha256.clone(),
+                relative_key: nifti.relative_key.clone(),
+                size: nifti.size,
+                sha256: nifti.sha256.clone(),
+                uncompressed_sha256: nifti.uncompressed_sha256.clone(),
             },
             metadata: UploadObjectRequest {
-                relative_key: bundle.metadata.relative_key.clone(),
-                size: bundle.metadata.size,
-                sha256: bundle.metadata.sha256.clone(),
+                relative_key: metadata.relative_key.clone(),
+                size: metadata.size,
+                sha256: metadata.sha256.clone(),
                 uncompressed_sha256: None,
             },
         }
@@ -174,10 +236,20 @@ pub struct CreateUploadResponse {
     #[serde(alias = "uploadId")]
     pub upload_id: String,
     pub status: String,
-    #[serde(alias = "objectPrefix")]
+    #[serde(default, alias = "objectPrefix")]
     pub object_prefix: String,
     #[serde(default, alias = "multipartObjects")]
     pub multipart_objects: Vec<MultipartObject>,
+    #[serde(default, alias = "alreadyReceivedSeries")]
+    pub already_received_series: Vec<AlreadyReceivedSeries>,
+}
+
+#[derive(Debug, Clone, Deserialize, Eq, PartialEq, Serialize)]
+pub struct AlreadyReceivedSeries {
+    #[serde(alias = "seriesArchiveId")]
+    pub series_archive_id: String,
+    #[serde(alias = "receiptUploadId")]
+    pub receipt_upload_id: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -187,6 +259,10 @@ pub struct MultipartObject {
     pub upload_id: String,
     #[serde(alias = "partSize")]
     pub part_size: u64,
+    #[serde(default)]
+    pub kind: Option<String>,
+    #[serde(default, alias = "seriesArchiveId")]
+    pub series_archive_id: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -242,6 +318,31 @@ pub struct UploadStatus {
     pub objects: Vec<serde_json::Value>,
     #[serde(default)]
     pub verification: Option<VerificationProgress>,
+    #[serde(default)]
+    pub receipt: Option<ReceiptProgress>,
+    #[serde(default)]
+    pub processing: Option<ProcessingProgress>,
+    #[serde(default, alias = "alreadyReceivedSeries")]
+    pub already_received_series: Vec<AlreadyReceivedSeries>,
+}
+
+#[derive(Debug, Clone, Deserialize, Eq, PartialEq, Serialize)]
+pub struct ReceiptProgress {
+    pub received_series: u32,
+    pub received_bytes: u64,
+}
+
+#[derive(Debug, Clone, Deserialize, Eq, PartialEq, Serialize)]
+pub struct ProcessingProgress {
+    pub status: String,
+    pub queued_series: u32,
+    pub processing_series: u32,
+    pub processed_series: u32,
+    pub failed_series: u32,
+    #[serde(default)]
+    pub purged_series: u32,
+    pub total_series: u32,
+    pub updated_at: String,
 }
 
 #[derive(Debug, Clone, Deserialize, Eq, PartialEq, Serialize)]
@@ -327,23 +428,87 @@ impl IngestApi {
         .await
     }
 
+    pub async fn create_dicom_upload(
+        &self,
+        bundles: &[ManifestBundle],
+        client_version: &str,
+        policy_id: &str,
+        policy_version: &str,
+    ) -> Result<CreateUploadResponse> {
+        let mut series = Vec::with_capacity(bundles.len());
+        for bundle in bundles {
+            let archive = bundle
+                .archive
+                .as_ref()
+                .context("DICOM receipt request requires one series archive")?;
+            if !bundle.is_dicom_archive() {
+                anyhow::bail!("DICOM receipt request mixed incompatible bundle formats");
+            }
+            series.push(DicomSeriesUploadRequest {
+                series_archive_id: bundle.bundle_id.clone(),
+                series_id: bundle.series_id.clone(),
+                subject_id: bundle.subject_id.clone(),
+                session_id: bundle.session_id.clone(),
+                protocol_group_id: bundle.protocol_group_id.clone(),
+                dicom_count: archive.dicom_instance_count,
+                archive: DicomArchiveUploadRequest {
+                    relative_key: archive.object.relative_key.clone(),
+                    size: archive.object.size,
+                    sha256: archive.object.sha256.clone(),
+                    format: archive.format.clone(),
+                },
+            });
+        }
+        let request = CreateDicomUploadRequest {
+            format: "dicom-series-v1",
+            client_version: client_version.into(),
+            deidentification: DicomDeidentificationRequest {
+                policy_id: policy_id.into(),
+                policy_version: policy_version.into(),
+            },
+            series,
+        };
+        self.send_idempotent(|| {
+            Ok(self
+                .authorized(self.client.post(self.url(UploadRoute::Dicom.base())))?
+                .json(&request))
+        })
+        .await
+    }
+
     pub async fn refresh_credentials(&self, upload_id: &str) -> Result<RefreshedUpload> {
+        self.refresh_credentials_for(UploadRoute::Legacy, upload_id)
+            .await
+    }
+
+    pub async fn refresh_dicom_credentials(&self, upload_id: &str) -> Result<RefreshedUpload> {
+        self.refresh_credentials_for(UploadRoute::Dicom, upload_id)
+            .await
+    }
+
+    async fn refresh_credentials_for(
+        &self,
+        route: UploadRoute,
+        upload_id: &str,
+    ) -> Result<RefreshedUpload> {
         #[derive(Deserialize)]
         struct Wrapper {
             #[serde(alias = "uploadId")]
             upload_id: String,
-            #[serde(alias = "objectPrefix")]
+            #[serde(default, alias = "objectPrefix")]
             object_prefix: String,
             #[serde(default, alias = "multipartObjects")]
             multipart_objects: Vec<MultipartObject>,
             #[serde(default)]
             status: Option<String>,
+            #[serde(default, alias = "alreadyReceivedSeries")]
+            already_received_series: Vec<AlreadyReceivedSeries>,
         }
         let wrapper: Wrapper = self
             .send_idempotent(|| {
                 self.authorized(
                     self.client
-                        .post(self.url(&format!("/v1/uploads/{upload_id}/credentials"))),
+                        .post(self.url(&format!("{}/{upload_id}/credentials", route.base()))),
                 )
             })
             .await?;
@@ -352,6 +517,7 @@ impl IngestApi {
             object_prefix: wrapper.object_prefix,
             multipart_objects: wrapper.multipart_objects,
             status: wrapper.status,
+            already_received_series: wrapper.already_received_series,
         })
     }
 
@@ -360,10 +526,29 @@ impl IngestApi {
         upload_id: &str,
         request: PartUploadRequest,
     ) -> Result<PartUploadGrant> {
+        self.create_part_upload_for(UploadRoute::Legacy, upload_id, request)
+            .await
+    }
+
+    pub async fn create_dicom_part_upload(
+        &self,
+        upload_id: &str,
+        request: PartUploadRequest,
+    ) -> Result<PartUploadGrant> {
+        self.create_part_upload_for(UploadRoute::Dicom, upload_id, request)
+            .await
+    }
+
+    async fn create_part_upload_for(
+        &self,
+        route: UploadRoute,
+        upload_id: &str,
+        request: PartUploadRequest,
+    ) -> Result<PartUploadGrant> {
         let response = self
             .authorized(
                 self.client
-                    .post(self.url(&format!("/v1/uploads/{upload_id}/parts"))),
+                    .post(self.url(&format!("{}/{upload_id}/parts", route.base()))),
             )?
             .json(&request)
             .send()
@@ -376,16 +561,40 @@ impl IngestApi {
         upload_id: &str,
         objects: Vec<CompletedObject>,
     ) -> Result<UploadStatus> {
+        self.complete_upload_for(UploadRoute::Legacy, upload_id, objects, true)
+            .await
+    }
+
+    pub async fn complete_dicom_upload(
+        &self,
+        upload_id: &str,
+        objects: Vec<CompletedObject>,
+    ) -> Result<UploadStatus> {
+        self.complete_upload_for(UploadRoute::Dicom, upload_id, objects, false)
+            .await
+    }
+
+    async fn complete_upload_for(
+        &self,
+        route: UploadRoute,
+        upload_id: &str,
+        objects: Vec<CompletedObject>,
+        scientific_verification: bool,
+    ) -> Result<UploadStatus> {
         let request = CompleteUploadRequest { objects };
         let response = self
             .authorized(
                 self.client
-                    .post(self.url(&format!("/v1/uploads/{upload_id}/complete"))),
+                    .post(self.url(&format!("{}/{upload_id}/complete", route.base()))),
             )?
             // A single bounded Worker step may stream and decompress a large
             // NIfTI. Keep the connection alive beyond the server's five-minute
             // CPU window; the outer state machine handles any real timeout.
-            .timeout(Duration::from_secs(10 * 60))
+            .timeout(if scientific_verification {
+                Duration::from_secs(10 * 60)
+            } else {
+                Duration::from_secs(60)
+            })
             .json(&request)
             .send()
             .await?;
@@ -393,10 +602,18 @@ impl IngestApi {
     }
 
     pub async fn status(&self, upload_id: &str) -> Result<UploadStatus> {
+        self.status_for(UploadRoute::Legacy, upload_id).await
+    }
+
+    pub async fn dicom_status(&self, upload_id: &str) -> Result<UploadStatus> {
+        self.status_for(UploadRoute::Dicom, upload_id).await
+    }
+
+    async fn status_for(&self, route: UploadRoute, upload_id: &str) -> Result<UploadStatus> {
         self.send_idempotent(|| {
             self.authorized(
                 self.client
-                    .get(self.url(&format!("/v1/uploads/{upload_id}"))),
+                    .get(self.url(&format!("{}/{upload_id}", route.base()))),
             )
         })
         .await
@@ -473,6 +690,7 @@ pub struct RefreshedUpload {
     pub object_prefix: String,
     pub multipart_objects: Vec<MultipartObject>,
     pub status: Option<String>,
+    pub already_received_series: Vec<AlreadyReceivedSeries>,
 }
 
 async fn decode<T: DeserializeOwned>(response: Response) -> Result<T> {
@@ -574,20 +792,21 @@ mod tests {
             subject_id: "subject".into(),
             session_id: "session".into(),
             protocol_group_id: "abababababababababababab".into(),
-            nifti: ManifestObject {
+            nifti: Some(ManifestObject {
                 relative_key: "bundle/a.nii.gz".into(),
                 local_path: "/private/phi/a".into(),
                 size: 1,
                 sha256: "aa".into(),
                 uncompressed_sha256: Some("cc".into()),
-            },
-            metadata: ManifestObject {
+            }),
+            metadata: Some(ManifestObject {
                 relative_key: "bundle/a.json".into(),
                 local_path: "/private/phi/b".into(),
                 size: 2,
                 sha256: "bb".into(),
                 uncompressed_sha256: None,
-            },
+            }),
+            archive: None,
             source_dicom_count: 1,
             classification: Classification {
                 decision: ClassificationDecision::Accepted,

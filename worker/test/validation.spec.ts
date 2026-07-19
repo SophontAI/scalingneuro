@@ -1,11 +1,14 @@
 import { describe, expect, it } from "vitest";
 import enrollmentRequestExample from "../../schemas/examples/enrollment-request-v1.example.json";
+import dicomUploadInitExample from "../../schemas/examples/dicom-upload-init-v1.example.json";
 import uploadCompleteExample from "../../schemas/examples/upload-complete-v1.example.json";
 import uploadInitExample from "../../schemas/examples/upload-init-v1.example.json";
 import {
   parseCompleteUploadRequest,
+  parseCreateDicomUploadRequest,
   parseCreateUploadRequest,
   parseEnrollRequest,
+  parseProcessorCompleteRequest,
 } from "../src/validation";
 
 const bundleId = "1".repeat(24);
@@ -48,6 +51,87 @@ describe("strict request validation", () => {
         client_version: "0.1.0",
       }),
     ).toEqual({ bundles: [validBundle], client_version: "0.1.0" });
+  });
+
+  it("accepts completion receipts for the full 32-bundle legacy limit", () => {
+    const objects = Array.from({ length: 64 }, (_, index) => ({
+      key: `${index.toString(16).padStart(24, "0")}/dicom.tar.zst`,
+      size: 32,
+      sha256: index.toString(16).padStart(64, "0"),
+      parts: [{ part_number: 1, etag: `etag-${index}` }],
+    }));
+
+    expect(parseCompleteUploadRequest({ objects }).objects).toHaveLength(64);
+    expect(() =>
+      parseCompleteUploadRequest({ objects: [...objects, objects[0]] }),
+    ).toThrow(/objects must contain 1-64 entries/u);
+  });
+
+  it("enforces the eight-series raw receipt boundary", () => {
+    const template = dicomUploadInitExample.series[0]!;
+    const series = Array.from({ length: 8 }, (_, index) => {
+      const archiveId = index.toString(16).padStart(24, "0");
+      return {
+        ...template,
+        series_archive_id: archiveId,
+        series_id: (index + 16).toString(16).padStart(24, "0"),
+        archive: {
+          ...template.archive,
+          relative_key: `${archiveId}/dicom.tar.zst`,
+        },
+      };
+    });
+    expect(
+      parseCreateDicomUploadRequest({
+        ...dicomUploadInitExample,
+        series,
+      }).series,
+    ).toHaveLength(8);
+    expect(() =>
+      parseCreateDicomUploadRequest({
+        ...dicomUploadInitExample,
+        series: [...series, series[0]],
+      }),
+    ).toThrow(/series must contain 1-8 entries/u);
+  });
+
+  it("enforces the 500000-instance raw DICOM boundary end to end", () => {
+    const template = dicomUploadInitExample.series[0]!;
+    const request = {
+      ...dicomUploadInitExample,
+      series: [{ ...template, dicom_count: 500_000 }],
+    };
+    expect(parseCreateDicomUploadRequest(request).series[0]?.dicom_count).toBe(
+      500_000,
+    );
+    expect(() =>
+      parseCreateDicomUploadRequest({
+        ...request,
+        series: [{ ...template, dicom_count: 500_001 }],
+      }),
+    ).toThrow(/dicom_count must be an integer between 1 and 500000/u);
+
+    const completion = {
+      lease_token: "0190f86f-e0de-7f2a-a24c-0a6abf16ec81",
+      processor_version: "1.0.0",
+      dcm2niix_version: "1.0.20260416",
+      outputs: [],
+      validation: {
+        archive_sha256_verified: true,
+        dicom_count: 500_000,
+        dicom_parse_succeeded: true,
+        functional_epi_confirmed: true,
+      },
+    };
+    expect(parseProcessorCompleteRequest(completion).validation).toMatchObject({
+      dicom_count: 500_000,
+    });
+    expect(() =>
+      parseProcessorCompleteRequest({
+        ...completion,
+        validation: { ...completion.validation, dicom_count: 500_001 },
+      }),
+    ).toThrow(/dicom_count must be an integer between 1 and 500000/u);
   });
 
   it("rejects traversal, duplicate keys, and unknown fields", () => {

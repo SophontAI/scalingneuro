@@ -225,11 +225,46 @@ pub struct ManifestBundle {
     pub subject_id: String,
     pub session_id: String,
     pub protocol_group_id: String,
-    pub nifti: ManifestObject,
-    pub metadata: ManifestObject,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub nifti: Option<ManifestObject>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub metadata: Option<ManifestObject>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub archive: Option<ManifestArchiveObject>,
     pub source_dicom_count: u64,
     pub classification: Classification,
     pub qc: QcResult,
+}
+
+impl ManifestBundle {
+    pub fn is_dicom_archive(&self) -> bool {
+        self.archive.is_some() && self.nifti.is_none() && self.metadata.is_none()
+    }
+
+    pub fn upload_objects(&self) -> Vec<&ManifestObject> {
+        self.nifti
+            .iter()
+            .chain(self.metadata.iter())
+            .chain(self.archive.as_ref().map(|archive| &archive.object))
+            .collect()
+    }
+
+    pub fn total_size(&self) -> u64 {
+        self.upload_objects()
+            .into_iter()
+            .map(|object| object.size)
+            .sum()
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ManifestArchiveObject {
+    #[serde(flatten)]
+    pub object: ManifestObject,
+    pub format: String,
+    pub dicom_instance_count: u64,
+    pub deidentification_profile: String,
+    pub deidentification_profile_version: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -249,11 +284,25 @@ pub struct ReportBundle {
     pub subject_id: String,
     pub session_id: String,
     pub protocol_group_id: String,
-    pub nifti: ReportObject,
-    pub metadata: ReportObject,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub nifti: Option<ReportObject>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub metadata: Option<ReportObject>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub archive: Option<ReportArchiveObject>,
     pub source_dicom_count: u64,
     pub classification: Classification,
     pub qc: QcResult,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ReportArchiveObject {
+    #[serde(flatten)]
+    pub object: ReportObject,
+    pub format: String,
+    pub dicom_instance_count: u64,
+    pub deidentification_profile: String,
+    pub deidentification_profile_version: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -284,8 +333,15 @@ impl From<&ManifestBundle> for ReportBundle {
             subject_id: bundle.subject_id.clone(),
             session_id: bundle.session_id.clone(),
             protocol_group_id: bundle.protocol_group_id.clone(),
-            nifti: ReportObject::from(&bundle.nifti),
-            metadata: ReportObject::from(&bundle.metadata),
+            nifti: bundle.nifti.as_ref().map(ReportObject::from),
+            metadata: bundle.metadata.as_ref().map(ReportObject::from),
+            archive: bundle.archive.as_ref().map(|archive| ReportArchiveObject {
+                object: ReportObject::from(&archive.object),
+                format: archive.format.clone(),
+                dicom_instance_count: archive.dicom_instance_count,
+                deidentification_profile: archive.deidentification_profile.clone(),
+                deidentification_profile_version: archive.deidentification_profile_version.clone(),
+            }),
             source_dicom_count: bundle.source_dicom_count,
             classification: bundle.classification.clone(),
             qc: bundle.qc.clone(),
@@ -362,20 +418,21 @@ mod tests {
             subject_id: "cccccccccccccccccccccccc".into(),
             session_id: "dddddddddddddddddddddddd".into(),
             protocol_group_id: "eeeeeeeeeeeeeeeeeeeeeeee".into(),
-            nifti: ManifestObject {
+            nifti: Some(ManifestObject {
                 relative_key: "bundle/scan.nii.gz".into(),
                 local_path: "/private/source/workspace/scan.nii.gz".into(),
                 size: 12,
                 sha256: "a".repeat(64),
                 uncompressed_sha256: Some("b".repeat(64)),
-            },
-            metadata: ManifestObject {
+            }),
+            metadata: Some(ManifestObject {
                 relative_key: "bundle/scan.json".into(),
                 local_path: "/private/source/workspace/scan.json".into(),
                 size: 13,
                 sha256: "c".repeat(64),
                 uncompressed_sha256: None,
-            },
+            }),
+            archive: None,
             source_dicom_count: 10,
             classification: Classification {
                 decision: ClassificationDecision::Accepted,

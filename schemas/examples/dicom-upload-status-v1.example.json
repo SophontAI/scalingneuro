@@ -1,0 +1,32 @@
+{
+  "upload_id": "0190f86f-e0de-7f2a-a24c-0a6abf16ec81",
+  "status": "committed",
+  "format": "dicom-series-v1",
+  "object_prefix": "dicom/v1/site/project/0190f86f-e0de-7f2a-a24c-0a6abf16ec81/",
+  "series_count": 1,
+  "total_bytes": 104857600,
+  "consent_policy_version": "open-epi-1.0.0",
+  "deidentification": {
+    "policy_id": "scaling-neuro.dicom-deidentification",
+    "policy_version": "1.0.0"
+  },
+  "receipt": {
+    "received_series": 1,
+    "received_bytes": 104857600,
+    "total_series": 1,
+    "total_bytes": 104857600
+  },
+  "processing": {
+    "status": "queued",
+    "queued_series": 1,
+    "processing_series": 0,
+    "processed_series": 0,
+    "failed_series": 0,
+    "purged_series": 0,
+    "total_series": 1,
+    "updated_at": "2026-07-19T04:00:01.000Z"
+  },
+  "received_at": "2026-07-19T04:00:01.000Z",
+  "created_at": "2026-07-19T04:00:00.000Z",
+  "updated_at": "2026-07-19T04:00:01.000Z"
+}

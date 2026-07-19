@@ -302,20 +302,21 @@ pub fn create_bundle(request: BundleRequest<'_>) -> Result<ManifestBundle> {
         subject_id,
         session_id,
         protocol_group_id,
-        nifti: ManifestObject {
+        nifti: Some(ManifestObject {
             relative_key: format!("{bundle_id}/{nifti_filename}"),
             local_path: nifti_path.to_string_lossy().into_owned(),
             size: nifti_size,
             sha256: compressed_sha256,
             uncompressed_sha256: Some(analyzed.uncompressed_sha256.clone()),
-        },
-        metadata: ManifestObject {
+        }),
+        metadata: Some(ManifestObject {
             relative_key: format!("{bundle_id}/{metadata_filename}"),
             local_path: metadata_path.to_string_lossy().into_owned(),
             size: metadata_size,
             sha256: metadata_sha256,
             uncompressed_sha256: None,
-        },
+        }),
+        archive: None,
         source_dicom_count: group.files.len() as u64,
         classification,
         qc: analyzed.qc.clone(),

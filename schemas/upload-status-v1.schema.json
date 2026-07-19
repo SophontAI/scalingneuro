@@ -94,8 +94,8 @@
       "if": { "properties": { "status": { "type": "string", "const": "committed" } }, "required": ["status"] },
       "then": {
         "type": "object",
-        "required": ["committed_at", "manifest"],
-        "properties": { "committed_at": {}, "manifest": {} }
+        "required": ["committed_at"],
+        "properties": { "committed_at": {} }
       }
     },
     {

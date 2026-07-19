@@ -15,21 +15,16 @@ make_package() {
   local name=$1
   local kind=$2
   local root="$STAGE/$name"
-  mkdir -p "$root/libexec"
+  mkdir -p "$root"
   cat > "$root/neuro-sync" <<'EOF'
 #!/bin/sh
 test "${1:-}" = "--version" || {
   printf 'installer launched neuro-sync unexpectedly\n' >&2
   exit 91
 }
-test -x "${NEURO_SYNC_DCM2NIIX:-}" || exit 7
 printf 'neuro-sync 9.8.7\n'
 EOF
-  cat > "$root/libexec/dcm2niix" <<'EOF'
-#!/bin/sh
-printf 'dcm2niix test fixture\n'
-EOF
-  chmod 0755 "$root/neuro-sync" "$root/libexec/dcm2niix"
+  chmod 0755 "$root/neuro-sync"
   if [[ "$kind" == zip ]]; then
     (cd "$STAGE" && zip -qr "$ASSETS/$name.zip" "$name")
   else
@@ -38,7 +33,7 @@ EOF
 }
 
 MACOS_NAME="neuro-sync-v$VERSION-macos-universal-UNSIGNED-PILOT"
-LINUX_NAME="neuro-sync-v$VERSION-linux-x86_64"
+LINUX_NAME="neuro-sync-v$VERSION-linux-x86_64-musl-static"
 WINDOWS_NAME="neuro-sync-v$VERSION-windows-x86_64-UNSIGNED-PILOT.zip"
 make_package "$MACOS_NAME" zip
 make_package "$LINUX_NAME" tar
@@ -78,7 +73,6 @@ printf '%s\n' "$install_output" | grep -F "  $HOME_DIR/.local/bin/neuro-sync /pa
 
 test -x "$HOME_DIR/.local/bin/neuro-sync"
 test -x "$HOME_DIR/.local/share/neuro-sync/versions/$VERSION/neuro-sync"
-test -x "$HOME_DIR/.local/share/neuro-sync/versions/$VERSION/libexec/dcm2niix"
 test "$(HOME="$HOME_DIR" "$HOME_DIR/.local/bin/neuro-sync" --version)" = "neuro-sync $VERSION"
 
 HOME="$HOME_DIR" \

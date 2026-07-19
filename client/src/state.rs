@@ -5,9 +5,6 @@ use std::{
     time::Duration,
 };
 
-#[cfg(unix)]
-use std::fs;
-
 use anyhow::{Context, Result};
 use chrono::Utc;
 use rusqlite::{Connection, OptionalExtension, params};
@@ -15,6 +12,7 @@ use rusqlite::{Connection, OptionalExtension, params};
 use crate::{
     dicom::SourceFingerprint,
     model::{ExistingArchiveBundle, SourceSummary},
+    privacy,
 };
 
 #[derive(Debug, Clone)]
@@ -272,6 +270,17 @@ impl StateStore {
     }
 
     pub fn supersede_run_for_repreparation(&self, old_id: &str, new_id: &str) -> Result<()> {
+        self.supersede_run(old_id, new_id, "privacy_contract_superseded")
+    }
+
+    pub fn supersede_run(&self, old_id: &str, new_id: &str, reason: &str) -> Result<()> {
+        if reason.is_empty()
+            || !reason
+                .bytes()
+                .all(|byte| byte.is_ascii_lowercase() || byte == b'_')
+        {
+            anyhow::bail!("run supersession reason must be a non-empty lowercase code");
+        }
         let now = Utc::now().to_rfc3339();
         let summary = serde_json::to_string(&SourceSummary::default())?;
         let mut connection = self.connection()?;
@@ -284,8 +293,8 @@ impl StateStore {
             anyhow::bail!("the requested run is not eligible for privacy repreparation");
         }
         let updated = transaction.execute(
-            "UPDATE runs SET status='superseded',error_code='privacy_contract_superseded',updated_at=?3 WHERE id=?1 AND id<>?2 AND status IN ('prepared','uploading','upload_failed')",
-            params![old_id, new_id, now],
+            "UPDATE runs SET status='superseded',error_code=?4,updated_at=?3 WHERE id=?1 AND id<>?2 AND status IN ('prepared','uploading','upload_failed')",
+            params![old_id, new_id, now, reason],
         )?;
         if updated != 1 {
             anyhow::bail!("could not supersede the outdated privacy checkpoint");
@@ -398,6 +407,24 @@ impl StateStore {
             "UPDATE run_uploads SET status=?3,updated_at=?4 WHERE run_id=?1 AND chunk_index=?2",
             params![run_id, chunk_index, status, Utc::now().to_rfc3339()],
         )?;
+        Ok(())
+    }
+
+    /// Record a receipt won by a different workstation without retaining its
+    /// non-queryable upload ID as though it belonged to this device.
+    pub fn set_chunk_reconciled(&self, run_id: &str, chunk_index: u32) -> Result<()> {
+        let mut connection = self.connection()?;
+        let transaction = connection.transaction()?;
+        let now = Utc::now().to_rfc3339();
+        transaction.execute(
+            "UPDATE run_uploads SET worker_upload_id=NULL,status='reconciled',updated_at=?3 WHERE run_id=?1 AND chunk_index=?2",
+            params![run_id, chunk_index, now],
+        )?;
+        transaction.execute(
+            "UPDATE runs SET worker_upload_id=(SELECT worker_upload_id FROM run_uploads WHERE run_id=?1 AND worker_upload_id IS NOT NULL ORDER BY chunk_index LIMIT 1),updated_at=?2 WHERE id=?1",
+            params![run_id, now],
+        )?;
+        transaction.commit()?;
         Ok(())
     }
 
@@ -519,7 +546,7 @@ impl StateStore {
     pub fn interrupted_preparation_runs(&self) -> Result<Vec<RunRecord>> {
         let connection = self.connection()?;
         let mut statement = connection.prepare(
-            "SELECT id,source_path,status,dry_run,summary_json,manifest_path,report_path,worker_upload_id,error_code,created_at,updated_at FROM runs WHERE status IN ('discovering','converting') ORDER BY created_at",
+            "SELECT id,source_path,status,dry_run,summary_json,manifest_path,report_path,worker_upload_id,error_code,created_at,updated_at FROM runs WHERE status IN ('discovering','preparing','converting') ORDER BY created_at",
         )?;
         Ok(statement
             .query_map([], row_to_run)?
@@ -637,7 +664,7 @@ fn ensure_private_database_file(path: &Path) -> Result<()> {
             path.display()
         )
     })?;
-    restrict_file(path)
+    privacy::restrict_file(path)
 }
 
 fn sqlite_sidecar_path(path: &Path, suffix: &str) -> PathBuf {
@@ -647,25 +674,13 @@ fn sqlite_sidecar_path(path: &Path, suffix: &str) -> PathBuf {
 }
 
 fn restrict_sqlite_files(path: &Path) -> Result<()> {
-    restrict_file(path)?;
+    privacy::restrict_file(path)?;
     for suffix in ["-wal", "-shm", "-journal"] {
         let sidecar = sqlite_sidecar_path(path, suffix);
         if sidecar.exists() {
-            restrict_file(&sidecar)?;
+            privacy::restrict_file(&sidecar)?;
         }
     }
-    Ok(())
-}
-
-#[cfg(unix)]
-fn restrict_file(path: &Path) -> Result<()> {
-    use std::os::unix::fs::PermissionsExt;
-    fs::set_permissions(path, fs::Permissions::from_mode(0o600))?;
-    Ok(())
-}
-
-#[cfg(not(unix))]
-fn restrict_file(_path: &Path) -> Result<()> {
     Ok(())
 }
 
@@ -999,7 +1014,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn database_and_sqlite_sidecars_are_owner_only() {
-        use std::os::unix::fs::PermissionsExt;
+        use std::{fs, os::unix::fs::PermissionsExt};
 
         let directory = tempdir().unwrap();
         let path = directory.path().join("private.sqlite3");

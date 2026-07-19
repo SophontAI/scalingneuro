@@ -11,7 +11,7 @@ use crate::{
     pipeline::{ContributorDetails, Runtime},
 };
 
-const POLICY_SUMMARY: &str = "This beta accepts only confidently identified functional 4D EPI. Source DICOMs and structural, diffusion, ASL, field-map, reference, derived, or uncertain series stay local.\nUploaded bundles contain native-space NIfTI voxels, an allowlisted acquisition-metadata sidecar, site-scoped pseudonyms, QC/provenance, and hashes. Direct identifiers, dates, DICOM UIDs, institution/station/operator fields, source names and paths, free text, and private-tag dumps are prohibited.\nYou must be authorized by your institution to contribute the selected scans for research storage, validation, preservation, scientific analysis, and governed sharing. This confirmation does not replace participant consent, IRB review, a data-use agreement, or institutional review. Scaling Neuro may validate, deduplicate, quarantine, preserve, and analyze accepted bundles. A lab may request device revocation or upload withdrawal through admin@sophont.med using the pseudonymous upload ID in its local report.";
+const POLICY_SUMMARY: &str = "This beta accepts only confidently identified functional EPI. Structural, diffusion, ASL, field-map, reference, derived, or uncertain series stay local.\nThe original DICOMs remain unchanged. Uploads contain privacy-cleared DICOM copies with scanner-native pixel data, useful acquisition metadata, site-scoped pseudonyms, a recursive de-identification audit, and hashes. Direct identifiers, dates, source UIDs and paths, institution/station/operator fields, free text, overlays, graphics, and unsafe private data are removed or remapped before upload. Conversion and scientific validation run asynchronously on the Scaling Neuro research cluster.\nYou must be authorized by your institution to contribute the selected scans for research storage, validation, preservation, scientific analysis, and governed sharing. This confirmation does not replace participant consent, IRB review, a data-use agreement, or institutional review. Scaling Neuro may validate, deduplicate, quarantine, preserve, and analyze accepted bundles. A lab may request device revocation or upload withdrawal through admin@sophont.med using the pseudonymous upload ID in its local report.";
 
 pub async fn run(runtime: Runtime) -> Result<()> {
     run_for_optional_folder(runtime, None).await
@@ -187,6 +187,23 @@ pub fn print_run_summary(runtime: &Runtime, run_id: &str, output: &mut impl Writ
         "Series: {} accepted, {} held, {} excluded",
         run.summary.accepted, run.summary.held, run.summary.excluded
     )?;
+    if !run.dry_run && run.status == "complete" {
+        if let Ok(report) = runtime.report(Some(run_id)) {
+            let received = report
+                .bundles
+                .iter()
+                .filter(|bundle| bundle.archive.is_some())
+                .count();
+            if received > 0 {
+                writeln!(output, "Receipt: {received} DICOM series safely stored")?;
+                writeln!(
+                    output,
+                    "Processing: queued on the Scaling Neuro cluster (the upload is finished)"
+                )?;
+                writeln!(output, "Check later with: neuro-sync status {run_id}")?;
+            }
+        }
+    }
     if let Some(report) = run.report_path {
         writeln!(output, "Report: {report}")?;
     }
@@ -384,7 +401,7 @@ mod tests {
                         "project_name": "Scaling Neuro public EPI contribution",
                         "consent_policy_version": "open-epi-1.0.0",
                         "policy_url": "https://scalingneuro.com/docs/contribution-policy",
-                        "self_service_quota_bytes": 10737418240_u64,
+                        "self_service_quota_bytes": null,
                         "minimum_client_version": "0.2.2"
                     }))
                 }),

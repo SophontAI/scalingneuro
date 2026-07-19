@@ -1,0 +1,2 @@
+pydicom==3.0.1 \
+    --hash=sha256:db32f78b2641bd7972096b8289111ddab01fb221610de8d7afa835eb938adb41

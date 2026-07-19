@@ -39,8 +39,10 @@ tmp_dir=$(mktemp -d "${TMPDIR:-/tmp}/neuro-sync.XXXXXX")
 trap 'rm -rf "$tmp_dir"' EXIT HUP INT TERM
 archive="$tmp_dir/$package"
 url="$DOWNLOAD_BASE/$package"
+extract_dir="$tmp_dir/extracted"
+mkdir -p "$extract_dir"
 
-printf 'Downloading neuro-sync %s for %s…\n' "$VERSION" "$(uname -s)"
+printf 'Downloading neuro-sync %s package %s…\n' "$VERSION" "$package"
 case "$url" in
   https://*) curl --proto '=https' --tlsv1.2 --fail --location --silent --show-error --retry 3 --output "$archive" "$url" ;;
   file://*) curl --fail --location --silent --show-error --output "$archive" "$url" ;;
@@ -57,8 +59,6 @@ fi
 actual_sha256=$(printf '%s' "$actual_sha256" | tr 'A-F' 'a-f')
 test "$actual_sha256" = "$expected_sha256" || fail 'download verification failed; nothing was installed'
 
-extract_dir="$tmp_dir/extracted"
-mkdir -p "$extract_dir"
 case "$archive_kind" in
   zip)
     unzip -q "$archive" -d "$extract_dir"
@@ -70,7 +70,6 @@ case "$archive_kind" in
     ;;
 esac
 test -f "$package_root/neuro-sync" || fail 'verified release is missing neuro-sync'
-test -f "$package_root/libexec/dcm2niix" || fail 'verified release is missing its pinned DICOM converter'
 
 install_root=${NEURO_SYNC_INSTALL_ROOT:-"$HOME/.local/share/neuro-sync"}
 bin_dir=${NEURO_SYNC_BIN_DIR:-"$HOME/.local/bin"}
@@ -81,7 +80,7 @@ backup_dir="$versions_dir/.previous-$VERSION-$$"
 mkdir -p "$versions_dir" "$bin_dir"
 rm -rf "$stage_dir" "$backup_dir"
 cp -R "$package_root" "$stage_dir"
-chmod 0755 "$stage_dir/neuro-sync" "$stage_dir/libexec/dcm2niix"
+chmod 0755 "$stage_dir/neuro-sync"
 if test -e "$version_dir"; then
   mv "$version_dir" "$backup_dir"
 fi
@@ -98,9 +97,7 @@ shell_quote() {
 launcher_tmp="$bin_dir/.neuro-sync-$$"
 {
   printf '#!/bin/sh\n'
-  printf 'NEURO_SYNC_DCM2NIIX=%s exec %s "$@"\n' \
-    "$(shell_quote "$version_dir/libexec/dcm2niix")" \
-    "$(shell_quote "$version_dir/neuro-sync")"
+  printf 'exec %s "$@"\n' "$(shell_quote "$version_dir/neuro-sync")"
 } > "$launcher_tmp"
 chmod 0755 "$launcher_tmp"
 mv "$launcher_tmp" "$bin_dir/neuro-sync"

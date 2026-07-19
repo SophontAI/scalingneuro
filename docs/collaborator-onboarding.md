@@ -1,25 +1,21 @@
-# Contribute an EPI folder
+# Contribute a functional-EPI DICOM folder
 
-Scaling Neuro’s open-beta flow is deliberately one-folder: register the lab once, select the folder exported by the scanner, and leave the client running. You do not need to rename files, arrange BIDS folders, enter task labels, install Python, configure AWS, or understand DICOM tags.
+Scaling Neuro’s beta path is one folder and one command. You do not need to rename files, arrange BIDS, enter task labels, install Python or a DICOM converter, configure cloud credentials, or open a browser.
 
-## Before you start
+## Before starting
 
 You need:
 
-- your name, work email, institution, and lab or research-group name for the one-time registration;
-- a folder containing a completed DICOM export;
-- enough local free space for one converted EPI series plus resumable staging; and
-- institutional authorization to contribute the scans under the project’s displayed consent/data-use policy.
+- your name, work email, institution, and lab/group name for one-time terminal registration;
+- a completed DICOM export folder;
+- temporary local space for the compressed privacy-cleared EPI archives; and
+- authorization to contribute these scans under the displayed policy.
 
-Registration creates a private, revocable upload identity for one workstation and lab; the same lab and contact may register each additional workstation separately. Registration is not evidence of participant consent and does not make an otherwise unauthorized scan upload permissible. The uploader remains responsible for confirming that the selected scans are covered by the institution’s IRB, consent, and data-use approvals. The client is a research data-transfer tool, not a clinical device or a substitute for those reviews.
-
-Pilot releases support Apple Silicon and Intel macOS through one universal package, Windows x64, and Linux x64. The Linux package requires glibc 2.28 or newer (for example, Ubuntu 20.04+, Debian 10+, or RHEL 8+); it does not require X11, Wayland, a desktop portal, or a browser. Scanner compatibility comes from the pinned multi-vendor dcm2niix converter and fail-closed validation; no software can honestly guarantee every historical or malformed scanner export. Unsupported series stay local and appear in the report.
+Registration creates a revocable identity for one workstation. The same lab may register additional workstations with the same contact information. Registration does not itself establish participant consent or data-use permission.
 
 ## Install once
 
-Paste the command for your computer. The installer runs without administrator access, downloads the release bundle and pinned converter, verifies the package SHA-256 before installing, adds `neuro-sync` to your user PATH, and returns control to the shell. It prints the exact command to run when your DICOM folder path is ready.
-
-```bash
+```sh
 # macOS or Linux
 curl -fsSL https://scalingneuro.com/install.sh | sh
 ```
@@ -29,75 +25,82 @@ curl -fsSL https://scalingneuro.com/install.sh | sh
 irm https://scalingneuro.com/install.ps1 | iex
 ```
 
-Both scripts are readable at those URLs before use and do not send installer telemetry. Terminal installation does not override institutional endpoint-security rules; those environments may still require locally approved software.
+The readable installer downloads one SHA-256-verified package into your user account, adds `neuro-sync` to your user PATH, prints the next command, and returns to the shell. It does not launch setup. The package contains one executable; no administrator access, browser, Python runtime, Docker, cloud CLI, or local `dcm2niix` is required.
 
-## Guided terminal flow
+Current packages cover universal Intel/Apple-silicon macOS, Windows x64, and one fully static Linux x64 build with no glibc or other distribution-library requirement. They are terminal-only and have no X11, Wayland, GTK, or desktop-portal dependency. Institution-managed machines may still require local software approval.
 
-1. After installation, find or copy the top-level DICOM export-folder path. The installer has returned control to the shell and has not started setup.
-2. Run `neuro-sync /path/to/dicom-export`, using the exact path you found or copied. On first launch, answer the short lab-registration prompts and review the functional-EPI contribution policy summary shown in the terminal. No browser or web form is opened.
-3. Confirm that the already-selected folder is approved for the displayed project and policy.
-4. Leave the command running. Large or multi-subject folders are split automatically into sequential, independently committed one-subject sessions. If the connection or process is interrupted, rerun the exact same folder command. Compatible prepared files, multipart receipts, and server-verification progress are selected automatically.
-5. Wait for status `committed`. Save the run report for the study record. It contains pseudonymous IDs, counts, hashes, QC codes, and held/excluded reasons—never patient names or raw DICOM values.
+## Run when the path is ready
 
-The source folder is read-only. DICOMs are neither modified nor uploaded. Only accepted functional EPI NIfTI/JSON bundles leave the machine. Structural scans, DWI, ASL, fieldmaps, SBRefs, localizers, derived images, and uncertain series stay local.
-
-## Command flow
-
-The direct folder command, guided fallback, and explicit automation commands use the same private state database and folder-keyed continuation logic.
-
-```bash
+```sh
 neuro-sync /path/to/dicom-export
-
-# Optional managed registration and backward-compatible upload form:
-neuro-sync register --email researcher@example.edu --name "Researcher Name" \
-  --institution "Example University" --lab "Example Neuroimaging Lab" --accept-policy
-neuro-sync upload /path/to/dicom-export
-neuro-sync status
-neuro-sync report
 ```
 
-Useful variants:
+On first use, answer the short registration questions, read the policy summary, and confirm that you are authorized to contribute eligible scans from the folder already supplied. Everything happens in the terminal.
 
-```bash
-# Inspect classification/conversion output without transmitting data.
+The client then:
+
+1. inventories regular files without following symlinks, then discovers DICOMs with a bounded progress bar, speed, and ETA and groups them into series;
+2. selects only confidently identified functional EPI;
+3. writes and audits privacy-cleared DICOM copies while retaining scanner-native Pixel Data and useful acquisition metadata;
+4. creates one compressed archive per accepted series; and
+5. uploads missing bytes with a live percentage, speed, and ETA.
+
+Success means Cloudflare R2 has durably received the exact archives and the processing jobs are queued. Pinned conversion and scientific validation continue on Sophont’s cluster; you may close the terminal and the workstation can go offline.
+
+## Privacy and scientific content
+
+The source folder is read-only and unchanged. The files uploaded are not the scanner’s untouched headers. Before upload, `neuro-sync` recursively pseudonymizes patient identity and DICOM UIDs; removes dates/times, accessions, clinical/admin text, institution/station/operator fields, descriptions/comments, source paths, overlays/graphics, unknown private tags, and unsafe private text/binary data; and reopens the results for a default-deny audit.
+
+Pixel Data is copied byte-for-byte in its original transfer syntax. Standard scientific metadata required for decoding, geometry, MR timing/acquisition, scanner make/model/software, coils, matrices, and acceleration is retained. See [the exact policy](dicom-deidentification-policy.md).
+
+Structural, diffusion, ASL, field-map, SBRef, localizer, derived, secondary-capture, ambiguous, and privacy-unsafe series stay local. The current measured scanner routes are classic Siemens mosaic from the tested Prisma/E11 family and classic Philips from the tested 5.1.1 family, each under strict metadata predicates. GE classic, all Enhanced MR, extended-offset-table objects, malformed vendor metadata, and unverified export families are held locally rather than uploaded with degraded scientific metadata.
+
+## Interruption and continuation
+
+If anything stops, use the same command again:
+
+```sh
+neuro-sync /the/same/dicom-export
+```
+
+There is no `resume` command. The folder path selects its compatible private checkpoint before rediscovery. Existing series archives, completed multipart parts, and durable receipts are reused. A crash after R2 accepted a part but before its ETag was saved may resend only that same part number safely.
+
+Two or more workstations from one lab may register and upload independently; a repeated lab name or email never causes a conflict. Public registrations intentionally receive separate site-scoped pseudonym keys. When a managed lab explicitly enrolls multiple devices into one authenticated site/project, exact same-series races reconcile to the existing receipt and the losing temporary R2 prefix is purged. A different hash, pseudonymous identity, policy version, or withdrawal tombstone is never silently treated as a duplicate.
+
+## Useful commands
+
+```sh
+# Guided fallback if no folder was supplied yet.
+neuro-sync
+
+# Optional explicit registration and upload forms.
+neuro-sync register --email researcher@example.edu --name "Researcher Name" \
+  --institution "Example University" --lab "Example Lab" --accept-policy
+neuro-sync upload /path/to/dicom-export
+
+# For automation after authorization was confirmed out of band.
+neuro-sync upload /path/to/dicom-export --confirm-authorized
+
+# Run discovery, privacy rewriting, audit, and archive generation without upload.
 neuro-sync upload /path/to/dicom-export --dry-run
 
-# Machine-readable status/report for lab automation.
+neuro-sync status
 neuro-sync status --json
 neuro-sync report RUN_ID --json
-
-# Non-interactive transmission after authorization was confirmed out of band.
-neuro-sync upload /path/to/dicom-export --confirm-authorized
 ```
 
-Running `neuro-sync` with no arguments starts the complete guided fallback in the current terminal and prompts for the folder. It does not start a local web server or require a graphical session.
+Reports contain pseudonymous IDs, counts, hashes, and stable accepted/held/excluded/processing codes. They omit source paths, source UIDs, arbitrary DICOM values, tokens, and signed URLs.
 
-During a large or network-mounted export, the client prints live file, DICOM, series, conversion, multipart-transfer, server-finalization, and scientific-verification progress. Each NIfTI/sidecar pair is first checkpointed as durably stored and then checkpointed again after byte, gzip, NIfTI-header, and sidecar validation. An interruption continues from the last durable boundary without retransmitting completed files or rereading verified scans. `Ctrl+C` is safe during local validation: no data reaches R2 until a privacy-checked bundle has been prepared, and interrupted work is continued by rerunning `neuro-sync /the/same/folder`.
+## Status meanings
 
-## What success looks like
+- **received / queued:** every selected privacy-cleared source archive is durable; workstation work is complete.
+- **processing:** the cluster is verifying or converting one or more series.
+- **processed:** derived NIfTI, minimized metadata, and processing manifest passed validation and were committed.
+- **processing failed, source retained:** a stable converter/scientific-compatibility error needs review; do not retransmit unless instructed.
+- **processing failed, source purged:** the server found a privacy, archive-boundary, hash, or functional-EPI purpose violation; the object was deleted and its identity tombstoned.
+- **held:** the series never left the workstation because eligibility, privacy, or compatibility was uncertain.
+- **already received:** the same series was archived earlier and no duplicate bytes were retained.
 
-A successful run shows:
+## Support
 
-- source files and DICOM series discovered;
-- functional EPI series accepted, with held and excluded counts separated;
-- local conversion and QC complete;
-- bytes uploaded or reused from the folder's checkpoint;
-- an immutable manifest key and SHA-256; and
-- final status `committed`.
-
-`created` or `uploading` means the archive is not committed yet. `held` is a safe outcome, not a partial upload. Do not copy source DICOM headers into a support ticket; share the code-only report and client version.
-
-## Recovery and support
-
-- **Network interruption or expired 15-minute part URL:** rerun `neuro-sync /the/same/folder`. Checkpointed multipart pieces are reused and the client requests a new checksum-bound URL only for the next missing part. A crash in the instant before an accepted ETag was saved may safely resend that same part number.
-- **Final verification is still running or reports `CONFLICT`:** install the current client and rerun the same folder command. Uploaded parts and verified NIfTI/sidecar pairs are reused automatically.
-- **Registration timed out or the command stopped before confirmation:** run `neuro-sync` and submit the same details. The owner-only pending operation is replayed with the same client-bound token, so a lost response cannot create duplicate lab or device records.
-- **The client was closed or the computer restarted:** rerun the same `neuro-sync /path/to/dicom-export` command.
-- **Privacy rules changed:** prepare the unchanged private source again with the current client. Old prepared bytes are never uploaded, and a changed or missing source fails locally.
-- **The folder command says the registration context changed:** do not bypass it. The prepared run’s site, project, or contribution-policy version no longer matches the current device; review the policy and prepare a new authorized sync.
-- **A series is held:** keep the source folder unchanged and share the report. Scaling Neuro can add a compatibility fixture or classifier rule without receiving PHI.
-- **Consent policy update required:** review and accept the displayed new policy before another upload. Existing committed data is not silently relabeled.
-- **Duplicate bundle:** an exact active archive match under the current metadata privacy policy is recorded as **already archived** and is not retransmitted. If the selected folder also contains new EPI series, those continue normally. If two workstations finish the same scan at once, the losing transfer is purged and reconciled automatically. A withdrawn tombstone, stale metadata-policy version, or any mismatch in subject/session/series/protocol identity or uncompressed NIfTI hash stops the run instead of being treated as a duplicate.
-- **Object mismatch:** do not retry by manually changing files. Rerun the same folder command so the client can re-verify its private checkpoints and local hashes.
-
-For a beta issue, provide the operating system, `neuro-sync` version, run/upload ID, scanner manufacturer/model if permitted, and the report’s stable error/QC codes. Never provide names, MRNs, accession numbers, DICOM UIDs, raw descriptions, source paths, or source files unless a separate approved secure process has been arranged.
+Share the operating system, `neuro-sync --version`, run/upload ID, scanner manufacturer/model if permitted, and stable report codes. Never paste names, MRNs, accessions, DICOM UIDs, descriptions, source paths, signed URLs, or source files into a support ticket.

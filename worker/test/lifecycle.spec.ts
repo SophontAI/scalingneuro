@@ -14,6 +14,7 @@ import { fetchHandler } from "../src/index";
 import { cleanupAbandoned } from "../src/service";
 
 const ADMIN_TOKEN = "test-admin-token-with-sufficient-entropy";
+const PROCESSOR_TOKEN = "test-processor-token-with-sufficient-entropy";
 const CLIENT_VERSION = scanSidecarExample.conversion.client_version;
 const archiveAjv = new Ajv2020({ strict: true, validateFormats: false });
 archiveAjv.addSchema(commonSchema);
@@ -420,19 +421,8 @@ describe("ingestion control plane", () => {
         .first<string>("status"),
     ).not.toBe("expired");
 
-    // The first bounded finalization request completed the NIfTI in R2 before
-    // the simulated visibility failure. Materialize the sidecar as well to
-    // reproduce the live upload: both objects exist, but D1 has only a legacy
-    // sidecar receipt and no scientifically verified pair.
-    await env.ARCHIVE.resumeMultipartUpload(
-      metadataKey,
-      metadataMultipart.upload_id,
-    ).complete([
-      {
-        partNumber: metadataPart.partNumber,
-        etag: metadataPart.etag.replaceAll('"', ""),
-      },
-    ]);
+    // The failed response may still have completed either multipart object in
+    // R2. The next receipt pass must recover solely from authoritative HEADs.
 
     // Reproduce the production recovery shape left by the former verifier:
     // one small sidecar has an object-completion receipt, but no atomic
@@ -510,13 +500,7 @@ describe("ingestion control plane", () => {
     expect(finalization.status, await finalization.clone().text()).toBe(200);
     expect(await finalization.json()).toMatchObject({
       upload_id: uploadId,
-      status: "uploading",
-      verification: {
-        phase: "validating_scans",
-        finalized_series: 1,
-        verified_series: 0,
-        total_series: 1,
-      },
+      status: "committed",
     });
     expect(resumeSpy).not.toHaveBeenCalled();
     resumeSpy.mockRestore();
@@ -529,23 +513,6 @@ describe("ingestion control plane", () => {
         .first<number>("count"),
     ).toBe(2);
 
-    const verification = await call(
-      "POST",
-      `/v1/uploads/${uploadId}/complete`,
-      completionBody,
-      deviceToken,
-    );
-    expect(verification.status, await verification.clone().text()).toBe(200);
-    expect(await verification.json()).toMatchObject({
-      upload_id: uploadId,
-      status: "uploading",
-      verification: {
-        phase: "committing_archive",
-        finalized_series: 1,
-        verified_series: 1,
-        total_series: 1,
-      },
-    });
     expect(
       await env.DB.prepare(
         "SELECT COUNT(*) AS count FROM catalog_series WHERE upload_id = ?1",
@@ -554,13 +521,63 @@ describe("ingestion control plane", () => {
         .first<number>("count"),
     ).toBe(0);
 
-    const completion = await call(
+    expect(
+      await env.DB.prepare(
+        "SELECT COUNT(*) AS count FROM processing_jobs WHERE upload_id = ?1 AND status = 'queued'",
+      )
+        .bind(uploadId)
+        .first<number>("count"),
+    ).toBe(1);
+    expect(
+      await env.DB.prepare(
+        "SELECT COUNT(*) AS count FROM upload_objects WHERE upload_id = ?1 AND verified_at IS NOT NULL",
+      )
+        .bind(uploadId)
+        .first<number>("count"),
+    ).toBe(0);
+
+    const claimResponse = await call(
       "POST",
-      `/v1/uploads/${uploadId}/complete`,
-      completionBody,
+      "/v1/processor/jobs/claim",
+      { processor_id: "legacy-validator", lease_seconds: 900 },
+      PROCESSOR_TOKEN,
+    );
+    expect(claimResponse.status).toBe(200);
+    const claim = await claimResponse.json<{
+      job_id: string;
+      lease_token: string;
+      input_format: string;
+    }>();
+    expect(claim.input_format).toBe("nifti-v1");
+    const processedResponse = await call(
+      "POST",
+      `/v1/processor/jobs/${claim.job_id}/complete`,
+      {
+        lease_token: claim.lease_token,
+        processor_version: "1.0.0",
+        dcm2niix_version: "1.0.20250506",
+        outputs: [],
+        validation: {
+          nifti_sha256_verified: true,
+          nifti_uncompressed_sha256_verified: true,
+          sidecar_sha256_verified: true,
+          nifti_header_valid: true,
+          sidecar_valid: true,
+          nifti_sidecar_consistent: true,
+        },
+      },
+      PROCESSOR_TOKEN,
+    );
+    expect(
+      processedResponse.status,
+      await processedResponse.clone().text(),
+    ).toBe(200);
+    const completion = await call(
+      "GET",
+      `/v1/uploads/${uploadId}`,
+      undefined,
       deviceToken,
     );
-    expect(completion.status, await completion.clone().text()).toBe(200);
     const committed = await completion.json<Record<string, unknown>>();
     expect(committed).toMatchObject({
       upload_id: uploadId,
@@ -580,13 +597,7 @@ describe("ingestion control plane", () => {
         "upload_id",
       ].sort(),
     );
-    expect(
-      await env.DB.prepare(
-        "SELECT COUNT(*) AS count FROM upload_objects WHERE upload_id = ?1 AND verified_at IS NOT NULL",
-      )
-        .bind(uploadId)
-        .first<number>("count"),
-    ).toBe(2);
+    expect(committed.manifest).toBeDefined();
 
     const raceNiiPart = await env.ARCHIVE.resumeMultipartUpload(
       raceNiiKey,
@@ -630,37 +641,11 @@ describe("ingestion control plane", () => {
     );
     expect(racedFinalization.status).toBe(200);
     expect(await racedFinalization.json()).toMatchObject({
-      status: "uploading",
-      verification: { finalized_series: 1, verified_series: 0 },
-    });
-    const racedVerification = await call(
-      "POST",
-      `/v1/uploads/${raceUploadId}/complete`,
-      raceCompletionBody,
-      raceToken,
-    );
-    expect(racedVerification.status).toBe(200);
-    expect(await racedVerification.json()).toMatchObject({
-      status: "uploading",
-      verification: { finalized_series: 1, verified_series: 1 },
-    });
-    const racedCompletion = await call(
-      "POST",
-      `/v1/uploads/${raceUploadId}/complete`,
-      raceCompletionBody,
-      raceToken,
-    );
-    expect(racedCompletion.status).toBe(409);
-    expect(await racedCompletion.json()).toMatchObject({
-      error: {
-        code: "DUPLICATE_BUNDLE",
-        details: {
-          reason: "active_exact_match",
-          existing_bundles: [
-            { bundle_id: bundle.bundle_id, upload_id: uploadId },
-          ],
-        },
-      },
+      status: "committed",
+      deduplicated: true,
+      existing_bundles: [
+        { bundle_id: bundle.bundle_id, upload_id: uploadId },
+      ],
     });
     expect(
       await env.DB.prepare("SELECT status FROM uploads WHERE id = ?1")
@@ -743,25 +728,10 @@ describe("ingestion control plane", () => {
       { bundles: [bundle], client_version: "0.2.0" },
       duplicateToken,
     );
-    expect(duplicateResponse.status).toBe(409);
+    expect(duplicateResponse.status).toBe(200);
     expect(await duplicateResponse.json()).toMatchObject({
-      error: {
-        code: "DUPLICATE_BUNDLE",
-        details: {
-          reason: "active_exact_match",
-          existing_bundles: [
-            {
-              bundle_id: bundle.bundle_id,
-              series_id: bundle.series_id,
-              subject_id: bundle.subject_id,
-              session_id: bundle.session_id,
-              protocol_group_id: bundle.protocol_group_id,
-              upload_id: uploadId,
-              nii_uncompressed_sha256: bundle.nii.uncompressed_sha256,
-            },
-          ],
-        },
-      },
+      upload_id: uploadId,
+      status: "committed",
     });
 
     const newBundle = structuredClone(bundle);
@@ -980,9 +950,9 @@ describe("ingestion control plane", () => {
     });
   });
 
-  it("bounds multi-series completion to one durable pair phase per request", async () => {
-    // Match the 15-series production upload that exposed the original
-    // monolithic-verifier failure.
+  it("receives and queues a 15-series legacy upload in one edge request", async () => {
+    // Match the production upload that exposed why scientific payload
+    // validation cannot run inside the edge control plane.
     const bundleCount = 15;
     const fixture = await functionalNiftiFixture();
     const compressedSha256 = await sha256Hex(fixture.compressed);
@@ -1088,102 +1058,15 @@ describe("ingestion control plane", () => {
       });
     }
     const completionBody = { objects: completionObjects };
-    const manifestKey =
-      `manifests/v1/${enrollment.site_id as string}/` +
-      `${enrollment.project_id as string}/${uploadId}.json`;
-
     const resumeSpy = vi.spyOn(env.ARCHIVE, "resumeMultipartUpload");
     const headSpy = vi.spyOn(env.ARCHIVE, "head");
     const getSpy = vi.spyOn(env.ARCHIVE, "get");
-    let completionCalls = 0;
-
-    const expectArchiveNotCommitted = async (): Promise<void> => {
-      expect(
-        await env.DB.prepare(
-          "SELECT COUNT(*) AS count FROM catalog_series WHERE upload_id = ?1",
-        )
-          .bind(uploadId)
-          .first<number>("count"),
-      ).toBe(0);
-      expect(
-        await env.DB.prepare(
-          "SELECT manifest_object_key FROM uploads WHERE id = ?1",
-        )
-          .bind(uploadId)
-          .first<string | null>("manifest_object_key"),
-      ).toBeNull();
-    };
-
-    for (let index = 1; index <= bundleCount; index += 1) {
-      resumeSpy.mockClear();
-      headSpy.mockClear();
-      getSpy.mockClear();
-      const response = await call(
-        "POST",
-        `/v1/uploads/${uploadId}/complete`,
-        completionBody,
-        deviceToken,
-      );
-      completionCalls += 1;
-      expect(response.status, await response.clone().text()).toBe(200);
-      expect(await response.json()).toMatchObject({
-        upload_id: uploadId,
-        status: "uploading",
-        verification: {
-          phase:
-            index < bundleCount ? "finalizing_objects" : "validating_scans",
-          finalized_series: index,
-          verified_series: 0,
-          total_series: bundleCount,
-        },
-      });
-      expect(resumeSpy).toHaveBeenCalledTimes(2);
-      expect(new Set(resumeSpy.mock.calls.map((call) => call[0])).size).toBe(2);
-      expect(new Set(headSpy.mock.calls.map((call) => call[0])).size).toBe(2);
-      expect(getSpy).not.toHaveBeenCalled();
-      await expectArchiveNotCommitted();
-    }
-
-    for (let index = 1; index <= bundleCount; index += 1) {
-      resumeSpy.mockClear();
-      headSpy.mockClear();
-      getSpy.mockClear();
-      const response = await call(
-        "POST",
-        `/v1/uploads/${uploadId}/complete`,
-        completionBody,
-        deviceToken,
-      );
-      completionCalls += 1;
-      expect(response.status, await response.clone().text()).toBe(200);
-      expect(await response.json()).toMatchObject({
-        upload_id: uploadId,
-        status: "uploading",
-        verification: {
-          phase:
-            index < bundleCount ? "validating_scans" : "committing_archive",
-          finalized_series: bundleCount,
-          verified_series: index,
-          total_series: bundleCount,
-        },
-      });
-      expect(resumeSpy).not.toHaveBeenCalled();
-      expect(headSpy).not.toHaveBeenCalled();
-      expect(getSpy).toHaveBeenCalledTimes(2);
-      expect(new Set(getSpy.mock.calls.map((call) => call[0])).size).toBe(2);
-      await expectArchiveNotCommitted();
-    }
-
-    resumeSpy.mockClear();
-    headSpy.mockClear();
-    getSpy.mockClear();
     const committedResponse = await call(
       "POST",
       `/v1/uploads/${uploadId}/complete`,
       completionBody,
       deviceToken,
     );
-    completionCalls += 1;
     expect(
       committedResponse.status,
       await committedResponse.clone().text(),
@@ -1191,11 +1074,9 @@ describe("ingestion control plane", () => {
     expect(await committedResponse.json()).toMatchObject({
       upload_id: uploadId,
       status: "committed",
-      manifest: { key: manifestKey },
     });
-    expect(completionCalls).toBe(bundleCount * 2 + 1);
-    expect(resumeSpy).not.toHaveBeenCalled();
-    expect(headSpy).not.toHaveBeenCalled();
+    expect(resumeSpy).toHaveBeenCalledTimes(bundleCount * 2);
+    expect(headSpy).toHaveBeenCalledTimes(bundleCount * 4);
     expect(getSpy).not.toHaveBeenCalled();
     expect(
       await env.DB.prepare(
@@ -1203,11 +1084,24 @@ describe("ingestion control plane", () => {
       )
         .bind(uploadId)
         .first<number>("count"),
+    ).toBe(0);
+    expect(
+      await env.DB.prepare(
+        "SELECT COUNT(*) AS count FROM processing_jobs WHERE upload_id = ?1 AND status = 'queued'",
+      )
+        .bind(uploadId)
+        .first<number>("count"),
+    ).toBe(bundleCount);
+    expect(
+      await env.DB.prepare(
+        "SELECT COUNT(*) AS count FROM received_series_reservations WHERE upload_id = ?1",
+      )
+        .bind(uploadId)
+        .first<number>("count"),
     ).toBe(bundleCount);
     resumeSpy.mockRestore();
     headSpy.mockRestore();
     getSpy.mockRestore();
-    expect(await env.ARCHIVE.head(manifestKey)).not.toBeNull();
   });
 
   it("replays a lost enrollment response without consuming the invite twice", async () => {

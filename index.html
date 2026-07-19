@@ -4,7 +4,7 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Scaling Neuro — An Open Data Commons for Brain Foundation Models</title>
-  <meta name="description" content="An open, researcher-led pipeline for contributing approved functional EPI scans as native-space NIfTI plus privacy-minimized acquisition metadata." />
+  <meta name="description" content="An open, researcher-led pipeline for contributing approved functional EPI scans as privacy-cleared scanner-native DICOM, with reproducible cluster processing." />
   <meta name="theme-color" content="#e1e3ec" />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
@@ -131,17 +131,17 @@
       <div class="wrap">
         <div style="max-width:760px;margin-bottom:clamp(40px,6vw,72px)">
           <span class="label reveal" style="display:block;margin-bottom:20px">01 — The contribution flow</span>
-          <h2 class="h-sec reveal" style="color:var(--cream-txt);margin-bottom:20px">One approved folder becomes a continuous contribution.</h2>
+          <h2 class="h-sec reveal" style="color:var(--cream-txt);margin-bottom:20px">One approved folder becomes one reliable contribution.</h2>
           <p class="lede reveal">
             Share approved scans, not unpublished study annotations. No labels, manual curation, or cloud setup; each contribution remains attributable to its lab and policy context.
           </p>
         </div>
         <div class="manifesto reveal">
           <div class="mani"><div class="mani-no"><span class="num">01</span> / Consent</div><h4>Approve</h4><p>Only approved projects enter.</p></div>
-          <div class="mani"><div class="mani-no"><span class="num">02</span> / Capture</div><h4>Watch</h4><p>Detect new series automatically.</p></div>
-          <div class="mani"><div class="mani-no"><span class="num">03</span> / Convert</div><h4>Preserve</h4><p>Make native-space NIfTI locally.</p></div>
-          <div class="mani"><div class="mani-no"><span class="num">04</span> / Gate</div><h4>Verify</h4><p>Keep only functional 4D EPI; hold uncertainty.</p></div>
-          <div class="mani"><div class="mani-no"><span class="num">05</span> / Commons</div><h4>Share</h4><p>Upload bundles with checksums and provenance.</p></div>
+          <div class="mani"><div class="mani-no"><span class="num">02</span> / Capture</div><h4>Read</h4><p>Inventory the selected export without changing it.</p></div>
+          <div class="mani"><div class="mani-no"><span class="num">03</span> / Gate</div><h4>Select</h4><p>Keep functional EPI; hold other modalities and uncertainty.</p></div>
+          <div class="mani"><div class="mani-no"><span class="num">04</span> / Preserve</div><h4>Protect</h4><p>Rewrite identifiers while retaining scanner-native pixels and acquisition metadata.</p></div>
+          <div class="mani"><div class="mani-no"><span class="num">05</span> / Commons</div><h4>Process</h4><p>Upload once; verify and derive NIfTI reproducibly on the research cluster.</p></div>
         </div>
       </div>
     </section>
@@ -243,10 +243,11 @@
     <section class="band band-plum contribute" id="contribute">
       <div class="wrap">
         <span class="label reveal" style="display:block;margin-bottom:24px">03 — For every new session</span>
-        <h2 class="display reveal" style="font-size:clamp(2.4rem,7vw,5rem)">Point it at one folder. Let every future scan count.</h2>
+        <h2 class="display reveal" style="font-size:clamp(2.4rem,7vw,5rem)">Point it at one folder. Make eligible scans count.</h2>
         <p class="hero-para reveal">
-          Keep the scanner workflow. Install once, return to the shell, and run neuro-sync whenever the export path is ready. It finds approved functional EPI scans, checks them locally, and automatically continues checkpointed work until every verified bundle is committed.
+          Keep the scanner workflow. Install once, return to the shell, and run neuro-sync whenever the export path is ready. It conservatively selects compatible functional EPI, removes identifying DICOM fields locally, and uploads each series with resumable checksums. The workstation is finished when transfer receives its durable receipt; conversion and scientific validation continue on the research cluster.
         </p>
+        <p class="hero-para reveal">The current measured beta accepts only classic Siemens Prisma_fit/E11 mosaic and Philips Achieva dStream/5.1.1 exports that satisfy the complete privacy and metadata contract. Other scanners, Enhanced MR, GE, structural, diffusion, reference, derived, and uncertain series stay local with a report code.</p>
 
         <div class="adoption-line reveal" aria-label="Why a lab should adopt the tool">
           <span>One terminal command</span><span>No admin, Python, or Docker</span><span>Fails closed</span>
@@ -262,29 +263,33 @@
             <pre class="term-pane is-active" id="pane-install" data-pane="install" role="tabpanel" aria-labelledby="tab-install"><code><span class="c-com"># macOS or Linux — installs, verifies, then returns to your shell</span>
 <span class="c-p">$</span> curl -fsSL https://scalingneuro.com/install.sh | sh
 <span class="c-com"># Windows PowerShell: irm https://scalingneuro.com/install.ps1 | iex</span>
-<span class="c-ok">✓</span> Correct client + pinned dcm2niix downloaded and SHA-256 verified
+<span class="c-ok">✓</span> Single neuro-sync binary downloaded and SHA-256 verified
 <span class="c-com"># later, after you find or copy the DICOM folder path</span>
 <span class="c-p">$</span> neuro-sync /path/to/new_session_dicoms
 <span class="c-ok">✓</span> One-minute lab registration in the terminal; no browser needed
-<span class="c-ok">✓</span> Private upload identity: <span class="c-hi">your lab</span>
+<span class="c-ok">✓</span> Private, revocable identity for <span class="c-hi">this workstation</span>
 <span class="c-ok">✓</span> Confirm the selected folder is approved for contribution
-<span class="c-ok">✓</span> Discover → convert → minimize metadata → QC → upload
+<span class="c-ok">✓</span> Discover → select EPI → de-identify DICOM → upload
 <span class="c-ok">✓</span> Interrupted? Rerun this same folder command; completed work is reused</code></pre>
-            <pre class="term-pane" id="pane-run" data-pane="run" role="tabpanel" aria-labelledby="tab-run"><code><span class="c-com"># after the one-time terminal lab registration</span>
+            <pre class="term-pane" id="pane-run" data-pane="run" role="tabpanel" aria-labelledby="tab-run"><code><span class="c-com"># representative output after the one-time terminal registration</span>
 <span class="c-p">$</span> neuro-sync ./new_session_dicoms
 
-<span class="c-dim">[scan]</span>   6 DICOM series discovered
-  <span class="c-ok">↑</span> functional EPI   2.0mm  480 vol   <span class="c-ok">committed</span>
-  <span class="c-ok">↑</span> functional EPI   1.6mm  610 vol   <span class="c-ok">committed</span>
-  <span class="c-skip">—</span> T1w / DWI / SBRef / uncertain series      <span class="c-skip">held locally</span>
-<span class="c-dim">[meta]</span>   scanner · field · TR · TE · geometry · timing retained
-<span class="c-dim">[archive]</span> native NIfTI + sidecar + manifest + SHA-256   <span class="c-ok">complete</span></code></pre>
+<span class="c-dim">Reading DICOM headers</span>  1842 files/1842 files (100.0%)  <span class="c-ok">ETA 00:00</span>
+<span class="c-dim">Preparing privacy-cleared EPI archives</span>  5.1 GiB/5.1 GiB (100.0%)  <span class="c-ok">ETA 00:00</span>
+<span class="c-dim">Uploading privacy-cleared EPI archives</span>  5.1 GiB/5.1 GiB (100.0%)  <span class="c-ok">ETA 00:00</span>
+
+Status: <span class="c-ok">complete</span>
+Series: 2 accepted, 3 held, 1 excluded
+Receipt: 2 DICOM series safely stored
+Processing: queued on the Scaling Neuro cluster (the upload is finished)
+Check later with: neuro-sync status &lt;run-id&gt;</code></pre>
             <pre class="term-pane" id="pane-inside" data-pane="inside" role="tabpanel" aria-labelledby="tab-inside"><code><span class="c-kw">local</span>    source DICOMs remain unchanged on the lab's machine
-<span class="c-kw">voxels</span>   native-space .nii.gz; no registration, masking, or resampling
-<span class="c-kw">metadata</span> explicit acquisition allowlist; unknown keys are dropped
-<span class="c-kw">identity</span> names, IDs, dates, UIDs, sites, paths, and free text never upload
+<span class="c-kw">raw</span>      functional DICOM pixel data is preserved without resampling or conversion
+<span class="c-kw">metadata</span> acquisition and geometry fields remain inside rewritten DICOMs
+<span class="c-kw">identity</span> names, IDs, dates, paths, free text, and unsafe private data never upload
 <span class="c-kw">linkage</span>  site-scoped HMAC subject/session/series pseudonyms only
-<span class="c-kw">proof</span>    converter version, QC decisions, and compressed + raw hashes
+<span class="c-kw">proof</span>    recursive de-identification audit, per-file hashes, and archive hash
+<span class="c-kw">derive</span>   pinned conversion and QC run asynchronously on Sophont's cluster
 <span class="c-kw">hold</span>     structural, diffusion, field maps, references, and ambiguity stay local
 <span class="c-kw">access</span>   device credentials can only upload parts to a server-created session</code></pre>
           </div>
@@ -294,7 +299,7 @@
           <a class="btn btn-sage" href="downloads/" id="dlBtn">Install neuro-sync</a>
           <button class="btn btn-outline-d" id="copyBtn" type="button">Copy install command</button>
         </div>
-        <div class="term-foot reveal"><span style="color:var(--sage-deep)">open self-service beta</span>&nbsp;&nbsp;·&nbsp;&nbsp;macOS, Windows, Linux&nbsp;&nbsp;·&nbsp;&nbsp;functional EPI only</div>
+        <div class="term-foot reveal"><span style="color:var(--sage-deep)">open self-service beta</span>&nbsp;&nbsp;·&nbsp;&nbsp;universal macOS, Windows x64, Linux x64&nbsp;&nbsp;·&nbsp;&nbsp;measured Siemens/Philips functional EPI only</div>
 
       </div>
     </section>

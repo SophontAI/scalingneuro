@@ -45,12 +45,12 @@ import type {
 import packageManifest from "../package.json";
 
 const MINIMUM_CLIENT_VERSION = "0.1.1";
-const MINIMUM_SELF_SERVICE_CLIENT_VERSION = "0.2.0";
+const MINIMUM_SELF_SERVICE_CLIENT_VERSION = "0.2.8";
+const LEGACY_UNCAPPED_QUOTA_SENTINEL = Number.MAX_SAFE_INTEGER;
 const SERVICE_VERSION = packageManifest.version;
 const PUBLIC_PROJECT_NAME = "Scaling Neuro public EPI contribution";
 const PUBLIC_PROJECT_SLUG = "public-epi";
 const PUBLIC_CONSENT_POLICY_VERSION = "open-epi-1.0.0";
-const PUBLIC_UPLOAD_QUOTA_BYTES = 250 * 1024 ** 3;
 
 function semanticVersion(
   value: string,
@@ -68,7 +68,10 @@ function semanticVersion(
   };
 }
 
-function clientVersionAtLeast(value: string, minimumValue: string): boolean {
+export function clientVersionAtLeast(
+  value: string,
+  minimumValue: string,
+): boolean {
   const current = semanticVersion(value);
   const minimum = semanticVersion(minimumValue);
   const firstDifference =
@@ -174,6 +177,7 @@ interface UploadRow {
   project_id: string;
   device_id: string;
   status: UploadStatus;
+  ingest_format: "nifti-v1" | "dicom-series-v1";
   archive_prefix: string;
   request_hash: string;
   client_version: string;
@@ -184,6 +188,7 @@ interface UploadRow {
   updated_at: number;
   expires_at: number;
   committed_at: number | null;
+  received_at: number | null;
   withdrawn_at: number | null;
   purged_at: number | null;
   manifest_object_key: string | null;
@@ -516,6 +521,61 @@ async function abortMultipartUploads(
   }
 }
 
+async function abortDicomMultipartUploads(
+  env: Env,
+  uploadId: string,
+): Promise<void> {
+  const result = await env.DB.prepare(
+    `SELECT u.archive_prefix, d.archive_relative_key, d.r2_multipart_id
+     FROM dicom_upload_series d JOIN uploads u ON u.id = d.upload_id
+     WHERE d.upload_id = ?1 AND d.r2_multipart_id IS NOT NULL
+       AND d.completed_at IS NULL`,
+  )
+    .bind(uploadId)
+    .all<{
+      archive_prefix: string;
+      archive_relative_key: string;
+      r2_multipart_id: string;
+    }>();
+  for (let offset = 0; offset < result.results.length; offset += 8) {
+    await Promise.all(
+      result.results.slice(offset, offset + 8).map(async (row) => {
+        try {
+          await env.ARCHIVE.resumeMultipartUpload(
+            `${row.archive_prefix}${row.archive_relative_key}`,
+            row.r2_multipart_id,
+          ).abort();
+        } catch (error) {
+          const message =
+            error instanceof Error ? `${error.name} ${error.message}` : "";
+          if (
+            /NoSuchUpload|10024|does not exist|already (?:completed|aborted)/iu.test(
+              message,
+            )
+          ) {
+            return;
+          }
+          throw new AppError(
+            "STORAGE_UNAVAILABLE",
+            502,
+            "Unable to abort DICOM multipart upload",
+          );
+        }
+      }),
+    );
+  }
+}
+
+async function abortAllMultipartUploads(
+  env: Env,
+  uploadId: string,
+): Promise<void> {
+  await Promise.all([
+    abortMultipartUploads(env, uploadId),
+    abortDicomMultipartUploads(env, uploadId),
+  ]);
+}
+
 async function bundleHash(bundle: BundleDescriptor): Promise<string> {
   return sha256Hex(
     canonicalJson({
@@ -811,7 +871,7 @@ async function createCredentialsResponse(
     .bind(timestamp, upload.id, operation.token)
     .run();
   if ((finalized.meta.changes ?? 0) !== 1) {
-    await abortMultipartUploads(env, upload.id);
+    await abortAllMultipartUploads(env, upload.id);
     throw new AppError(
       "UPLOAD_NOT_WRITABLE",
       409,
@@ -854,7 +914,7 @@ async function retireExpiredUploadAttempt(
     );
   }
   try {
-    await abortMultipartUploads(env, upload.id);
+    await abortAllMultipartUploads(env, upload.id);
     await deletePrefix(env, upload.archive_prefix);
     await deleteObject(env, archiveManifestKey(upload));
   } catch {
@@ -893,7 +953,8 @@ async function retireUnsupportedActiveUpload(
 ): Promise<void> {
   const upload = await env.DB.prepare(
     `SELECT * FROM uploads
-     WHERE device_id = ?1 AND status IN ('created', 'uploading')
+     WHERE device_id = ?1 AND ingest_format = 'nifti-v1'
+       AND status IN ('created', 'uploading')
      LIMIT 1`,
   )
     .bind(device.id)
@@ -929,7 +990,7 @@ async function retireUnsupportedActiveUpload(
   }
 
   try {
-    await abortMultipartUploads(env, upload.id);
+    await abortAllMultipartUploads(env, upload.id);
     await deletePrefix(env, upload.archive_prefix);
     await deleteObject(env, archiveManifestKey(upload));
   } catch {
@@ -974,13 +1035,27 @@ async function retireUnsupportedActiveUpload(
   }).run();
 }
 
-export function publicContributionInfo(): Record<string, unknown> {
+export function publicContributionInfo(
+  userAgent: string | null,
+): Record<string, unknown> {
+  // neuro-sync 0.2.x modeled this field as a required u64 and cannot decode
+  // JSON null. Keep the backend project quota truly NULL/unlimited, but give
+  // only that exact legacy client family a JSON-safe compatibility sentinel
+  // during the two-phase 0.3 release cutover. Browsers and 0.3+ clients see
+  // the canonical null contract.
+  const legacyQuotaCompatibility =
+    userAgent !== null &&
+    /^neuro-sync\/0\.2\.(?:0|[1-9]\d*)(?:[-+][A-Za-z0-9.-]+)?$/u.test(
+      userAgent,
+    );
   return {
     registration_open: true,
     project_name: PUBLIC_PROJECT_NAME,
     consent_policy_version: PUBLIC_CONSENT_POLICY_VERSION,
     policy_url: "https://scalingneuro.com/docs/contribution-policy",
-    self_service_quota_bytes: PUBLIC_UPLOAD_QUOTA_BYTES,
+    self_service_quota_bytes: legacyQuotaCompatibility
+      ? LEGACY_UNCAPPED_QUOTA_SENTINEL
+      : null,
     minimum_client_version: MINIMUM_SELF_SERVICE_CLIENT_VERSION,
   };
 }
@@ -1141,7 +1216,7 @@ export async function registerContributor(
         PUBLIC_PROJECT_SLUG,
         PUBLIC_PROJECT_NAME,
         PUBLIC_CONSENT_POLICY_VERSION,
-        PUBLIC_UPLOAD_QUOTA_BYTES,
+        null,
         timestamp,
       ),
       env.DB.prepare(
@@ -1207,7 +1282,16 @@ export async function registerContributor(
       );
       if (response) return response;
     }
-    throw new AppError("CONFLICT", 409, "Unable to create registration");
+    // A UUID collision or exact concurrent replay is resolved above. Any
+    // remaining D1 failure is transient or internal storage trouble, not a
+    // semantic conflict the researcher can fix by changing their lab details.
+    // Returning a retryable 5xx lets the client safely replay the same
+    // registration operation and device token.
+    throw new AppError(
+      "STORAGE_UNAVAILABLE",
+      502,
+      "Unable to persist registration; retry the same operation",
+    );
   }
 
   return {
@@ -1575,6 +1659,19 @@ export async function createUpload(
           ? 1
           : 0,
     );
+    if (
+      committedMatches.length === bundlesWithHashes.length &&
+      new Set(committedMatches.map((row) => row.upload_id)).size === 1
+    ) {
+      const receivedUpload = await env.DB.prepare(
+        "SELECT * FROM uploads WHERE id = ?1 LIMIT 1",
+      )
+        .bind(committedMatches[0]!.upload_id)
+        .first<UploadRow>();
+      if (receivedUpload?.status === "committed") {
+        return { body: uploadStatusResponse(receivedUpload), created: false };
+      }
+    }
     throw new AppError(
       "DUPLICATE_BUNDLE",
       409,
@@ -1582,6 +1679,86 @@ export async function createUpload(
       {
         reason: "active_exact_match",
         existing_bundles: committedMatches.map(existingBundleDetails),
+      },
+    );
+  }
+
+  const reservationRows: Array<{
+    bundle_id: string;
+    upload_id: string;
+    series_id: string;
+    bundle_hash: string;
+    withdrawn_at: number | null;
+  }> = [];
+  for (let offset = 0; offset < bundlesWithHashes.length; offset += 40) {
+    const chunk = bundlesWithHashes.slice(offset, offset + 40);
+    const placeholders = chunk.map((_, index) => `?${index + 3}`).join(", ");
+    const rows = await env.DB.prepare(
+      `SELECT bundle_id, upload_id, series_id, bundle_hash, withdrawn_at
+       FROM received_series_reservations
+       WHERE site_id = ?1 AND project_id = ?2
+         AND bundle_id IN (${placeholders})`,
+    )
+      .bind(
+        device.site_id,
+        device.project_id,
+        ...chunk.map(({ descriptor }) => descriptor.bundle_id),
+      )
+      .all<{
+        bundle_id: string;
+        upload_id: string;
+        series_id: string;
+        bundle_hash: string;
+        withdrawn_at: number | null;
+      }>();
+    reservationRows.push(...rows.results);
+  }
+  if (reservationRows.length > 0) {
+    const byId = new Map(reservationRows.map((row) => [row.bundle_id, row]));
+    for (const { descriptor, hash } of bundlesWithHashes) {
+      const row = byId.get(descriptor.bundle_id);
+      if (!row) continue;
+      if (row.withdrawn_at !== null) {
+        throw new AppError(
+          "DUPLICATE_BUNDLE",
+          409,
+          "Series bundle has been withdrawn and remains tombstoned",
+          { reason: "withdrawn_tombstone", bundle_id: descriptor.bundle_id },
+        );
+      }
+      if (row.series_id !== descriptor.series_id || row.bundle_hash !== hash) {
+        throw new AppError(
+          "DUPLICATE_BUNDLE",
+          409,
+          "Bundle identifier conflicts with an existing receipt",
+          { reason: "identity_conflict", bundle_id: descriptor.bundle_id },
+        );
+      }
+    }
+    if (
+      reservationRows.length === bundlesWithHashes.length &&
+      new Set(reservationRows.map((row) => row.upload_id)).size === 1
+    ) {
+      const receivedUpload = await env.DB.prepare(
+        "SELECT * FROM uploads WHERE id = ?1 LIMIT 1",
+      )
+        .bind(reservationRows[0]!.upload_id)
+        .first<UploadRow>();
+      if (receivedUpload?.status === "committed") {
+        return { body: uploadStatusResponse(receivedUpload), created: false };
+      }
+    }
+    throw new AppError(
+      "DUPLICATE_BUNDLE",
+      409,
+      "One or more series bundles were already received",
+      {
+        reason: "active_exact_match",
+        existing_bundles: reservationRows.map((row) => ({
+          bundle_id: row.bundle_id,
+          series_id: row.series_id,
+          upload_id: row.upload_id,
+        })),
       },
     );
   }
@@ -1595,7 +1772,8 @@ export async function createUpload(
   await env.DB.prepare(
     `UPDATE uploads
      SET status = 'expired', updated_at = ?1
-     WHERE device_id = ?2 AND status IN ('created', 'uploading')
+     WHERE device_id = ?2 AND ingest_format = 'nifti-v1'
+       AND status IN ('created', 'uploading')
        AND expires_at <= ?1
        AND (operation_token IS NULL OR operation_expires_at <= ?1)`,
   )
@@ -1603,7 +1781,8 @@ export async function createUpload(
     .run();
   const activeUpload = await env.DB.prepare(
     `SELECT id FROM uploads
-     WHERE device_id = ?1 AND status IN ('created', 'uploading')
+     WHERE device_id = ?1 AND ingest_format = 'nifti-v1'
+       AND status IN ('created', 'uploading')
      LIMIT 1`,
   )
     .bind(device.id)
@@ -2408,7 +2587,7 @@ async function rejectStoredUpload(
   }).run();
 
   try {
-    await abortMultipartUploads(env, upload.id);
+    await abortAllMultipartUploads(env, upload.id);
     await deletePrefix(env, upload.archive_prefix);
     await deleteObject(env, archiveManifestKey(upload));
     await env.DB.prepare(
@@ -2459,7 +2638,7 @@ async function purgeConcurrentDuplicateUpload(
   }
 
   try {
-    await abortMultipartUploads(env, upload.id);
+    await abortAllMultipartUploads(env, upload.id);
     await deletePrefix(env, upload.archive_prefix);
     await deleteObject(env, archiveManifestKey(upload));
     const purgedAt = nowSeconds();
@@ -2494,6 +2673,227 @@ async function purgeConcurrentDuplicateUpload(
       { upload_id: upload.id },
     );
   }
+}
+
+async function receiveLegacyNiftiUpload(
+  env: Env,
+  upload: UploadRow,
+  bundles: BundleRow[],
+  state: CompletionObjectState[],
+): Promise<
+  Array<{
+    bundle_id: string;
+    upload_id: string;
+    series_id: string;
+    bundle_hash: string;
+    withdrawn_at: number | null;
+  }> | null
+> {
+  const heads = new Map<string, R2Object>();
+  // Multipart completion and HEAD are storage-control operations. Bound
+  // concurrency keeps a full scanning session fast without ever opening a
+  // NIfTI, gzip stream, or sidecar in the edge Worker.
+  for (let offset = 0; offset < state.length; offset += 8) {
+    await Promise.all(
+      state.slice(offset, offset + 8).map(async ({ item, clientObject, row }) => {
+        let head = await persistedObjectHead(
+          env,
+          item,
+          "Unable to inspect uploaded objects",
+        );
+        if (!head) {
+          try {
+            await env.ARCHIVE.resumeMultipartUpload(
+              item.key,
+              row.r2_multipart_id as string,
+            ).complete(
+              clientObject.parts.map((part) => ({
+                partNumber: part.part_number,
+                etag: stripEtag(part.etag),
+              })),
+            );
+          } catch {
+            // A successful completion may outlive a disconnected response.
+          }
+          head = await persistedObjectHead(
+            env,
+            item,
+            "Unable to complete uploaded objects",
+          );
+        }
+        if (!head) {
+          throw new AppError(
+            "STORAGE_UNAVAILABLE",
+            502,
+            "Uploaded object is temporarily unavailable",
+          );
+        }
+        assertStoredObjectIdentity(upload, item, head);
+        heads.set(item.key, head);
+      }),
+    );
+  }
+
+  const receivedAt = nowSeconds();
+  const statements: D1PreparedStatement[] = state.map(({ item }) =>
+    env.DB.prepare(
+      `UPDATE upload_objects
+       SET completed_at = COALESCE(completed_at, ?1), etag = ?2
+       WHERE upload_id = ?3 AND object_key = ?4
+         AND EXISTS (
+           SELECT 1 FROM uploads WHERE id = ?3 AND operation_token = ?5
+             AND operation_kind = 'verify'
+         )`,
+    ).bind(
+      receivedAt,
+      heads.get(item.key)!.etag,
+      upload.id,
+      item.key,
+      upload.operation_token,
+    ),
+  );
+  for (const bundle of bundles) {
+    statements.push(
+      env.DB.prepare(
+        `INSERT INTO received_series_reservations
+           (upload_id, bundle_id, site_id, project_id, series_id, bundle_hash,
+            input_format, received_at)
+         SELECT ?1, ?2, u.site_id, u.project_id, ?3, ?4, 'nifti-v1', ?5
+         FROM uploads u
+         JOIN devices d ON d.id = u.device_id
+         JOIN projects p ON p.id = u.project_id
+         WHERE u.id = ?1 AND u.operation_token = ?6
+           AND u.operation_kind = 'verify' AND d.revoked_at IS NULL
+           AND p.active = 1
+           AND p.consent_policy_version = u.consent_policy_version
+           AND d.accepted_consent_policy_version = p.consent_policy_version`,
+      ).bind(
+        upload.id,
+        bundle.bundle_id,
+        bundle.series_id,
+        bundle.bundle_hash,
+        receivedAt,
+        upload.operation_token,
+      ),
+      env.DB.prepare(
+        `INSERT OR IGNORE INTO processing_jobs
+           (id, upload_id, bundle_id, input_format, status, attempt,
+            next_attempt_at, created_at, updated_at)
+         SELECT ?1, ?2, ?3, 'nifti-v1', 'queued', 0, ?4, ?4, ?4
+         WHERE EXISTS (
+           SELECT 1 FROM uploads u
+           JOIN devices d ON d.id = u.device_id
+           JOIN projects p ON p.id = u.project_id
+           WHERE u.id = ?2 AND u.operation_token = ?5
+             AND u.operation_kind = 'verify' AND d.revoked_at IS NULL
+             AND p.active = 1
+             AND p.consent_policy_version = u.consent_policy_version
+             AND d.accepted_consent_policy_version = p.consent_policy_version
+         )`,
+      ).bind(
+        crypto.randomUUID(),
+        upload.id,
+        bundle.bundle_id,
+        receivedAt,
+        upload.operation_token,
+      ),
+    );
+  }
+  statements.push(
+    env.DB.prepare(
+      `UPDATE uploads
+       SET status = 'committed', received_at = ?1, committed_at = ?1,
+           updated_at = ?1, operation_token = NULL, operation_kind = NULL,
+           operation_expires_at = NULL
+       WHERE id = ?2 AND operation_token = ?3 AND operation_kind = 'verify'
+         AND ingest_format = 'nifti-v1'
+         AND EXISTS (
+           SELECT 1 FROM devices d JOIN projects p ON p.id = uploads.project_id
+           WHERE d.id = uploads.device_id AND d.revoked_at IS NULL
+             AND p.active = 1
+             AND p.consent_policy_version = uploads.consent_policy_version
+             AND d.accepted_consent_policy_version = p.consent_policy_version
+         )`,
+    ).bind(receivedAt, upload.id, upload.operation_token),
+    env.DB.prepare(
+      `INSERT INTO audit_events
+         (id, event_type, site_id, project_id, device_id, upload_id,
+          subject_type, subject_id, detail_code, created_at)
+       SELECT ?1, 'upload.received', site_id, project_id, device_id, id,
+              'upload', id, 'nifti-v1_processing_queued', ?2
+       FROM uploads WHERE id = ?3 AND status = 'committed'
+         AND received_at = ?2`,
+    ).bind(crypto.randomUUID(), receivedAt, upload.id),
+  );
+  try {
+    await env.DB.batch(statements);
+  } catch {
+    const placeholders = bundles.map((_, index) => `?${index + 3}`).join(", ");
+    const conflicts = await env.DB.prepare(
+      `SELECT bundle_id, upload_id, series_id, bundle_hash, withdrawn_at
+       FROM received_series_reservations
+       WHERE site_id = ?1 AND project_id = ?2
+         AND bundle_id IN (${placeholders}) AND upload_id != ?${bundles.length + 3}
+       ORDER BY bundle_id`,
+    )
+      .bind(
+        upload.site_id,
+        upload.project_id,
+        ...bundles.map((bundle) => bundle.bundle_id),
+        upload.id,
+      )
+      .all<{
+        bundle_id: string;
+        upload_id: string;
+        series_id: string;
+        bundle_hash: string;
+        withdrawn_at: number | null;
+      }>();
+    if (conflicts.results.length > 0) {
+      const byId = new Map(
+        conflicts.results.map((conflict) => [conflict.bundle_id, conflict]),
+      );
+      const exact = bundles.every((bundle) => {
+        const conflict = byId.get(bundle.bundle_id);
+        return (
+          conflict &&
+          conflict.withdrawn_at === null &&
+          conflict.series_id === bundle.series_id &&
+          conflict.bundle_hash === bundle.bundle_hash
+        );
+      });
+      if (!exact || conflicts.results.length !== bundles.length) {
+        throw new AppError(
+          "DUPLICATE_BUNDLE",
+          409,
+          "Received series identity conflicts with this upload",
+          {
+            reason: conflicts.results.some(
+              (conflict) => conflict.withdrawn_at !== null,
+            )
+              ? "withdrawn_tombstone"
+              : "identity_conflict",
+          },
+        );
+      }
+      await purgeConcurrentDuplicateUpload(
+        env,
+        upload,
+        upload.operation_token as string,
+      );
+      return conflicts.results;
+    }
+    throw new AppError("CONFLICT", 409, "Upload receipt could not be recorded");
+  }
+  const current = await env.DB.prepare(
+    "SELECT status FROM uploads WHERE id = ?1 LIMIT 1",
+  )
+    .bind(upload.id)
+    .first<{ status: UploadStatus }>();
+  if (current?.status !== "committed") {
+    throw new AppError("CONFLICT", 409, "Upload receipt lost its lease");
+  }
+  return null;
 }
 
 export async function completeUpload(
@@ -2560,6 +2960,31 @@ export async function completeUpload(
       expectedObjects(upload, bundles),
       input,
     );
+    // Scientific validation now belongs to the Sophont processor. The edge
+    // only establishes an authoritative, durable object receipt and enqueues
+    // one independently leasable job per series. Old clients still receive
+    // the committed status they use as their terminal success signal.
+    if (upload.ingest_format === "nifti-v1") {
+      const duplicate = await receiveLegacyNiftiUpload(
+        env,
+        upload,
+        bundles,
+        state,
+      );
+      if (duplicate) {
+        return {
+          upload_id: upload.id,
+          status: "committed",
+          deduplicated: true,
+          existing_bundles: duplicate.map((row) => ({
+            bundle_id: row.bundle_id,
+            upload_id: row.upload_id,
+          })),
+        };
+      }
+      const received = await getUploadForDevice(env, upload.id, device.id);
+      return uploadStatusResponse(received);
+    }
     if (await finalizeNextBundle(env, upload, bundles, state)) {
       const current = await getUploadForDevice(env, upload.id, device.id);
       return uploadStatusWithProgress(env, current);
@@ -3031,7 +3456,8 @@ export async function revokeDevice(
         `UPDATE uploads
          SET expires_at = ?1, updated_at = ?1,
              status = CASE
-               WHEN operation_token IS NULL OR operation_expires_at <= ?1
+               WHEN (operation_token IS NULL OR operation_expires_at <= ?1)
+                AND (receipt_token IS NULL OR receipt_expires_at <= ?1)
                THEN 'expired'
                ELSE status
              END
@@ -3072,9 +3498,11 @@ export async function withdrawUpload(
       `UPDATE uploads
        SET status = 'withdrawn', withdrawn_at = ?1, updated_at = ?1,
            operation_token = NULL, operation_kind = NULL,
-           operation_expires_at = NULL
+           operation_expires_at = NULL, receipt_token = NULL,
+           receipt_expires_at = NULL
        WHERE id = ?2 AND status != 'withdrawn'
-         AND (operation_token IS NULL OR operation_expires_at <= ?1)`,
+         AND (operation_token IS NULL OR operation_expires_at <= ?1)
+         AND (receipt_token IS NULL OR receipt_expires_at <= ?1)`,
     ).bind(timestamp, upload.id),
     env.DB.prepare(
       `UPDATE catalog_series
@@ -3086,6 +3514,27 @@ export async function withdrawUpload(
            SELECT 1 FROM uploads WHERE id = ?1 AND status = 'withdrawn'
          )`,
     ).bind(upload.id),
+    env.DB.prepare(
+      `UPDATE received_series_reservations
+       SET withdrawn_at = (
+         SELECT withdrawn_at FROM uploads WHERE id = ?1
+       )
+       WHERE upload_id = ?1 AND withdrawn_at IS NULL
+         AND EXISTS (
+           SELECT 1 FROM uploads WHERE id = ?1 AND status = 'withdrawn'
+         )`,
+    ).bind(upload.id),
+    env.DB.prepare(
+      `UPDATE processing_jobs
+       SET status = 'failed', failed_at = ?1, updated_at = ?1,
+           error_code = 'UPLOAD_WITHDRAWN',
+           error_message = 'The source upload was withdrawn',
+           processor_id = NULL, lease_token = NULL, lease_expires_at = NULL
+       WHERE upload_id = ?2 AND status IN ('queued', 'processing')
+         AND EXISTS (
+           SELECT 1 FROM uploads WHERE id = ?2 AND status = 'withdrawn'
+         )`,
+    ).bind(timestamp, upload.id),
     env.DB.prepare(
       `INSERT INTO audit_events
          (id, event_type, site_id, project_id, device_id, upload_id,
@@ -3113,7 +3562,7 @@ export async function withdrawUpload(
 
   if (upload.purged_at === null) {
     try {
-      await abortMultipartUploads(env, upload.id);
+      await abortAllMultipartUploads(env, upload.id);
       await deletePrefix(env, upload.archive_prefix);
       await deleteObject(env, archiveManifestKey(upload));
       await env.DB.prepare(
@@ -3144,6 +3593,7 @@ export async function cleanupAbandoned(env: Env): Promise<void> {
      WHERE status IN ('created', 'uploading')
        AND expires_at <= ?1
        AND (operation_token IS NULL OR operation_expires_at <= ?1)
+       AND (receipt_token IS NULL OR receipt_expires_at <= ?1)
      ORDER BY expires_at
      LIMIT 50`,
   )
@@ -3159,6 +3609,7 @@ export async function cleanupAbandoned(env: Env): Promise<void> {
        WHERE id = ?4 AND status IN ('created', 'uploading')
          AND expires_at <= ?1
          AND (operation_token IS NULL OR operation_expires_at <= ?1)
+         AND (receipt_token IS NULL OR receipt_expires_at <= ?1)
        RETURNING *`,
     )
       .bind(
@@ -3175,6 +3626,7 @@ export async function cleanupAbandoned(env: Env): Promise<void> {
     `SELECT id FROM uploads
      WHERE status IN ('expired', 'withdrawn') AND purged_at IS NULL
        AND (operation_token IS NULL OR operation_expires_at <= ?1)
+       AND (receipt_token IS NULL OR receipt_expires_at <= ?1)
      ORDER BY updated_at
      LIMIT 50`,
   )
@@ -3189,6 +3641,7 @@ export async function cleanupAbandoned(env: Env): Promise<void> {
        WHERE id = ?4 AND status IN ('expired', 'withdrawn')
          AND purged_at IS NULL
          AND (operation_token IS NULL OR operation_expires_at <= ?3)
+         AND (receipt_token IS NULL OR receipt_expires_at <= ?3)
        RETURNING *`,
     )
       .bind(
@@ -3203,7 +3656,7 @@ export async function cleanupAbandoned(env: Env): Promise<void> {
 
   for (const { upload, token } of purgeClaims) {
     try {
-      await abortMultipartUploads(env, upload.id);
+      await abortAllMultipartUploads(env, upload.id);
       await deletePrefix(env, upload.archive_prefix);
       await deleteObject(env, archiveManifestKey(upload));
       const purged = await env.DB.prepare(

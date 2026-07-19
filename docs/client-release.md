@@ -1,77 +1,81 @@
-# Client release process
+# neuro-sync release contract
 
-`.github/workflows/release-client.yml` creates traceable, checksum-verified open-beta packages. A tag build, or a manual run with **publish release** enabled, also rebuilds the source-matched Pages Worker and static bundle and publishes the packages under `https://scalingneuro.com/downloads/`. Publication is allowed only from the current `main` commit and applies pending D1 migrations before replacing the Pages deployment; it does not mutate R2 archive objects.
+The collaborator-facing path is the terminal installer at `https://scalingneuro.com/install.sh` or `https://scalingneuro.com/install.ps1`. Versioned archives are implementation assets consumed by those installers, not a manual-download onboarding path.
 
-## Release inputs and outputs
+## Packages
 
-Trigger the workflow with a `client-vX.Y.Z` tag or manually with a version matching `client/Cargo.toml`. A manual unpublished run may build from another branch for smoke testing, but any GitHub/Pages publication must point at the current `main` commit. The release packages are:
+Each release builds:
 
 ```text
 neuro-sync-vX.Y.Z-macos-universal.zip
 neuro-sync-vX.Y.Z-windows-x86_64.zip
-neuro-sync-vX.Y.Z-linux-x86_64.tar.gz
+neuro-sync-vX.Y.Z-linux-x86_64-musl-static.tar.gz
 ```
 
-If Apple or Windows signing credentials are unavailable, that platform’s filename is changed to include `-UNSIGNED-PILOT` before the extension. These archives are implementation assets consumed by the verified terminal installers, not a separate collaborator-facing installation path.
+If Apple or Windows signing credentials are unavailable, the filename includes `-UNSIGNED-PILOT`; a signed but not notarized macOS build includes `-CODESIGNED-PILOT`.
 
-A signed but non-notarized macOS archive is named `-CODESIGNED-PILOT.zip`. Only a macOS archive that passes both hardened-runtime signing and Apple notarization receives the suffix-free filename. This keeps “signed” from being mistaken for the lower-friction Gatekeeper experience collaborators expect.
+Each package contains only:
 
-Each package contains the `neuro-sync` executable, the platform converter at `libexec/dcm2niix`, the converter's redistribution notice, the project `LICENSE-MIT` and `LICENSE-APACHE` texts, this onboarding guide, a `RELEASE.json` recording the source commit and converter archive digest, and SPDX and CycloneDX SBOMs. The release also renders `install.sh` and `install.ps1` with the exact archive names and SHA-256 values embedded, publishes a portable `latest.json` index, and produces a top-level `SHA256SUMS` over the packages, installers, SBOMs, and index.
+- `neuro-sync` or `neuro-sync.exe`;
+- `CONTRIBUTING-SCANS.md`;
+- `LICENSE-MIT` and `LICENSE-APACHE`;
+- `RELEASE.json` with client version, source commit, platform/runtime, signing state, and workstation-processing mode; and
+- SPDX and CycloneDX SBOMs.
 
-The public release step writes `/downloads/latest.json`, mapping `macos`, `windows`, and `linux` to the exact versioned URL, SHA-256, signing state, and SBOM URLs, and mapping the Unix and Windows terminal installers to their own hashes. The same index is attached to the GitHub release so an ordinary production deploy can restore the current downloads and root installer URLs without trusting an older live Pages deployment. Publication refuses any individual asset larger than Cloudflare Pages' 25 MiB file limit. GitHub release attachment is secondary because this repository may be private; the Pages URLs are the collaborator-facing contract.
+No local converter, Python runtime, GUI framework, browser component, cloud CLI, or reusable cloud credential is bundled. Pinned `dcm2niix` belongs to the independently versioned cluster-processor container.
 
-## Pinned converter
+## Installer behavior
 
-The workflow downloads official `rordenlab/dcm2niix` release assets at tag `v1.0.20260416` and rejects any digest mismatch before packaging:
+The release workflow renders `install.sh` and `install.ps1` with the exact platform archive names and SHA-256 values embedded. Installers:
 
-| Asset | SHA-256 |
-|---|---|
-| `dcm2niix_lnx.zip` | `e88b40f6ebbcf9f47ebfdd7bb5f0127297cb7e8b06266a91a4642b5814031bd0` |
-| `dcm2niix_mac.zip` | `51e909fca34db8198d8a917cb85a00e135841d32a3c51f1154ec8d5b874de852` |
-| `dcm2niix_win.zip` | `969bca4fc41d5f82658acef9d0ed9cbfbd4114ec8e8668906910241fcbb2c048` |
+1. select the platform package;
+2. download over HTTPS;
+3. reject any SHA-256 mismatch before changing the installation;
+4. extract to a staging directory under the user account;
+5. atomically activate the verified version and update only the user PATH; and
+6. return to the shell after printing `neuro-sync /path/to/dicom-export`.
 
-The macOS converter is already a universal x86_64/arm64 Mach-O. The workflow builds both Rust targets and combines them with `lipo` into a universal `neuro-sync` executable. Windows includes the runtime DLLs shipped in the official converter archive.
+They do not require administrator access, execute `neuro-sync`, start a browser, send telemetry, or collect registration details. Reinstalling the same version is safe. A verified previous version is restored if activation fails.
 
-The Linux client is built for `x86_64-unknown-linux-gnu` inside the digest-pinned PyPA `manylinux_2_28_x86_64` image. The supported runtime floor is glibc 2.28 (for example, Ubuntu 20.04+, Debian 10+, or RHEL 8+). The workflow inspects imported ELF symbol versions and refuses the package if either `neuro-sync` or the bundled converter requires a newer glibc. It also rejects graphical runtime links such as Wayland, X11, or GTK and verifies that the pinned converter reports the expected version. This keeps the release usable on headless scanner workstations while preventing a future build-image update from silently raising the compatibility floor. Collaborator machines do not need a graphical session or compiler toolchain.
+On macOS/Linux the default executable shim is `~/.local/bin/neuro-sync` and versions live under `~/.local/share/neuro-sync/versions/`. Windows installs under `%LOCALAPPDATA%\ScalingNeuro\neuro-sync\bin` and updates only the user PATH.
 
-The build image is currently `quay.io/pypa/manylinux_2_28_x86_64@sha256:b04887b645dde99b9e955aeae3ff4da414992d0bd88259f046295b56361c5614`. Updating it is a reviewed release change and must retain the glibc-symbol gate.
+## Platform guarantees
 
-Updating dcm2niix requires a separate reviewed change to the version, all three official asset digests, converter regression fixtures, metadata policy if output semantics changed, and the `converter_version` constant in the scan-sidecar schema.
+Linux has one public x86-64 package. It is built for `x86_64-unknown-linux-musl` with the C runtime statically linked, so selecting a glibc-versus-musl download is never part of researcher onboarding. Ordinary CI and the release workflow both inspect the ELF and refuse a package with a runtime interpreter (`INTERP`) or dynamic dependency (`NEEDED`), then execute the binary and verify its exact version. It therefore has no distribution-provided glibc, musl, X11, Wayland, GTK, or desktop-portal dependency. The host must still be an x86-64 Linux system whose kernel and institutional controls permit user executables.
 
-## Optional signing
+macOS combines Rust arm64 and x86-64 builds with `lipo`. If signing credentials are configured, the executable is hardened-runtime signed; if notary credentials are also configured, the archive is submitted to Apple and publication requires an accepted result.
 
-Apple signing is enabled only when all of these repository secrets are present:
+Windows builds x86-64. If Authenticode credentials are configured, every executable/DLL in the package is signed and verified before packaging.
 
-- `APPLE_CERTIFICATE_P12_BASE64`
-- `APPLE_CERTIFICATE_PASSWORD`
-- `APPLE_SIGNING_IDENTITY`
+Terminal-first delivery minimizes installation surface but does not override institutional endpoint-security policy. Unsigned pilot names are explicit rather than implying trust they do not have.
 
-The workflow imports the temporary keychain, signs both bundled Mach-O executables with hardened runtime and timestamping, verifies them, then deletes the keychain. A code-signed-only archive remains explicitly labeled `CODESIGNED-PILOT`.
+## Publication
 
-Apple ZIP notarization is enabled only when signing succeeded and all of these additional repository secrets are present:
+`latest.json` maps `macos`, `windows`, and `linux` to the exact versioned Pages URL, package SHA-256, signing state, and SBOM URLs. It also records the release-bound installer hashes. `SHA256SUMS` covers all packages, installers, SBOMs, and the index. Publication refuses unsafe paths, a mismatched version, an asset not represented in the checksums, or a Pages file over 25 MiB.
 
-- `APPLE_NOTARY_KEY_P8_BASE64`
-- `APPLE_NOTARY_KEY_ID`
-- `APPLE_NOTARY_ISSUER_ID`
+The GitHub `client-vX.Y.Z` release is the source used to restore public downloads during ordinary production site deploys. Publication requires the tag commit to equal current `main`. The canonical researcher URLs remain `scalingneuro.com`.
 
-The workflow creates the final ZIP, submits that exact archive with `notarytool --wait`, and publishes it only after Apple accepts it. ZIP files cannot carry a stapled ticket, so the notarized executables rely on Gatekeeper’s online ticket lookup; a future `.pkg`, `.dmg`, or `.app` release can add stapling. The temporary API key file is deleted even if submission fails.
+Release publication uses a two-phase production cutover. Phase one builds the new backend and site, captures the currently public `latest.json`, `SHA256SUMS`, installers, packages, and SBOMs from the canonical domain, verifies their complete checksum inventory, and deploys those exact old release bytes with the new backend. The workflow extracts that exact preserved Linux client and requires it to fetch the contribution contract and complete a fresh terminal registration through phase one, preventing an old-installer/new-API compatibility gap. The freshly built candidate client and non-PHI Siemens fixture must then complete receipt, cluster processing, and same-folder replay against production. Only phase two deploys the candidate release index, installers, and platform bytes. Any later failure rolls Pages back to the production deployment ID captured before the cutover and returns a just-published GitHub release to draft state.
 
-Windows Authenticode signing is enabled only when all of these repository secrets are present:
+## Release gates
 
-- `WINDOWS_CERTIFICATE_PFX_BASE64`
-- `WINDOWS_CERTIFICATE_PASSWORD`
+Before publication:
 
-The workflow signs the Rust executable and bundled executable/DLL runtime files with SHA-256 and an RFC 3161 timestamp, then verifies the signatures. Secrets are written only to runner-temporary files and removed before artifact upload.
+1. Schema Python and strict-Ajv validation pass.
+2. Rust formatting, clippy with warnings denied, and the complete test suite pass.
+3. Worker type-check and all local Cloudflare lifecycle tests pass.
+4. Processor archive, API, conversion, deterministic-output, recovery, and fake-server tests pass.
+5. Unix/macOS and Windows installer tests prove user-level install, no automatic launch, repeat install, exact `--version`, and tamper rejection; native Windows CI also proves private state receives a protected current-account-only ACL.
+6. Platform packages build from the locked Rust dependencies and satisfy runtime/signing checks; ordinary CI builds and executes the fully static Linux target before any release tag exists.
+7. SBOMs, `latest.json`, installers, and `SHA256SUMS` are generated from the assembled packages.
+8. The exact checksum-preserved public Linux client fetches the phase-one contribution contract and completes a new terminal registration before its installer can remain exposed with the new backend.
+9. A synthetic non-PHI end-to-end smoke runs the newly built candidate binary against the phase-one backend, obtains a DICOM receipt, reaches processed state through the deployed queue, and proves same-folder replay before any candidate download becomes public.
+10. The phase-two release cutover converges to the exact new index, checksums, installers, packages, and SBOMs; otherwise Pages rolls back to the captured prior deployment.
 
-## Release gate
+Clean-machine tests should additionally cover paths with spaces/non-ASCII characters, network interruption and same-folder continuation, read-only/network-mounted exports, shell PATH refresh, and the operating system’s actual trust prompts.
 
-Before sharing a package:
+## Versioning
 
-1. The release workflow's blocking verification job must pass schema/policy consistency, strict Ajv compilation, Rust formatting/clippy/tests, and Worker type/tests.
-2. The release workflow must verify the pinned converter and produce SBOMs and `SHA256SUMS`.
-3. The terminal-installer tests must pass on macOS, Linux, and Windows, including a user-level install, bundled-converter presence, repeat installation, and rejection of a tampered archive.
-4. Run clean-machine smoke tests for each promised OS: terminal enrollment and folder entry, dry run, accepted/held separation, upload, forced interruption, rerunning the same folder command, automatic continuation, commit, and report.
-5. Inspect the stored sidecar and manifest for schema validity, metadata retention, absence of seeded PHI, and exact local/R2 hashes.
-6. Prefer notarized macOS and Authenticode-signed Windows builds for institution-managed machines. Until signing is configured, keep `UNSIGNED-PILOT` and `CODESIGNED-PILOT` filenames in release evidence; terminal installation must not claim to override endpoint-security policy.
+A client semantic version bump is required for behavior or contract changes. Changes to archive layout, series identity, DICOM de-identification behavior, classifier threshold/evidence, or Worker request semantics also require the corresponding versioned schema/policy and compatibility handling. A de-identification policy change invalidates incompatible prepared archives; it must never silently continue older bytes.
 
-The workflow can create a GitHub prerelease when requested. Manual builds do not publish unless **publish release** is explicitly enabled; `client-vX.Y.Z` tags publish the corresponding versioned open-beta downloads automatically.
+The processor image pins its own application and `dcm2niix` versions. Updating it requires its source-archive digest, container build, vendor fixture baselines, derived metadata expectations, and output determinism tests to change in one reviewed release.

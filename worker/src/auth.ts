@@ -36,10 +36,12 @@ export async function authenticateDevice(
             d.revoked_at,
             p.consent_policy_version AS current_consent_policy_version,
             p.name AS project_name,
-            p.upload_quota_bytes,
+            CASE WHEN r.project_id IS NULL THEN p.upload_quota_bytes ELSE NULL END
+              AS upload_quota_bytes,
             p.active AS project_active
      FROM devices d
      JOIN projects p ON p.id = d.project_id
+     LEFT JOIN contributor_registrations r ON r.project_id = p.id
      WHERE d.token_hash = ?1
      LIMIT 1`,
   )
@@ -90,5 +92,18 @@ export async function authenticateAdmin(
     !(await constantTimeEqual(token, env.ADMIN_API_TOKEN))
   ) {
     throw new AppError("UNAUTHORIZED", 401, "Admin token is invalid");
+  }
+}
+
+export async function authenticateProcessor(
+  request: Request,
+  env: Env,
+): Promise<void> {
+  const token = bearerToken(request);
+  if (
+    !env.PROCESSOR_API_TOKEN ||
+    !(await constantTimeEqual(token, env.PROCESSOR_API_TOKEN))
+  ) {
+    throw new AppError("UNAUTHORIZED", 401, "Processor token is invalid");
   }
 }

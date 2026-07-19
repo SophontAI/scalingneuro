@@ -1,220 +1,182 @@
 # Scaling Neuro
 
-Scaling Neuro is a privacy-first ingestion path for building a scientifically usable, acquisition-space functional MRI archive. The current `0.2.8` open beta is a working EPI-only system: a researcher installs with one terminal command, registers their lab once, points the client at a folder of newly exported DICOMs, and lets it classify, convert, quality-check, automatically continue, and commit eligible scans to Cloudflare R2.
+Scaling Neuro is a privacy-first path from a scanner export to a reusable functional-MRI archive. The `0.3.0` beta is deliberately narrow: a researcher points one terminal command at a completed DICOM folder; `neuro-sync` selects confidently identified functional EPI, rewrites it locally under a default-deny DICOM de-identification policy, uploads resumable per-series archives to Cloudflare R2, and returns a durable receipt. Pinned conversion and scientific validation then run asynchronously on the Sophont cluster.
 
-This is no longer a static workflow mockup. The repository contains the cross-platform Rust client, Cloudflare control plane, D1 migrations, R2 multipart transport, strict public schemas, release automation, and the Scaling Neuro site. Self-service registration is open to any lab; the tool is not a clinical device or a substitute for IRB, consent, or data-use review.
+It is open to any lab. Registration records the lab and creates a revocable identity for one workstation; the same lab may register any number of workstations. Scaling Neuro is a research transfer system, not a clinical device or a substitute for consent, IRB, or data-use review.
 
 ## Researcher experience
 
-1. Paste the installer shown at [scalingneuro.com/downloads](https://scalingneuro.com/downloads/) into Terminal or PowerShell. It selects the correct release, verifies its pinned SHA-256, installs under the user’s home/application-data directory, adds `neuro-sync` to the user PATH, and returns control to the shell without launching setup.
-2. Find or copy the top-level DICOM export-folder path. When ready, run `neuro-sync /path/to/dicom-export` as printed by the installer.
-3. On the first run only, answer the lab-registration prompts and review the policy summary, then confirm authorization for the folder already supplied. No browser or web form is opened.
-4. Leave the command running. If the network drops or the process closes, rerun the same `neuro-sync /path/to/dicom-export` command. The folder path selects its checkpointed work automatically; prepared files and completed parts are reused.
+Install one executable—no Python, Docker, AWS CLI, Cloudflare key, local converter, browser, or administrator access:
 
-Researchers do not install Python, Docker, FSL, an AWS CLI, or Cloudflare credentials. The terminal installer fetches the complete release bundle, including the pinned multi-vendor `dcm2niix v1.0.20260416` converter under `libexec/`.
+```sh
+# macOS or Linux
+curl -fsSL https://scalingneuro.com/install.sh | sh
+```
 
-Registration creates a private, revocable upload identity for a workstation and lab. A lab may register multiple workstations with the same contact details; each machine receives its own device identity. Registration is not evidence of participant consent and cannot authorize an otherwise impermissible upload.
+```powershell
+# Windows PowerShell
+irm https://scalingneuro.com/install.ps1 | iex
+```
 
-## What the pilot archives
+The installer returns to the shell. After finding the export path, run:
 
-The canonical unit is one confidently identified functional EPI time series:
+```sh
+neuro-sync /path/to/dicom-export
+```
 
-- a deterministic `.nii.gz` in native acquisition space, with voxel values, scaling, affine, and sampling preserved; and
-- a same-basename JSON sidecar containing only allowlisted acquisition metadata, conversion provenance, classifier evidence, QC codes, and cryptographic hashes.
+On first use, registration and the authorization confirmation happen in that terminal. During discovery, privacy rewriting, archive creation, and transfer, the client shows bytes, speed, percentage, and ETA. Once R2 confirms the exact object length and multipart receipt, the workstation is done; cluster processing does not keep it connected.
 
-The client retains useful scanner and acquisition context such as manufacturer/model/software, field strength and coils, sequence codes, TR/TE/flip angle/slice timing, phase encoding and readout timing, acceleration factors, matrices, voxel sizes, affine/orientation, volume count, datatype, and converter provenance. The executable policy is [schemas/metadata-policy-v1.json](schemas/metadata-policy-v1.json); everything not named there is dropped.
+If the process or network stops, rerun the identical folder command. The folder selects the compatible local checkpoint automatically, so completed archives and multipart parts are reused. There is no separate `resume` command.
 
-Source DICOMs remain read-only and local. The pilot does not upload raw headers, DICOM UIDs, names, MRNs, accession numbers, source dates/times, institution/station/device identifiers, operator fields, protocol/series free text, private tags, source paths, or filenames. Structural MRI, DWI, ASL, fieldmaps, SBRefs, localizers, secondary captures, derived scans, and ambiguous series stay local. Structural ingestion and local defacing/refacing are deliberately deferred to a separate fail-closed route.
+## What is preserved
 
-Acceptance is vendor-neutral and evidence-based. An uploaded scan must be MR, original/primary functional EPI, exactly 4D, at least 10 volumes, have plausible TR/TE and geometry, contain finite non-constant signal, pass privacy gates, and achieve classifier confidence of at least `0.90`. Unsupported or uncertain data is held locally with code-only reasons rather than guessed into the archive.
+The canonical ingest object is one deterministic `dicom.tar.zst` per accepted functional-EPI series. It contains newly written DICOM Part 10 instances plus a canonical manifest. The source directory is read-only and unchanged.
 
-See [the full EPI ingestion contract](docs/epi-ingestion-contract.md) and [artifact/API contracts](docs/artifact-and-api-contracts.md).
+For each uploaded instance, `neuro-sync`:
+
+- copies Pixel Data byte-for-byte in the original transfer syntax;
+- recursively rewrites nested sequences, not only the top-level header;
+- replaces patient identity and all referential UIDs with consistent site-scoped pseudonyms;
+- removes calendar dates/times, administrative/clinical identifiers, institutions, stations, operators, descriptions, comments, overlays, graphics, unknown private data, and unsafe private text or binary values;
+- preserves a conservative scientific allowlist covering pixel decoding, geometry, timing, MR acquisition, scanner make/model/software, coils, acceleration, and referenced-image structure; and
+- reopens and audits the result before it can enter an upload archive.
+
+The archive manifest records pseudonymous subject/session/series/protocol identities, classifier evidence, policy/version provenance, an ordered instance inventory, and SHA-256 hashes. It never contains source paths, filenames, source UIDs, or free-text descriptions.
+
+This is not a claim that unchanged scanner DICOM is anonymous. The executable behavior is documented in [the DICOM de-identification policy](docs/dicom-deidentification-policy.md), informed by DICOM PS3.15. Unsupported privacy conditions fail closed.
+
+Structural MRI, diffusion, ASL, field maps, SBRefs, localizers, derived images, and ambiguous series stay local. Structural scans remain out of scope until a separate validated face-privacy path exists.
+
+## Functional-EPI selection
+
+Selection is evidence-based, with a separate exact vendor/export compatibility gate. An accepted series must be MR, original/primary, satisfy the active burned-in-annotation policy, and have strong EPI plus temporal/functional evidence. Exclusion evidence wins over inclusion evidence. The threshold is intentionally high (`>= 0.90`), and uncertain data is held locally with a code-only reason.
+
+The current measured support boundary is deliberately narrower than “all DICOM.” Classic Siemens mosaic from the tested Prisma/E11 family is accepted only when its CSA image header can be parsed and rebuilt from a seven-field numeric/vector allowlist. Classic Philips from the tested 5.1.1 family is accepted, including its reviewed PS3.15 private scaling fields, only when any dynamic-timing metadata satisfies a strict whole-series contract. GE classic, every Enhanced MR object, extended-offset-table objects, and unverified scanner/export families are held locally with stable compatibility codes. A fixture claim requires a recursive privacy audit, exact pixel and conversion-equivalence checks, and an end-to-end receipt; one validated fixture does not imply every scanner or software release from that vendor.
 
 ## Architecture
 
 ```mermaid
 flowchart LR
-  A["Researcher selects DICOM folder"] --> B["Local discovery and EPI classification"]
-  B --> C["Pinned dcm2niix conversion"]
-  C --> D["Header scrubbing, metadata allowlist, and QC"]
-  D --> E["Native-space NIfTI plus sidecar"]
-  E --> F["Worker-created multipart plan"]
-  F --> G["One short-lived signed URL per exact part"]
-  G --> H["Cloudflare R2 canonical archive"]
-  F --> I["D1 control plane and audit state"]
-  H --> J["Server-side byte verification and immutable manifest"]
-  J --> I
+  A["neuro-sync folder"] --> B["Discover and classify EPI"]
+  B --> C["Rewrite and audit DICOM locally"]
+  C --> D["Deterministic series archive"]
+  D --> E["Checksum-bound resumable upload"]
+  E --> F["Durable R2 receipt"]
+  F --> G["D1 processing queue"]
+  G --> H["Sophont Slurm consumer"]
+  H --> I["Pinned dcm2niix and scientific QC"]
+  I --> J["Derived NIfTI, sidecar, processing manifest"]
 ```
 
-The client never receives a reusable R2 access key. The Worker creates each multipart upload, then signs a 15-minute `UploadPart` URL bound to one full key, multipart ID, part number, byte length, and SHA-256 header. Parts upload sequentially and returned ETags are checkpointed in local SQLite. The Worker alone completes/aborts objects, reads each stored NIfTI through a memory-bounded hash/decompression stream, validates the sidecar again, atomically checkpoints each verified NIfTI/sidecar pair, and writes a canonical immutable manifest. Interrupted final verification resumes from the last verified pair without retransmitting files.
+The client never receives a reusable R2 credential. The Worker creates a multipart object and issues a short-lived `UploadPart` URL bound to an exact key, multipart ID, part number, content length, and SHA-256 header. Returned ETags are checkpointed locally. Completion performs only multipart completion plus authoritative R2 `HEAD`; it does not read gigabytes through a Worker request.
 
-One Worker upload session contains one pseudonymous subject, at most 32 bundles/32 GiB, with a 5 GiB compressed-NIfTI ceiling. The client deterministically splits larger or multi-subject folders into sequential sessions. Pseudonymous subject/session/series/protocol/bundle IDs are 96-bit site-scoped HMACs; raw HMAC inputs never cross the API.
+Receipt and scientific processing are separate states. A successful upload means the locally privacy-cleared DICOM archive is durable and queued. A cluster consumer later receives scoped GET/PUT capabilities, verifies the whole archive and every member, repeats the privacy and purpose audit, runs pinned `dcm2niix`, validates a native-space 4D functional NIfTI and minimized sidecar, publishes deterministic derived outputs, and commits the catalog under a lease. A stale processor cannot publish after losing that lease. A terminal server finding that the input violates the privacy, archive-boundary, or functional-EPI contract deletes that source object and leaves an auditable tombstone; converter or scientific-compatibility failures retain the de-identified source for review.
 
-Scientific identity uses the uncompressed NIfTI SHA-256, not a multipart ETag or gzip representation. Stable `(site_id, project_id, bundle_id)` identity supports deduplication and withdrawal tombstones, while compressed hashes and sidecar hashes remain transport-integrity evidence. Derived training representations belong in a separate cache and never replace this canonical archive.
+Stable site/project/series-archive identity makes creation and completion idempotent. Raw series archives may be up to 64 GiB; larger folders are transparently divided into receipt sessions of at most eight series and 250 GiB so multipart finalization stays within Cloudflare's strictest request limits. This is invisible to the researcher and does not change archive identity. If two authenticated devices in the same managed site/project upload the same eligible series concurrently, the exact winner is reused and the losing prefix is purged; a semantic mismatch or withdrawal tombstone is never treated as a duplicate success. Open self-service workstation registrations are intentionally independent privacy domains, so any number of machines from one lab can register without sharing pseudonym keys or trusting self-asserted lab names. Public workstations have no cumulative upload allowance; bounded receipt sessions, object sizes, and multipart requests remain enforced as operational safety limits.
 
 ## Command line
 
-The primary command takes the DICOM folder directly. It is idempotent: the same folder command automatically continues compatible unfinished work, and an unchanged folder that already completed is recognized locally without reconversion or network access. Running `neuro-sync` with no arguments remains a guided fallback; explicit subcommands support managed and automated deployments.
-
-```bash
-# Normal interactive use. First use registers the workstation in this terminal.
+```sh
+# Normal path; first use registers in the terminal.
 neuro-sync /path/to/dicom-export
 
-# Optional explicit registration for managed environments.
+# Optional explicit setup for managed workstations.
 neuro-sync register --email researcher@example.edu --name "Researcher Name" \
   --institution "Example University" --lab "Example Neuroimaging Lab" --accept-policy
 
-# Backward-compatible explicit upload form.
+# Explicit form and non-interactive authorization.
 neuro-sync upload /path/to/dicom-export
-
-# Non-interactive upload after the lab has independently confirmed authorization.
 neuro-sync upload /path/to/dicom-export --confirm-authorized
 
-# Run the complete local privacy/QC path without contacting the API or R2.
+# Classify, rewrite, audit, and archive locally without contacting the service.
 neuro-sync upload /path/to/dicom-export --dry-run
 
 neuro-sync status --json
 neuro-sync report RUN_ID --json
 ```
 
-`neuro-sync run` remains an alias for `upload`. Interactive uploads request authorization in the terminal; `--confirm-authorized` is required when standard input is not a terminal. Reports contain pseudonyms, counts, stable codes, hashes, and archive commit IDs—not raw DICOM values or local paths.
+Running `neuro-sync` without arguments remains a guided terminal fallback. `neuro-sync run` remains an alias for `upload`. Reports contain only pseudonymous identifiers, counts, hashes, and stable status/QC codes—never local paths or arbitrary DICOM values.
 
-## Repository layout
+## Repository
 
 | Path | Role |
 |---|---|
-| `client/` | Rust 1.85 terminal client, local SQLite checkpoints, DICOM classification, conversion, QC, and multipart uploader |
-| `worker/` | TypeScript Cloudflare Worker/Pages entrypoint, D1 control plane, R2 lifecycle, admin APIs, and scheduled cleanup |
-| `worker/migrations/` | Ordered D1 schema and concurrency/catalog migrations |
-| `schemas/` | Draft 2020-12 enrollment, local-preparation, sidecar, upload, part-URL, archive-manifest, status/error, and metadata-policy contracts plus examples |
-| `docs/` | Ingestion, onboarding, API, and release contracts |
-| `downloads/` | Collaborator-facing release page; versioned artifacts are generated by the release workflow |
-| `installers/` | Dependency-free macOS/Linux and Windows installer templates |
-| `scripts/render-installers.sh` | Release-bound installer renderer with pinned package hashes |
-| `scripts/test-installers.*` | Cross-platform user-level installation and tamper-rejection smoke tests |
-| `scripts/build-site.sh` | Explicit production allowlist and Pages Worker build |
-| `.github/workflows/ci.yml` | Schema, Rust, and Worker verification |
-| `.github/workflows/release-client.yml` | Cross-platform packages, converter verification, signing/notarization, SBOMs, checksums, and pilot publication |
-| `.github/workflows/deploy-production.yml` | D1 migration gate and Cloudflare Pages production deployment |
-| `index.html`, `styles.css`, `app.js` | Public Scaling Neuro research site and illustrative scan explorer |
+| `client/` | Rust terminal client: registration, DICOM selection/rewrite, deterministic archive, checkpoints, progress/ETA, multipart upload |
+| `worker/` | Cloudflare control plane: D1 state, R2 receipt, idempotency, queue leases, scoped processor capabilities |
+| `worker/migrations/` | Ordered production D1 migrations and legacy-upload backfill |
+| `processor/` | Pinned cluster consumer, DICOM/archive validation, conversion, derived-artifact validation, Slurm/Enroot deployment |
+| `schemas/` | Versioned public request, artifact, status, and error contracts |
+| `docs/` | De-identification, ingest, onboarding, API, release, and vendor-QA contracts |
+| `installers/` | Dependency-free terminal installer templates |
+| `scripts/` | Installer rendering/tests and explicit Pages build allowlist |
+| `.github/workflows/` | Client, Worker, processor, schema, release, migration, and deployment gates |
 
-## Development and verification
+## Local verification
 
-Requirements are Node.js 22, Rust 1.85 with `rustfmt`/`clippy`, and Python 3.13 for schema validation.
+Requirements are Rust 1.85, Node.js 22, and Python 3.13.
 
-```bash
-npm ci --prefix worker
+```sh
 python3 -m pip install --requirement schemas/requirements.txt
-
 python3 schemas/validate.py
 node schemas/validate-ajv.mjs
-npm run typecheck --prefix worker
-npm test --prefix worker
+
+npm ci --prefix worker
+npm run check --prefix worker
 
 cargo +1.85.0 fmt --manifest-path client/Cargo.toml --all -- --check
 cargo +1.85.0 clippy --locked --manifest-path client/Cargo.toml --all-targets --all-features -- -D warnings
 cargo +1.85.0 test --locked --manifest-path client/Cargo.toml --all-features
+python3 -m pip install --require-hashes -r scripts/vendor-dicom-qa-requirements.txt
+python3 scripts/test_vendor_dicom_qa.py
+python3 scripts/vendor_dicom_qa.py --self-test
 
+python3 -m venv processor/.venv
+processor/.venv/bin/pip install --require-hashes -r processor/requirements.lock
+PYTHONPATH=processor processor/.venv/bin/python -m unittest discover -v -s processor/tests
+
+./scripts/test-installers.sh
 ./scripts/build-site.sh
 node --check dist/_worker.js
 ```
 
-The Worker tests exercise lost-response enrollment replay, invite exhaustion, strict request parsing, multipart allocation, part signing, authoritative post-completion HEAD verification, manifest/schema validity, idempotency, withdrawal/tombstones, cleanup, and hostile cases using local Cloudflare bindings. The Rust suite includes owner-only pending enrollment recovery, folder-keyed continuation and privacy-context binding, synthetic Part 10 DICOM discovery/classification, and a full offline conversion/scrubbing/bundling dry run.
+Never place participant scans or populated secret files in this repository. DICOM/NIfTI data, `.env*`, `.dev.vars`, processor work directories, build output, and local Cloudflare state are ignored.
 
-### Local Worker and registration
+## Production
 
-```bash
-cp worker/.dev.vars.example worker/.dev.vars
-# Fill the local-only secrets in worker/.dev.vars.
-
-npm run db:migrate:local --prefix worker
-npm run dev --prefix worker
-```
-
-Then register a source build against the local API:
-
-```bash
-cargo run --manifest-path client/Cargo.toml -- \
-  register --email researcher@example.edu --name Researcher \
-  --institution University --lab Neuroimaging \
-  --server http://127.0.0.1:8787
-```
-
-An unenrolled offline dry run is also supported. Point the client at the exact pinned converter when running from source:
-
-```bash
-NEURO_SYNC_DCM2NIIX=/absolute/path/to/dcm2niix \
-  cargo run --manifest-path client/Cargo.toml -- \
-  upload /path/to/dicom-export --dry-run
-```
-
-Never place real participant scans or populated secret files in the repository. DICOM/NIfTI inputs, `.env*`, `.dev.vars`, build outputs, and local Cloudflare state are ignored.
-
-## Administration
-
-The admin API lists public registrations, revokes devices, withdraws uploads, and retains invite administration for private named projects. Use the bundled wrapper rather than hand-writing requests:
-
-```bash
-SCALING_NEURO_API_URL=https://scalingneuro.com \
-ADMIN_API_TOKEN='...' \
-npm run admin --prefix worker -- registrations
-
-SCALING_NEURO_API_URL=https://scalingneuro.com \
-ADMIN_API_TOKEN='...' \
-npm run admin --prefix worker -- invite \
-  --site-slug princeton \
-  --site-name 'Princeton Neuroscience Institute' \
-  --project-slug epi-pilot \
-  --project-name 'EPI Pilot' \
-  --consent-policy-version pilot-1 \
-  --expires-seconds 604800 \
-  --max-uses 1
-
-SCALING_NEURO_API_URL=https://scalingneuro.com \
-ADMIN_API_TOKEN='...' \
-npm run admin --prefix worker -- revoke-device --id DEVICE_UUID
-```
-
-Device tokens and private invite codes are shown only when issued; D1 stores hashes. Site pseudonym keys and public-registration email addresses are encrypted with the production site-key encryption secret.
-
-## Deployment and releases
-
-Every push to `main` runs the migration gate, builds the explicit site/schema/docs allowlist and Pages Worker, and deploys the `scalingneuro` Cloudflare Pages project. Production requires GitHub Actions secrets `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID`, plus correctly configured Pages bindings for D1 (`DB`) and R2 (`ARCHIVE`) and runtime secrets:
+Production is published as one source-aligned unit. A `main` push deploys only when the latest non-prerelease client tag points to that exact commit and its version matches the client source. A new release stays a private GitHub draft while the workflow builds every platform package and applies migrations. It then deploys the new Worker/site with byte-for-byte verified copies of the currently public downloads, proves that exact preserved client can still register, proves the newly built candidate client and non-PHI fixture through production and Sophont, and only afterward cuts over the new index, installers, and packages. Any post-deploy failure rolls Pages back to the production deployment captured before phase one; only a fully verified release is made public. Production requires D1 `DB`, R2 `ARCHIVE`, and these secrets:
 
 - `ADMIN_API_TOKEN`
 - `SITE_KEY_ENCRYPTION_KEY_B64`
 - `R2_PARENT_SECRET_ACCESS_KEY`
+- `PROCESSOR_API_TOKEN`
 
-The non-secret R2 account/access-key IDs, bucket, TTLs, and service version are defined in `worker/wrangler.jsonc`. The parent R2 token must be dedicated to Object Read & Write on only the Scaling Neuro bucket; it never leaves the Worker.
+Before either release path deploys, the production gate compares the Pages dashboard with the exact D1 database ID, R2 bucket, R2 account/access-key IDs, and TTL values committed in `worker/wrangler.jsonc`; it also requires all four secrets to remain encrypted and preview deployments to have no production bindings. CI exercises both acceptance and fail-closed mismatch cases. The tracked hourly cleanup workflow calls the authenticated admin route so expired, withdrawn, and rejected temporary inputs continue to be purged even though Pages itself has no Cron Trigger.
 
-Client packages are produced by `.github/workflows/release-client.yml` from the current `main` commit. It builds Linux x86_64, Windows x86_64, and universal Intel/Apple-silicon macOS artifacts; verifies official converter archive hashes; renders release-bound `install.sh` and `install.ps1`; tests user-level installation and tamper rejection on all three operating systems; emits SPDX/CycloneDX SBOMs, `latest.json`, and `SHA256SUMS`; and enforces the Cloudflare Pages 25 MiB per-file limit.
+The R2 parent token must be dedicated to Object Read & Write on only the Scaling Neuro bucket. The processor token is stored separately as a mode-`0600` file on shared Sophont storage; it receives only short-lived object-scoped capabilities. See [processor/README.md](processor/README.md) for the pinned container and bottom-priority Slurm deployment.
 
-See [docs/client-release.md](docs/client-release.md) for signing/notarization secrets and the release checklist.
+Client packages are built from the current `main` commit for universal macOS, Windows x64, and one fully static Linux x64 target with no distribution-library choice. Each is a single client executable plus licenses, release metadata, and SBOMs. Ordinary CI and the release workflow verify the executable and static Linux linkage; release gates also verify signing state, package hash, installer behavior, tamper rejection, and protected Windows private-state ACLs. See [the release contract](docs/client-release.md).
 
-## Pilot limitations and production gates
+## Remaining broad-adoption gates
 
-The implementation is deliberately honest about what remains before broad academic rollout:
+- Maintain the pinned public Siemens/Philips compatibility harness as a release gate, and expand the privacy-audited matrix across additional models, software releases, PACS rewrites, and transfer syntaxes.
+- Add the proven narrow GE classic metadata reconstruction only after hostile/property tests demonstrate that no opaque private block or unbounded value can enter an archive.
+- Validate Enhanced MR shared/per-frame semantics and exact extended-offset-table pairing before enabling either route.
+- Run clean-machine installation, interruption, automatic continuation, and receipt tests on each promised OS and representative institution-managed workstations.
+- Independently inspect every release’s stored rewritten DICOM, derived sidecar/manifest, metadata retention, PHI absence, native geometry, hashes, withdrawal, and cleanup.
+- Add governed discovery/access, compatibility dashboards, and downstream training caches without weakening the immutable source archive.
+- Keep structural MRI on a separate route until local defacing and quantitative brain-preservation QC are validated.
 
-- Scanner support comes from dcm2niix plus fail-closed validation, not a claim that every historical or malformed export works. Build a PHI-free compatibility matrix across Siemens classic/enhanced/XA, Philips classic/enhanced, and GE classic/enhanced exports.
-- Complete clean-machine smoke tests on each promised OS, including terminal folder entry, interruption followed by the same folder command, automatic continuation, commit, report, and operating-system trust prompts.
-- Run at least one institution-approved fresh scanner export end to end and independently inspect the stored sidecar/manifest, metadata retention, PHI absence, native affine/voxel hashes, withdrawal, and cleanup.
-- Keep the R2 live smoke in the release gate. The deployed implementation has completed an ordinary-client Siemens fixture upload, independently reproduced the compressed/uncompressed/sidecar/manifest hashes after R2 download, and rejected wrong-part, expired, wrong-hash, and wrong same-length payloads. Repeat that evidence for every release and each named collaborator environment.
-- Before any non-public participant data, rotate the current production signer credential and independently verify that the replacement is dedicated to Scaling Neuro with Object Read & Write access to only its archive bucket. The current credential has not yet been verified as dedicated and bucket-scoped; the successful transport smoke does not establish that permission boundary.
-- Configure Apple notarization and Windows Authenticode for institution-managed machines that require signed executables. The terminal-first flow removes manual archive/Gatekeeper friction for ordinary beta users, but it does not override endpoint-security policy; unsigned direct artifacts remain named pilot builds.
-- Keep the checksum-verified release restoration gate healthy. Ordinary production deploys now restore the exact asset inventory from the newest non-draft `client-v*` release, verify `SHA256SUMS` and `latest.json`, reject unsafe or oversized assets, and only then publish the downloads.
-- Structural MRI remains out of scope until a separate local face-privacy pipeline, quantitative brain-preservation QC, and fail-closed review path are implemented.
-- The current archive/control plane is ingestion-first. Dataset search, governed access/export, compatibility dashboards, and derived training caches are later Scaling Neuro surfaces, not reasons to weaken the canonical archive now.
+## Contracts
 
-## Scientific and privacy contracts
-
-- [EPI ingestion, classifier, metadata, QC, identity, and archive invariants](docs/epi-ingestion-contract.md)
-- [Versioned artifact and HTTP API contracts](docs/artifact-and-api-contracts.md)
-- [One-folder collaborator onboarding](docs/collaborator-onboarding.md)
-- [Cross-platform release process](docs/client-release.md)
-- [Vendor fixture and production QA evidence](docs/vendor-qa.md)
-- [Initiative brief](Scaling%20Up%20Neuroimaging%20Data%20for%20Foundation%20Models.md)
-- [Expanded database strategy note](Creating%20a%20web-scale%20neuroimaging%20database.md)
+- [EPI ingest and identity](docs/epi-ingestion-contract.md)
+- [DICOM de-identification](docs/dicom-deidentification-policy.md)
+- [Artifacts and APIs](docs/artifact-and-api-contracts.md)
+- [Terminal onboarding](docs/collaborator-onboarding.md)
+- [Client release](docs/client-release.md)
+- [Vendor QA](docs/vendor-qa.md)
+- [Scaling Neuro initiative brief](Scaling%20Up%20Neuroimaging%20Data%20for%20Foundation%20Models.md)
+- [Web-scale archive strategy](Creating%20web-scale%20neuroimaging%20database.md)
 
 ## License
 
-Scaling Neuro is available under either the [Apache License 2.0](LICENSE-APACHE) or the [MIT License](LICENSE-MIT), at your option. Bundled third-party components retain their own notices.
+Scaling Neuro is available under either [Apache License 2.0](LICENSE-APACHE) or [MIT](LICENSE-MIT). Server-side third-party components retain their own notices.

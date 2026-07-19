@@ -29,6 +29,9 @@ const exampleSchemas = {
   "api-error-v1.example.json": "api-error-v1.schema.json",
   "archive-manifest-v1.example.json": "archive-manifest-v1.schema.json",
   "contribution-info-v1.example.json": "contribution-info-v1.schema.json",
+  "dicom-upload-init-v1.example.json": "dicom-upload-init-v1.schema.json",
+  "dicom-upload-session-v1.example.json": "dicom-upload-session-v1.schema.json",
+  "dicom-upload-status-v1.example.json": "dicom-upload-status-v1.schema.json",
   "enrollment-request-v1.example.json": "enrollment-request-v1.schema.json",
   "enrollment-response-v1.example.json": "enrollment-response-v1.schema.json",
   "local-manifest-v1.example.json": "local-manifest-v1.schema.json",
@@ -57,6 +60,51 @@ const policyValidator = ajv.getSchema(
 );
 if (!policyValidator(readJson(path.join(root, "metadata-policy-v1.json")))) {
   throw new Error(`metadata policy failed strict Ajv validation: ${ajv.errorsText(policyValidator.errors)}`);
+}
+
+const dicomInitValidator = ajv.getSchema(
+  "https://scalingneuro.com/schemas/dicom-upload-init-v1.schema.json",
+);
+const dicomInitBoundary = readJson(
+  path.join(root, "examples", "dicom-upload-init-v1.example.json"),
+);
+dicomInitBoundary.series[0].dicom_count = 500_000;
+if (!dicomInitValidator(dicomInitBoundary)) {
+  throw new Error(
+    `raw DICOM schema rejects 500000 instances: ${ajv.errorsText(dicomInitValidator.errors)}`,
+  );
+}
+dicomInitBoundary.series[0].dicom_count = 500_001;
+if (dicomInitValidator(dicomInitBoundary)) {
+  throw new Error("raw DICOM schema accepts more than 500000 instances");
+}
+
+const localManifestValidator = ajv.getSchema(
+  "https://scalingneuro.com/schemas/local-manifest-v1.schema.json",
+);
+const localManifestBoundary = readJson(
+  path.join(root, "examples", "local-manifest-v1.example.json"),
+);
+const rawBundle = localManifestBoundary.bundles.find((bundle) => bundle.archive);
+if (!rawBundle) throw new Error("local manifest example has no raw DICOM bundle");
+rawBundle.archive.dicom_instance_count = 500_000;
+rawBundle.source_dicom_count = 500_000;
+if (!localManifestValidator(localManifestBoundary)) {
+  throw new Error(
+    `local manifest schema rejects 500000 instances: ${ajv.errorsText(localManifestValidator.errors)}`,
+  );
+}
+for (const [parent, field] of [
+  ["archive", "dicom_instance_count"],
+  [null, "source_dicom_count"],
+]) {
+  const invalid = structuredClone(localManifestBoundary);
+  const invalidBundle = invalid.bundles.find((bundle) => bundle.archive);
+  if (parent) invalidBundle[parent][field] = 500_001;
+  else invalidBundle[field] = 500_001;
+  if (localManifestValidator(invalid)) {
+    throw new Error(`local manifest schema accepts more than 500000 at ${field}`);
+  }
 }
 
 console.log(

@@ -41,9 +41,6 @@ try {
   if (-not (Test-Path -PathType Leaf (Join-Path $packageRoot "neuro-sync.exe"))) {
     throw "The verified release is missing neuro-sync.exe."
   }
-  if (-not (Test-Path -PathType Leaf (Join-Path $packageRoot "libexec\dcm2niix.exe"))) {
-    throw "The verified release is missing its pinned DICOM converter."
-  }
 
   $stageDir = Join-Path $installRoot (".stage-" + [Guid]::NewGuid().ToString("N"))
   $backupDir = Join-Path $installRoot (".previous-" + [Guid]::NewGuid().ToString("N"))

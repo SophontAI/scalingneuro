@@ -1,110 +1,149 @@
 # Artifact and API contracts
 
+All JSON is UTF-8, rejects duplicate members and non-finite numbers, and is validated with exact/default-deny object shapes. Pseudonymous IDs are 24 lowercase hexadecimal characters; upload/job IDs are UUIDs. Hashes are lowercase SHA-256. Errors contain stable safe codes and never echo tokens, signed URLs, paths, request bodies, or arbitrary DICOM values.
+
 ## Versioned artifacts
 
-| Artifact | Canonical schema | Purpose |
-|---|---|---|
-| Contribution information | `schemas/contribution-info-v1.schema.json` | Current open-registration state, policy, client floor, and self-service allowance |
-| Registration request | `schemas/registration-request-v1.schema.json` | Client-bound, replay-safe public lab/device registration |
-| Enrollment request | `schemas/enrollment-request-v1.schema.json` | Client-bound, replay-safe invite/device enrollment operation |
-| Enrollment response | `schemas/enrollment-response-v1.schema.json` | Stable result returned for a new or exactly replayed enrollment |
-| Local preparation manifest | `schemas/local-manifest-v1.schema.json` | Owner-only conversion/continuation checkpoint; never an upload artifact |
-| Scan sidecar | `schemas/scan-sidecar-v1.schema.json` | Privacy-filtered metadata beside one acquisition-space NIfTI |
-| Metadata policy | `schemas/metadata-policy-v1.schema.json` | Machine-readable default-deny allow/local-only/deny rules |
-| Upload initialization | `schemas/upload-init-v1.schema.json` | Exact body accepted by `POST /v1/uploads` |
-| Upload session | `schemas/upload-session-v1.schema.json` | Server-created multipart IDs and part sizes; no reusable cloud credential |
-| Part URL request | `schemas/upload-part-request-v1.schema.json` | One exact key/part/size/SHA-256 capability request |
-| Part URL response | `schemas/upload-part-response-v1.schema.json` | One 15-minute presigned URL and its required signed headers |
-| Upload completion | `schemas/upload-complete-v1.schema.json` | Exact object receipts accepted at commit time |
-| Archive manifest | `schemas/archive-manifest-v1.schema.json` | Immutable Worker-authored record of a committed upload |
-| Upload status | `schemas/upload-status-v1.schema.json` | Pollable control-plane state |
-| API error | `schemas/api-error-v1.schema.json` | Stable error envelope and codes |
+| Artifact | Contract |
+|---|---|
+| Local preparation manifest | `schemas/local-manifest-v1.schema.json` |
+| DICOM upload initialization | `schemas/dicom-upload-init-v1.schema.json` |
+| DICOM upload allocation | `schemas/dicom-upload-session-v1.schema.json` |
+| DICOM upload/status receipt | `schemas/dicom-upload-status-v1.schema.json` |
+| Multipart completion | `schemas/upload-complete-v1.schema.json` |
+| Multipart part request/grant | `schemas/upload-part-request-v1.schema.json`, `upload-part-response-v1.schema.json` |
+| Legacy NIfTI ingest | `schemas/upload-init-v1.schema.json`, `upload-session-v1.schema.json`, `upload-status-v1.schema.json` |
+| Derived scan sidecar | `schemas/scan-sidecar-v1.schema.json` and `metadata-policy-v1.json` |
+| Legacy immutable manifest | `schemas/archive-manifest-v1.schema.json` |
+| API error | `schemas/api-error-v1.schema.json` |
 
-Examples live in `schemas/examples/`. `python3 schemas/validate.py` validates every schema and example, resolves canonical public `$id` references locally, and proves that every metadata-policy output path exists in the scan-sidecar schema.
+`schemas/examples/` contains non-PHI examples validated by both Python `jsonschema` and strict Ajv. The current DICOM source archive’s internal `manifest.json` is independently validated by the cluster processor because it is inside the content-addressed archive boundary; its semantics are specified in the ingest and de-identification contracts.
 
-Schema files use JSON Schema draft 2020-12 and strict `additionalProperties: false` boundaries. The v1 API request bodies do not carry `$schema` or `schema_version`: the endpoint contract is versioned by `/v1`, and the Worker rejects unknown fields. Stored sidecars and archive manifests carry their own explicit version because they outlive the API process that created them.
+## Authentication boundaries
 
-`bundle_id`, `series_id`, `subject_id`, `session_id`, and `protocol_group_id` are bare 24-character lowercase hexadecimal site-HMAC pseudonyms. They never contain `sub_`, `ses_`, or another label; labels appear only in human-readable filenames. Worker-owned upload, site, and project IDs are UUIDs. One upload request may contain several series/sessions/protocol groups, but every bundle must have the same `subject_id`.
+- Public: `GET /health`, `GET /v1/contribution`, `POST /v1/register`, `POST /v1/enroll`.
+- Device bearer: upload create/part/complete/status routes. A device token is returned once and stored only as a hash in D1.
+- Processor bearer: `/v1/processor/jobs/*`. This token can claim/lease jobs and mint scoped object capabilities; it is not an R2 key.
+- Admin bearer: registration/device/withdrawal/invite operations.
+- Object capabilities: short-lived signed R2 GET, PUT, or UploadPart requests, deliberately sent without the device/processor Authorization header.
 
-## HTTP surface
+The client never receives a reusable R2 access key. Signed URLs must not appear in logs, reports, persistence, telemetry, converter arguments, or failure payloads.
 
-All JSON endpoints return `content-type: application/json`. Device endpoints use `Authorization: Bearer <opaque-device-token>`; admin endpoints use the separate admin bearer secret.
+## Public registration
 
-| Method and path | Request | Success response |
-|---|---|---|
-| `GET /health` | none | service health/version |
-| `GET /v1/contribution` | none | contribution-information schema |
-| `POST /v1/register` | registration-request schema | enrollment-response schema for a new or exactly replayed public registration |
-| `POST /v1/enroll` | enrollment-request schema | enrollment-response schema: stable operation/device IDs and token, site/project context, contribution-policy version, site pseudonym key |
-| `POST /v1/uploads` | upload-init schema | upload-session schema; committed idempotent replay has an empty multipart plan |
-| `POST /v1/uploads/{id}/credentials` | empty body | deprecated-name compatibility route that refreshes the multipart plan; it returns no credentials |
-| `POST /v1/uploads/{id}/parts` | upload-part request schema | upload-part response schema for one exact part |
-| `POST /v1/uploads/{id}/complete` | upload-complete schema | committed ID/time and manifest key/SHA-256 |
-| `GET /v1/uploads/{id}` | none | upload-status schema |
-| `POST /v1/admin/invites` | site/project names/slugs, consent-policy version, expiry, uses | one-time invite metadata and plaintext invite code |
-| `GET /v1/admin/registrations` | none | latest contributor contacts, device state, and aggregate committed-upload metrics |
-| `POST /v1/admin/devices/{id}/revoke` | empty body | revoked device status |
-| `POST /v1/admin/uploads/{id}/withdraw` | empty body | withdrawn upload status and tombstone audit state |
+`GET /v1/contribution` returns the open-registration state, project/policy names, policy URL, minimum client version, and `self_service_quota_bytes: null`. Null explicitly means that public contribution has no cumulative workstation allowance. During the `0.2.8` to `0.3.x` two-phase cutover, only an exact `neuro-sync/0.2.x` user agent receives the JSON-safe integer `9007199254740991` because that legacy client modeled the field as a required `u64`; browsers and `0.3+` clients continue to receive null, and the backend project quota remains SQL `NULL`/unlimited in both cases. The ordinary terminal flow generates a UUID registration operation, a 256-bit device token, and owner-only pending state before calling `POST /v1/register`.
 
-## Public registration transaction
+An exact replay reuses the operation and token and returns the same enrollment result. A lab/contact may register multiple devices; uniqueness belongs to the operation/device, not email, institution, IP address, or lab name. There is no daily network registration allowance or cumulative public-workstation upload allowance. Per-request, per-object, multipart, and receipt-session safety bounds still apply.
 
-The ordinary researcher path begins with `GET /v1/contribution`, then generates a UUIDv4 `registration_id` and a 256-bit `sn_device_…` token locally. The form details, operation identity, and token are atomically checkpointed in an owner-only file. An exact retry reuses that identity; the Worker returns the same enrollment result rather than creating a duplicate lab, project, or device.
+Contact email is normalized and hashed for lookup, then separately encrypted with registration-bound authenticated encryption. Contact data never enters object keys, DICOM archives, sidecars, manifests, or operational logs. The site pseudonym key is returned only to the enrolled client and stored encrypted in the control plane.
 
-Each registration receives an isolated site, project, site-scoped pseudonym key, revocable device identity, and 250 GiB self-service upload allowance. The Worker stores only the device-token hash. Contact email is normalized, hashed for administrative lookup, and separately encrypted with registration-bound authenticated encryption; contact data is not placed in scan sidecars, manifests, R2 object keys, or operational logs. The optional ROR ID is stored as a canonical public organization identifier. Administrator-issued invites remain a private compatibility route for named projects.
+## DICOM receipt transaction
 
-## Invite enrollment transaction
+### Create
 
-Before the first enrollment request, the client generates a UUIDv4 `enrollment_id` and a 256-bit `sn_device_…` token. It atomically checkpoints those values and the non-secret request metadata in owner-only local state keyed by the SHA-256 of the invite; the plaintext invite is not persisted. The exact pending operation is reused after a timeout, connection loss, process crash, or lost response. It is deleted only after the final enrolled configuration has been saved successfully.
+`POST /v1/dicom-uploads` accepts up to 8 series and 250 GiB. The client transparently splits a larger folder into stable same-subject receipt sessions; this bound keeps multipart completion inside Cloudflare's strictest per-invocation limits:
 
-The Worker validates the exact request, stores only the device-token SHA-256, and inserts the device under the invite-consumption trigger. A new device consumes one invite use. A replay succeeds only when the invite hash, `enrollment_id`, and device-token hash all match the existing non-revoked device; it returns the same enrollment response without another device, audit event, or invite use. The same operation UUID with a different token, or the same used invite with a different operation, receives the generic `INVALID_INVITE` response. Neither secret is included in logs or error details.
-
-Enrollment returns `pseudonym_key_b64` only to the enrolled client over TLS. The client stores it in its protected local configuration and uses it to generate site-scoped HMAC identifiers. The control plane stores the site key encrypted; neither raw identifiers nor the HMAC input cross the API.
-
-No R2 access key, secret access key, session token, or reusable prefix credential crosses the API. The Worker owns the parent signing key and all create/complete/abort operations. For each part, the client declares the initialized full key, part number, exact size, and SHA-256. The Worker validates those values against the allocated object and returns a presigned `UploadPart` URL that expires after 15 minutes by default, plus the exact `content-length` and `x-amz-content-sha256` headers covered by the signature.
-
-That URL authorizes only one payload for one part of one Worker-created multipart upload. Changing the key, upload ID, part number, length, hash, or required headers invalidates it. It cannot read, list, copy, delete, create, complete, or abort. The URL is a bearer capability until expiry and must never be logged, persisted into reports, or sent to telemetry.
-
-## Upload transaction
-
-Before upload, the client writes a local preparation manifest conforming to `local-manifest-v1.schema.json`. This owner-only file deliberately contains staging paths and therefore is never uploaded, logged, or used as the shareable run report. It records the enrolled `site_id`, `project_id`, `consent_policy_version`, client version, and metadata-policy provenance. Rerunning the same folder command selects this checkpoint automatically and fails closed unless the enrollment and privacy contract still match. An older privacy checkpoint is superseded and re-prepared locally from its private stored source path; the replacement must reproduce the exact prior bundle-identity set before upload can begin.
-
-The client initializes up to 32 same-subject bundles at a time with pseudonymous protocol-group identity, relative keys, sizes, and compressed SHA-256 values for each NIfTI and metadata object, plus the NIfTI's uncompressed SHA-256. A compressed NIfTI may be at most 5 GiB and one Worker session at most 32 GiB. Only one upload may be active per device; larger or multi-subject folders are automatically split into sequential sessions. Each bundle is exactly one flat directory named for `bundle_id`; the `.nii.gz` and `.json` have the same basename. The service assigns:
-
-```text
-archive/v1/{site_id}/{project_id}/{upload_id}/
+```json
+{
+  "format": "dicom-series-v1",
+  "client_version": "0.3.0",
+  "deidentification": {
+    "policy_id": "scaling-neuro.dicom-deidentification",
+    "policy_version": "1.0.0"
+  },
+  "series": [{
+    "series_archive_id": "24-lowercase-hex",
+    "series_id": "24-lowercase-hex",
+    "subject_id": "24-lowercase-hex",
+    "session_id": "24-lowercase-hex",
+    "protocol_group_id": "24-lowercase-hex",
+    "dicom_count": 4153,
+    "archive": {
+      "relative_key": "<series_archive_id>/dicom.tar.zst",
+      "size": 123456789,
+      "sha256": "64-lowercase-hex",
+      "format": "dicom-tar-zstd"
+    }
+  }]
+}
 ```
 
-The Worker creates the 2–64 R2 multipart objects, persists their multipart IDs, and sets trusted `sha256`/`upload_id` metadata. The client requests and uses one presigned URL per allocated part and persists each returned opaque ETag. Completion lists every expected full key exactly once, its declared size/hash, and parts numbered consecutively from 1. Clients send canonical bare ETags; the Worker tolerates and strips one matching surrounding S3 quote pair. The client cannot create or complete objects itself.
+The Worker assigns `dicom/v1/{site_id}/{project_id}/{upload_id}/`, creates one R2 multipart object per pending series, and returns each full key, R2 multipart ID, and part size. The request hash makes lost create responses replay-safe.
 
-The Worker completes one NIfTI/sidecar multipart pair per bounded request, performs authoritative HEAD checks, and atomically records that pair as durable before any expensive validation begins. A following bounded request streams one stored pair through server-side SHA-256, gzip decompression, NIfTI-header checks, and strict sidecar/privacy-contract validation, then atomically checkpoints the scientifically verified pair. Compressed hashing and gzip/NIfTI inspection share a backpressured stream rather than an independently buffered `tee()`. This two-phase state machine means a terminated request resumes from the last durable boundary without rereading verified scans or retransmitting completed parts. Upload status exposes only code-safe `phase`, `finalized_series`, `verified_series`, and `total_series` progress. Once every pair is verified, a final request writes the immutable archive manifest and atomically moves status to `committed`. A caller may safely retry create, multipart-plan refresh, part-URL minting, complete, and status operations. A hash/sidecar failure expires and purges that uncommitted session; no client response alone is a commit boundary—the immutable manifest is.
+Already-received exact series are returned as `already_received_series` and are not allocated again. A mixed request allocates only new series. Exactness includes stable series identity and archive-derived bundle hash under the current site/project/privacy contract.
 
-Catalog reconciliation is also fail-closed and resumable. If a create request contains an already committed active `bundle_id`, the Worker returns `DUPLICATE_BUNDLE` with `details.reason = active_exact_match` and an `existing_bundles` array containing only pseudonymous IDs, the existing upload UUID, and the uncompressed NIfTI SHA-256. It emits that reconciliation only after the stored series/subject/session/protocol identities, canonical `bundle_hash`, and server-validated metadata-policy ID/version all match the current request and privacy contract. The client independently compares those fields, persists the no-op result, removes the exact matches from the request, and retries the remaining new subset. This lets a mixed old/new folder proceed and makes a lost subset-allocation response replay-safe. `withdrawn_tombstone`, `identity_conflict`, and `privacy_contract_stale` are deterministic failures and are never reconciled as success.
+### Upload parts
 
-Two workstations may allocate the same not-yet-cataloged bundle concurrently. If one commits first, the Worker validates the winner under the same identity/privacy rules, purges the losing R2 prefix and multipart state, and returns the same structured `active_exact_match` response from completion. The losing client records the winner as already archived and finishes without manual recovery. An active upload produced by a client older than the minimum privacy contract is similarly held in its active slot until the Worker aborts and purges it; only then can a current replacement be allocated. Both transitions retain D1 audit state while preventing stale prepared bytes from being continued or silently treated as current.
+`POST /v1/dicom-uploads/{upload_id}/parts` declares one initialized full key, part number, exact length, and SHA-256. The response contains a roughly 15-minute `UploadPart` URL and the exact `content-length` and `x-amz-content-sha256` headers covered by its signature.
 
-Upload states are `created`, `uploading`, `committed`, `expired`, and `withdrawn`. Only `created` and `uploading` accept writes. `committed`, `expired`, and `withdrawn` are terminal for that upload ID. Withdrawal records a tombstone/audit state and removes archive objects through the authorized admin path; object disappearance must never make the catalog silently look as if the upload never existed.
+Changing the key, multipart ID, part number, length, hash, or covered headers invalidates the signature. The capability cannot read, list, copy, delete, create, complete, or abort objects. Parts are replaceable at the same number, which makes the crash window between R2 acceptance and local ETag persistence safe.
 
-## Error behavior
+`POST /v1/dicom-uploads/{upload_id}/credentials` refreshes allocation state and is idempotent. The client checkpoints canonical bare ETags locally.
 
-Errors use one envelope:
+### Complete and receive
+
+`POST /v1/dicom-uploads/{upload_id}/complete` lists every pending archive exactly once with declared size/hash and consecutive multipart receipts. A short D1 receipt lease serializes duplicate completion attempts. For each object, the Worker:
+
+1. validates the declaration against allocation;
+2. completes the R2 multipart upload, resolving a lost completion response through authoritative `HEAD`;
+3. validates R2 length and trusted custom metadata with `HEAD` only; and
+4. atomically reserves the series identity, writes the durable receipt, and queues a processing job.
+
+No object body crosses the Worker completion request. Receipt time is therefore bounded by multipart completion/metadata operations rather than archive size or conversion time.
+
+When every pending series is received, upload status becomes `committed` (the durable source-receipt state). `GET /v1/dicom-uploads/{upload_id}` returns received counts/bytes and a separate processing summary with queued, processing, processed, failed, purged, and total series.
+
+### Concurrency and reconciliation
+
+The reservation key is `(site_id, project_id, series_archive_id)`. If two devices race, the first exact receipt wins. The loser compares series identity and bundle hash, records `already_received`, purges its temporary R2 prefix/multipart state, and returns success. Later creates resolve directly to the winner. A withdrawn tombstone or mismatch returns a deterministic `DUPLICATE_BUNDLE` reason and never reconciles as success.
+
+## Processing jobs
+
+`POST /v1/processor/jobs/claim` accepts `processor_id` and a bounded lease duration. No work returns HTTP `204`. A claim increments the attempt, assigns a random lease token, and returns one of:
+
+- `dicom-series-v1`: `series_archive_id`, `series_id`, declared DICOM count, and a short-lived scoped archive GET with size/hash; or
+- `nifti-v1`: the legacy bundle/series identity and scoped NIfTI/sidecar GETs with compressed/uncompressed hashes.
+
+Eligible `dicom-series-v1` jobs are claimed before the one-time `nifti-v1` migration backlog, with FIFO order retained within each format. A newly received raw series and the release smoke therefore do not wait behind historical multi-gigabyte validation, while legacy work continues deterministically.
+
+The processor calls:
+
+- `POST /v1/processor/jobs/{job_id}/heartbeat` to extend the exact lease;
+- `POST /v1/processor/jobs/{job_id}/outputs` to declare DICOM-job NIfTI/sidecar/processing-manifest hashes and receive checksum-bound PUT capabilities;
+- `POST /v1/processor/jobs/{job_id}/complete` to report pinned versions, the exact output descriptors, and validation booleans; or
+- `POST /v1/processor/jobs/{job_id}/fail` with a stable safe code and retryability.
+
+For a DICOM job, completion requires `archive_sha256_verified`, exact `dicom_count`, `dicom_parse_succeeded`, and `functional_epi_confirmed`, plus all three output `HEAD` receipts. A legacy job requires its six compressed/uncompressed/sidecar/NIfTI-consistency booleans and no new output objects.
+
+Output publication is lease-conditional. The Worker checks the lease before capabilities, after object `HEAD`, and in the same conditional D1 publication step. A processor whose lease expired during object storage cannot update derived catalog rows or mark the job processed. The next claimant may safely verify/reuse deterministic prepared files or overwrite the same derived keys.
+
+Retryable failures return to `queued` with bounded delay and attempts. A terminal `DICOM_PRIVACY_AUDIT_FAILED`, `INVALID_DICOM_ARCHIVE`, `ARCHIVE_*`, or `FUNCTIONAL_EPI_NOT_CONFIRMED` result deletes the exact rejected DICOM source object before recording `input_purged_at`, tombstones its reservation, and writes a `processing.input_purged` audit event. The upload receipt remains immutable and its processing summary increments `purged_series`. Terminal converter or scientific-compatibility failures retain the de-identified source archive for review.
+
+## Legacy migration
+
+Existing `0.2.x` uploads contain locally converted NIfTI/sidecar objects. Migration `0010` backfills one `nifti-v1` processing job per existing received bundle. The processor validates those objects in place and records processed state without reconversion or duplicate output uploads. This preserves prior uploads while making all future workstation ingestion DICOM-first.
+
+The legacy `/v1/uploads` routes remain available only for compatible checkpoints during migration. Their completion boundary has also been reduced to authoritative R2 receipts plus queued processing; new clients use `/v1/dicom-uploads`.
+
+## Error and retry behavior
 
 ```json
 {
   "error": {
     "code": "OBJECT_MISMATCH",
-    "message": "Uploaded object metadata does not match the initialized bundle",
+    "message": "Stored object metadata does not match its declaration",
     "request_id": "req_...",
-    "details": { "field": "sha256" }
+    "details": {"field": "sha256"}
   }
 }
 ```
 
-Messages and details are safe operational text only. They never echo bearer tokens, presigned URLs, cloud signing material, source paths, raw identifiers, arbitrary DICOM values, or request bodies.
+Clients retry network failures, `408`, `425`, `429`, `5xx`, `CREDENTIALS_UNAVAILABLE`, and `STORAGE_UNAVAILABLE` with bounded exponential backoff and server `Retry-After`. An expired part capability is refreshed for the same allocation. Ordinary `CONFLICT` is not used as a permanent duplicate-series outcome; exact duplicates use structured reconciliation.
 
-Clients may retry network failures, `CREDENTIALS_UNAVAILABLE` (the stable v1 code for a temporarily unavailable part signer), `STORAGE_UNAVAILABLE`, and ordinary 429/5xx responses with bounded exponential backoff. After a part URL expires, they request a new URL for the same allocated part. The one structured `DUPLICATE_BUNDLE/active_exact_match` response is a reconciliation signal, not a blind retry: the client validates and removes only the named exact matches, whether the signal arrives during allocation or after a concurrent completion. `INVALID_REQUEST`, consent-policy updates, revocation, object mismatch, withdrawn/identity-conflict/privacy-contract-stale duplicates, and other deterministic 4xx states require a local state transition or user-visible action.
+Invalid requests, revoked devices, policy/client updates, quota failures, withdrawal tombstones, identity mismatches, and object mismatches require a state change or user-visible action. Sensitive material is never placed in error text.
 
-## Compatibility and evolution
+## Withdrawal and evolution
 
-V1 fields are additive only inside a new versioned schema. A semantic change to identifiers, hashing, classifier decisions, metadata policy, object layout, or manifest canonicalization requires a new schema/policy version and explicit migration/read compatibility. Existing immutable manifests are never rewritten in place.
+Administrative withdrawal retains a D1 tombstone/audit record and removes canonical source and derived R2 objects. Object deletion is verified before `purged_at` is persisted. Absence of an R2 object must never erase catalog history silently.
 
-The archive manifest is canonical key-sorted UTF-8 JSON with a single trailing LF. Its published SHA-256 covers the exact stored bytes. Bundle-hash canonicalization is defined in `docs/epi-ingestion-contract.md` and excludes storage keys, ETags, compressed transport identity, and the sidecar byte hash so retries, metadata enrichment, and multipart layouts do not change scientific identity. Catalog deduplication and withdrawal tombstones use stable site/project-scoped `bundle_id`, not a mutable transport hash.
+Semantic changes to privacy policy, archive layout, identifier derivation, classifier acceptance, hashing, object layout, or derived sidecar behavior require a new explicit version and migration/compatibility path. Existing immutable source archives and processing manifests are never rewritten in place.

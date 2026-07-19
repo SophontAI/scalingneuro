@@ -1,0 +1,15 @@
+{
+  "upload_id": "0190f86f-e0de-7f2a-a24c-0a6abf16ec81",
+  "status": "uploading",
+  "format": "dicom-series-v1",
+  "object_prefix": "dicom/v1/site/project/0190f86f-e0de-7f2a-a24c-0a6abf16ec81/",
+  "multipart_objects": [
+    {
+      "kind": "dicom_archive",
+      "series_archive_id": "7c2a5f77f3ab6c6d9e011234",
+      "key": "dicom/v1/site/project/0190f86f-e0de-7f2a-a24c-0a6abf16ec81/7c2a5f77f3ab6c6d9e011234/dicom.tar.zst",
+      "upload_id": "opaque-r2-multipart-id",
+      "part_size": 67108864
+    }
+  ]
+}

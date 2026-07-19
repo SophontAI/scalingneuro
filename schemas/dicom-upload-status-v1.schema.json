@@ -1,0 +1,140 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://scalingneuro.com/schemas/dicom-upload-status-v1.schema.json",
+  "title": "Scaling Neuro DICOM receipt and processing status v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "upload_id",
+    "status",
+    "format",
+    "object_prefix",
+    "series_count",
+    "total_bytes",
+    "consent_policy_version",
+    "deidentification",
+    "receipt",
+    "created_at",
+    "updated_at"
+  ],
+  "properties": {
+    "upload_id": {
+      "$ref": "https://scalingneuro.com/schemas/common-v1.schema.json#/$defs/uuid"
+    },
+    "status": {
+      "enum": ["created", "uploading", "committed", "expired", "withdrawn"]
+    },
+    "format": { "const": "dicom-series-v1" },
+    "object_prefix": {
+      "type": "string",
+      "pattern": "^(?!/)(?!.*\\.\\.)[A-Za-z0-9._~/-]+/$"
+    },
+    "series_count": { "type": "integer", "minimum": 1, "maximum": 8 },
+    "total_bytes": { "type": "integer", "minimum": 1, "maximum": 268435456000 },
+    "consent_policy_version": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 64
+    },
+    "deidentification": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["policy_id", "policy_version"],
+      "properties": {
+        "policy_id": { "const": "scaling-neuro.dicom-deidentification" },
+        "policy_version": { "const": "1.0.0" }
+      }
+    },
+    "receipt": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "received_series",
+        "received_bytes",
+        "total_series",
+        "total_bytes"
+      ],
+      "properties": {
+        "received_series": { "type": "integer", "minimum": 0, "maximum": 8 },
+        "received_bytes": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 268435456000
+        },
+        "total_series": { "type": "integer", "minimum": 1, "maximum": 8 },
+        "total_bytes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 268435456000
+        }
+      }
+    },
+    "processing": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "status",
+        "queued_series",
+        "processing_series",
+        "processed_series",
+        "failed_series",
+        "purged_series",
+        "total_series",
+        "updated_at"
+      ],
+      "properties": {
+        "status": { "enum": ["queued", "processing", "processed", "failed"] },
+        "queued_series": { "type": "integer", "minimum": 0, "maximum": 8 },
+        "processing_series": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 8
+        },
+        "processed_series": { "type": "integer", "minimum": 0, "maximum": 8 },
+        "failed_series": { "type": "integer", "minimum": 0, "maximum": 8 },
+        "purged_series": { "type": "integer", "minimum": 0, "maximum": 8 },
+        "total_series": { "type": "integer", "minimum": 1, "maximum": 8 },
+        "updated_at": {
+          "$ref": "https://scalingneuro.com/schemas/common-v1.schema.json#/$defs/timestamp"
+        }
+      }
+    },
+    "already_received_series": {
+      "$ref": "https://scalingneuro.com/schemas/dicom-upload-session-v1.schema.json#/properties/already_received_series"
+    },
+    "received_at": {
+      "$ref": "https://scalingneuro.com/schemas/common-v1.schema.json#/$defs/timestamp"
+    },
+    "withdrawn_at": {
+      "$ref": "https://scalingneuro.com/schemas/common-v1.schema.json#/$defs/timestamp"
+    },
+    "created_at": {
+      "$ref": "https://scalingneuro.com/schemas/common-v1.schema.json#/$defs/timestamp"
+    },
+    "updated_at": {
+      "$ref": "https://scalingneuro.com/schemas/common-v1.schema.json#/$defs/timestamp"
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": { "status": { "const": "committed" } },
+        "required": ["status"]
+      },
+      "then": {
+        "required": ["received_at", "processing"],
+        "properties": { "received_at": {}, "processing": {} }
+      }
+    },
+    {
+      "if": {
+        "properties": { "status": { "const": "withdrawn" } },
+        "required": ["status"]
+      },
+      "then": {
+        "required": ["withdrawn_at"],
+        "properties": { "withdrawn_at": {} }
+      }
+    }
+  ]
+}

@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import copy
 import hashlib
 import json
 import re
@@ -31,6 +32,9 @@ EXAMPLE_SCHEMAS = {
     "upload-part-request-v1.example.json": "upload-part-request-v1.schema.json",
     "upload-part-response-v1.example.json": "upload-part-response-v1.schema.json",
     "archive-manifest-v1.example.json": "archive-manifest-v1.schema.json",
+    "dicom-upload-init-v1.example.json": "dicom-upload-init-v1.schema.json",
+    "dicom-upload-session-v1.example.json": "dicom-upload-session-v1.schema.json",
+    "dicom-upload-status-v1.example.json": "dicom-upload-status-v1.schema.json",
 }
 
 
@@ -169,6 +173,19 @@ def validate_client_shape(schemas: dict[Path, dict[str, Any]]) -> None:
                 f"Rust-only={sorted(rust_fields - schema_fields)}, "
                 f"schema-only={sorted(schema_fields - rust_fields)}"
             )
+
+    archive_properties = schemas[ROOT / "local-manifest-v1.schema.json"]["$defs"]["localArchiveObject"]["properties"]
+    local_object_properties = schemas[ROOT / "local-manifest-v1.schema.json"]["$defs"]["localObject"]["properties"]
+    expected_archive_fields = {"object"} | (
+        set(archive_properties) - set(local_object_properties)
+    )
+    actual_archive_fields = rust_struct_fields(model, "ManifestArchiveObject")
+    if actual_archive_fields != expected_archive_fields:
+        raise ValueError(
+            "ManifestArchiveObject differs from local archive contract; "
+            f"Rust-only={sorted(actual_archive_fields - expected_archive_fields)}, "
+            f"schema-only={sorted(expected_archive_fields - actual_archive_fields)}"
+        )
 
     converter_source = convert_path.read_text(encoding="utf-8")
     arguments_match = re.search(
@@ -406,6 +423,61 @@ def validate_api_error_detail_variants(
             )
 
 
+def validate_dicom_count_boundaries(
+    schemas: dict[Path, dict[str, Any]], registry: Registry[Any]
+) -> None:
+    """Keep the public raw-DICOM instance ceiling aligned at 500,000."""
+    init_schema_path = ROOT / "dicom-upload-init-v1.schema.json"
+    init_validator = Draft202012Validator(
+        schemas[init_schema_path], registry=registry, format_checker=FormatChecker()
+    )
+    init_value = read_json(ROOT / "examples" / "dicom-upload-init-v1.example.json")
+    init_value["series"][0]["dicom_count"] = 500_000
+    if errors := list(init_validator.iter_errors(init_value)):
+        raise ValueError(
+            "dicom upload schema rejects the 500000-instance boundary: "
+            + "; ".join(error.message for error in errors)
+        )
+    init_value["series"][0]["dicom_count"] = 500_001
+    if not list(init_validator.iter_errors(init_value)):
+        raise ValueError("dicom upload schema accepts more than 500000 instances")
+
+    local_schema_path = ROOT / "local-manifest-v1.schema.json"
+    local_validator = Draft202012Validator(
+        schemas[local_schema_path], registry=registry, format_checker=FormatChecker()
+    )
+    local_value = read_json(ROOT / "examples" / "local-manifest-v1.example.json")
+    raw_bundle = next(
+        (bundle for bundle in local_value["bundles"] if "archive" in bundle), None
+    )
+    if raw_bundle is None:
+        raise ValueError("local manifest example is missing its raw DICOM bundle")
+    raw_bundle["archive"]["dicom_instance_count"] = 500_000
+    raw_bundle["source_dicom_count"] = 500_000
+    if errors := list(local_validator.iter_errors(local_value)):
+        raise ValueError(
+            "local manifest schema rejects the 500000-instance boundary: "
+            + "; ".join(error.message for error in errors)
+        )
+    for field_path in (
+        ("archive", "dicom_instance_count"),
+        (None, "source_dicom_count"),
+    ):
+        invalid_value = copy.deepcopy(local_value)
+        invalid_bundle = next(
+            bundle for bundle in invalid_value["bundles"] if "archive" in bundle
+        )
+        parent, field = field_path
+        if parent is None:
+            invalid_bundle[field] = 500_001
+        else:
+            invalid_bundle[parent][field] = 500_001
+        if not list(local_validator.iter_errors(invalid_value)):
+            raise ValueError(
+                f"local manifest schema accepts more than 500000 at {field}"
+            )
+
+
 def main() -> int:
     try:
         schemas, registry = public_schemas()
@@ -420,6 +492,7 @@ def main() -> int:
         validate_client_shape(schemas)
         validate_example_consistency()
         validate_api_error_detail_variants(schemas, registry)
+        validate_dicom_count_boundaries(schemas, registry)
     except (KeyError, TypeError, ValueError) as exc:
         print(f"schema validation failed: {exc}", file=sys.stderr)
         return 1

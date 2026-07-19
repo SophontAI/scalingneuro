@@ -1,0 +1,69 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://scalingneuro.com/schemas/dicom-upload-session-v1.schema.json",
+  "title": "Scaling Neuro DICOM multipart session response v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["upload_id", "status", "format"],
+  "properties": {
+    "upload_id": { "$ref": "https://scalingneuro.com/schemas/common-v1.schema.json#/$defs/uuid" },
+    "status": { "enum": ["uploading", "committed", "already_received"] },
+    "format": { "const": "dicom-series-v1" },
+    "object_prefix": {
+      "type": "string",
+      "pattern": "^(?!/)(?!.*\\.\\.)[A-Za-z0-9._~/-]+/$"
+    },
+    "series_count": { "type": "integer", "minimum": 1, "maximum": 8 },
+    "total_bytes": { "type": "integer", "minimum": 1, "maximum": 268435456000 },
+    "multipart_objects": {
+      "type": "array",
+      "maxItems": 8,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["kind", "series_archive_id", "key", "upload_id", "part_size"],
+        "properties": {
+          "kind": { "const": "dicom_archive" },
+          "series_archive_id": { "$ref": "https://scalingneuro.com/schemas/common-v1.schema.json#/$defs/pseudonymId" },
+          "key": { "type": "string", "minLength": 1, "maxLength": 512 },
+          "upload_id": { "type": "string", "minLength": 1, "maxLength": 1024 },
+          "part_size": { "type": "integer", "minimum": 5242880, "maximum": 5368709120 }
+        }
+      }
+    },
+    "already_received_series": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 8,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["series_archive_id", "receipt_upload_id"],
+        "properties": {
+          "series_archive_id": { "$ref": "https://scalingneuro.com/schemas/common-v1.schema.json#/$defs/pseudonymId" },
+          "receipt_upload_id": { "$ref": "https://scalingneuro.com/schemas/common-v1.schema.json#/$defs/uuid" }
+        }
+      }
+    }
+  },
+  "allOf": [
+    {
+      "if": { "properties": { "status": { "const": "uploading" } }, "required": ["status"] },
+      "then": {
+        "required": ["object_prefix", "multipart_objects"],
+        "properties": { "object_prefix": {}, "multipart_objects": {} }
+      }
+    },
+    {
+      "if": { "properties": { "status": { "const": "already_received" } }, "required": ["status"] },
+      "then": {
+        "required": ["series_count", "total_bytes", "already_received_series"],
+        "properties": {
+          "series_count": {},
+          "total_bytes": {},
+          "already_received_series": {}
+        }
+      }
+    }
+  ]
+}
