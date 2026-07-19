@@ -16,6 +16,22 @@ import vendor_dicom_qa as qa
 
 
 class VendorDicomQaTests(unittest.TestCase):
+    def test_processor_qa_uses_an_explicit_hosted_runner_disk_reserve(self) -> None:
+        class CapturingConfig:
+            def __init__(
+                self, *, disk_reserve_bytes: int = 20 * 1024**3, **values: object
+            ) -> None:
+                self.disk_reserve_bytes = disk_reserve_bytes
+                self.values = values
+
+        destination = Path("/qa/processor-extract")
+        config = qa.processor_qa_config(CapturingConfig, destination, "/qa/zstd")
+
+        self.assertEqual(config.disk_reserve_bytes, 1024**3)
+        self.assertEqual(
+            config.values["work_root"], destination.parent / "processor-work"
+        )
+
     def test_uid_is_stable_and_valid(self) -> None:
         uid = qa.deterministic_uid("fixture")
         self.assertEqual(uid, qa.deterministic_uid("fixture"))

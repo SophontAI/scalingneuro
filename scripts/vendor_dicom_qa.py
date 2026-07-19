@@ -51,6 +51,10 @@ DCM2NIIX_SOURCE_SHA256 = (
 )
 PYDICOM_VERSION = "3.0.1"
 DRY_RUN_KEY = base64.b64encode(bytes(range(32))).decode("ascii")
+# The public-fixture harness processes a small synthetic archive on a hosted
+# runner. Keep its capacity reserve explicit and independent of the production
+# processor's 20 GiB safety margin.
+VENDOR_QA_DISK_RESERVE_BYTES = 1024**3
 
 
 @dataclass(frozen=True)
@@ -757,6 +761,19 @@ def processor_archive_expectations(
     return series_archive_id, series_id, expected_count
 
 
+def processor_qa_config(config_type: type[Any], destination: Path, zstd: str) -> Any:
+    return config_type(
+        api_url="http://127.0.0.1",
+        token="vendor-qa",
+        work_root=destination.parent / "processor-work",
+        processor_id="vendor-dicom-qa",
+        zstd_bin=zstd,
+        disk_reserve_bytes=VENDOR_QA_DISK_RESERVE_BYTES,
+        allow_insecure_http=True,
+        allowed_object_hosts=("127.0.0.1",),
+    )
+
+
 def validate_processor_boundary(
     repo_root: Path,
     archive: Path,
@@ -788,15 +805,7 @@ def validate_processor_boundary(
     series_archive_id, series_id, dicom_count = processor_archive_expectations(
         bundle, expected_count
     )
-    config = Config(
-        api_url="http://127.0.0.1",
-        token="vendor-qa",
-        work_root=destination.parent / "processor-work",
-        processor_id="vendor-dicom-qa",
-        zstd_bin=zstd,
-        allow_insecure_http=True,
-        allowed_object_hosts=("127.0.0.1",),
-    )
+    config = processor_qa_config(Config, destination, zstd)
     try:
         manifest = processor_extract_archive(
             config,
