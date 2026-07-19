@@ -264,14 +264,14 @@
 <span class="c-com"># Windows PowerShell: irm https://scalingneuro.com/install.ps1 | iex</span>
 <span class="c-ok">✓</span> Correct client + pinned dcm2niix downloaded and SHA-256 verified
 <span class="c-com"># later, after you find or copy the DICOM folder path</span>
-<span class="c-p">$</span> neuro-sync
+<span class="c-p">$</span> neuro-sync /path/to/new_session_dicoms
 <span class="c-ok">✓</span> One-minute lab registration in the terminal; no browser needed
 <span class="c-ok">✓</span> Private upload identity: <span class="c-hi">your lab</span>
-<span class="c-ok">✓</span> Paste the folder path containing this session's DICOMs
+<span class="c-ok">✓</span> Confirm the selected folder is approved for contribution
 <span class="c-ok">✓</span> Discover → convert → minimize metadata → QC → upload
 <span class="c-ok">✓</span> Safe to stop: conversion and multipart upload resume locally</code></pre>
             <pre class="term-pane" id="pane-run" data-pane="run" role="tabpanel" aria-labelledby="tab-run"><code><span class="c-com"># after the one-time terminal lab registration</span>
-<span class="c-p">$</span> neuro-sync upload ./new_session_dicoms
+<span class="c-p">$</span> neuro-sync ./new_session_dicoms
 
 <span class="c-dim">[scan]</span>   6 DICOM series discovered
   <span class="c-ok">↑</span> functional EPI   2.0mm  480 vol   <span class="c-ok">committed</span>

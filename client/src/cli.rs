@@ -14,12 +14,16 @@ use crate::{
     name = "neuro-sync",
     version,
     about = "Share approved functional EPI scans with Scaling Neuro",
-    long_about = None
+    long_about = None,
+    subcommand_precedence_over_arg = true
 )]
 pub struct Cli {
     /// Override the private local state directory (primarily for managed deployments and tests).
     #[arg(long, global = true, env = "NEURO_SYNC_STATE_DIR", hide = true)]
     pub state_dir: Option<PathBuf>,
+    /// DICOM export folder to validate and upload.
+    #[arg(value_name = "DICOM_FOLDER")]
+    pub folder: Option<PathBuf>,
     #[command(subcommand)]
     pub command: Option<Command>,
 }
@@ -88,6 +92,12 @@ pub enum Command {
 
 pub async fn execute(cli: Cli) -> Result<()> {
     let runtime = Runtime::initialize(cli.state_dir.as_deref())?;
+    if let Some(folder) = cli.folder {
+        if cli.command.is_some() {
+            bail!("a DICOM folder cannot be combined with a subcommand");
+        }
+        return crate::terminal::run_for_folder(runtime, folder).await;
+    }
     match cli.command {
         None | Some(Command::Setup) => crate::terminal::run(runtime).await,
         Some(Command::Register {
@@ -239,4 +249,26 @@ pub fn ensure_no_unexpected_args() -> Result<()> {
         bail!("process argument vector is empty");
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn accepts_a_dicom_folder_as_the_primary_command() {
+        let cli = Cli::try_parse_from(["neuro-sync", "/data/new dicoms"]).unwrap();
+        assert_eq!(cli.folder, Some(PathBuf::from("/data/new dicoms")));
+        assert!(cli.command.is_none());
+    }
+
+    #[test]
+    fn resume_remains_an_unambiguous_subcommand() {
+        let cli = Cli::try_parse_from(["neuro-sync", "resume"]).unwrap();
+        assert!(cli.folder.is_none());
+        assert!(matches!(
+            cli.command,
+            Some(Command::Resume { run_id: None })
+        ));
+    }
 }

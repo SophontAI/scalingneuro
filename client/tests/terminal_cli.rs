@@ -22,6 +22,13 @@ fn no_arguments_fail_actionably_without_a_terminal() {
 
 #[test]
 fn automation_flags_are_documented_in_command_help() {
+    let primary = Command::new(env!("CARGO_BIN_EXE_neuro-sync"))
+        .arg("--help")
+        .output()
+        .unwrap();
+    assert!(primary.status.success());
+    assert!(String::from_utf8_lossy(&primary.stdout).contains("[DICOM_FOLDER]"));
+
     let register = Command::new(env!("CARGO_BIN_EXE_neuro-sync"))
         .args(["register", "--help"])
         .output()
@@ -35,4 +42,29 @@ fn automation_flags_are_documented_in_command_help() {
         .unwrap();
     assert!(upload.status.success());
     assert!(String::from_utf8_lossy(&upload.stdout).contains("--confirm-authorized"));
+}
+
+#[test]
+fn direct_folder_argument_enters_the_terminal_flow() {
+    let directory = tempdir().unwrap();
+    let state = directory.path().join("state");
+    let dicoms = directory.path().join("new dicoms");
+    std::fs::create_dir(&dicoms).unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_neuro-sync"))
+        .args([
+            "--state-dir",
+            state.to_str().unwrap(),
+            dicoms.to_str().unwrap(),
+        ])
+        .stdin(Stdio::null())
+        .output()
+        .unwrap();
+
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("interactive setup needs a terminal"),
+        "{stderr}"
+    );
+    assert!(!stderr.contains("unrecognized subcommand"), "{stderr}");
 }

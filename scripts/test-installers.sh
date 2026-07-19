@@ -74,7 +74,7 @@ HOME_DIR="$TEST_ROOT/home"
 mkdir -p "$HOME_DIR"
 install_output=$(HOME="$HOME_DIR" SHELL=/bin/bash PATH=/usr/bin:/bin sh "$OUTPUT/install.sh")
 printf '%s\n' "$install_output" | grep -F 'Installation complete. Find or copy your DICOM folder path, then run:' >/dev/null
-printf '%s\n' "$install_output" | grep -F "  $HOME_DIR/.local/bin/neuro-sync" >/dev/null
+printf '%s\n' "$install_output" | grep -F "  $HOME_DIR/.local/bin/neuro-sync /path/to/dicom-export" >/dev/null
 
 test -x "$HOME_DIR/.local/bin/neuro-sync"
 test -x "$HOME_DIR/.local/share/neuro-sync/versions/$VERSION/neuro-sync"

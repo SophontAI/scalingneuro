@@ -38,6 +38,9 @@ try {
   if (-not $renderedInstaller.Contains("Installation complete. Find or copy your DICOM folder path, then run:")) {
     throw "installer is missing the explicit next-step message"
   }
+  if (-not $renderedInstaller.Contains('neuro-sync "C:\path\to\dicom-export"')) {
+    throw "installer is missing the direct folder command"
+  }
 
   $env:NEURO_SYNC_INSTALL_ROOT = Join-Path $testRoot "install"
   $env:NEURO_SYNC_BIN_DIR = Join-Path $env:NEURO_SYNC_INSTALL_ROOT "bin"

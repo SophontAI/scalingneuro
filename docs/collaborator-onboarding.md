@@ -34,18 +34,21 @@ Both scripts are readable at those URLs before use and do not send installer tel
 ## Guided terminal flow
 
 1. After installation, find or copy the top-level DICOM export-folder path. The installer has returned control to the shell and has not started setup.
-2. Run the exact command printed by the installer. On first launch, answer the short lab-registration prompts and review the functional-EPI contribution policy summary shown in the terminal. No browser or web form is opened.
-3. Type, paste, or drag the export-folder path into the terminal and confirm that the scans are approved for the displayed project and policy.
+2. Run `neuro-sync /path/to/dicom-export`, using the exact path you found or copied. On first launch, answer the short lab-registration prompts and review the functional-EPI contribution policy summary shown in the terminal. No browser or web form is opened.
+3. Confirm that the already-selected folder is approved for the displayed project and policy.
 4. Leave the command running. Large or multi-subject folders are split automatically into sequential, independently committed one-subject sessions. If the connection or process is interrupted, run `neuro-sync resume`; compatible prepared work is checkpointed locally.
 5. Wait for status `committed`. Save the run report for the study record. It contains pseudonymous IDs, counts, hashes, QC codes, and held/excluded reasons—never patient names or raw DICOM values.
 
 The source folder is read-only. DICOMs are neither modified nor uploaded. Only accepted functional EPI NIfTI/JSON bundles leave the machine. Structural scans, DWI, ASL, fieldmaps, SBRefs, localizers, derived images, and uncertain series stay local.
 
-## Explicit command flow
+## Command flow
 
-The guided and explicit terminal flows use the same private state database and resume logic.
+The direct folder command, guided fallback, and explicit automation commands use the same private state database and resume logic.
 
 ```bash
+neuro-sync /path/to/dicom-export
+
+# Optional managed registration and backward-compatible upload form:
 neuro-sync register --email researcher@example.edu --name "Researcher Name" \
   --institution "Example University" --lab "Example Neuroimaging Lab" --accept-policy
 neuro-sync upload /path/to/dicom-export
@@ -71,7 +74,7 @@ neuro-sync report RUN_ID --json
 neuro-sync upload /path/to/dicom-export --confirm-authorized
 ```
 
-Running `neuro-sync` with no arguments starts the complete guided flow in the current terminal. It does not start a local web server or require a graphical session.
+Running `neuro-sync` with no arguments starts the complete guided fallback in the current terminal and prompts for the folder. It does not start a local web server or require a graphical session.
 
 During a large or network-mounted export, the client prints live file, DICOM, series, conversion, multipart-transfer, and server archive-verification progress. Final verification is checkpointed per NIfTI/sidecar pair; an interruption resumes from the last verified pair without retransmitting completed files. `Ctrl+C` is safe during local validation: no data reaches R2 until a privacy-checked bundle has been prepared, and interrupted work can be continued with `neuro-sync resume`.
 

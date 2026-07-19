@@ -76,7 +76,7 @@ try {
   Write-Host "Location: $binDir"
   Write-Host ""
   Write-Host "Installation complete. Find or copy your DICOM folder path, then run:"
-  Write-Host "  neuro-sync"
+  Write-Host '  neuro-sync "C:\path\to\dicom-export"'
 } finally {
   if (Test-Path $tempRoot) { Remove-Item -Recurse -Force $tempRoot }
 }

@@ -1,14 +1,14 @@
 # Scaling Neuro
 
-Scaling Neuro is a privacy-first ingestion path for building a scientifically usable, acquisition-space functional MRI archive. The current `0.2.5` open beta is a working EPI-only system: a researcher installs with one terminal command, registers their lab once, enters a folder of newly exported DICOMs, and lets the client classify, convert, quality-check, resume, and commit eligible scans to Cloudflare R2.
+Scaling Neuro is a privacy-first ingestion path for building a scientifically usable, acquisition-space functional MRI archive. The current `0.2.6` open beta is a working EPI-only system: a researcher installs with one terminal command, registers their lab once, points the client at a folder of newly exported DICOMs, and lets it classify, convert, quality-check, resume, and commit eligible scans to Cloudflare R2.
 
 This is no longer a static workflow mockup. The repository contains the cross-platform Rust client, Cloudflare control plane, D1 migrations, R2 multipart transport, strict public schemas, release automation, and the Scaling Neuro site. Self-service registration is open to any lab; the tool is not a clinical device or a substitute for IRB, consent, or data-use review.
 
 ## Researcher experience
 
 1. Paste the installer shown at [scalingneuro.com/downloads](https://scalingneuro.com/downloads/) into Terminal or PowerShell. It selects the correct release, verifies its pinned SHA-256, installs under the user’s home/application-data directory, adds `neuro-sync` to the user PATH, and returns control to the shell without launching setup.
-2. Find or copy the top-level DICOM export-folder path. When ready, run the exact `neuro-sync` command printed by the installer.
-3. Answer the one-time lab-registration prompts, review the policy summary, confirm authorization, and type, paste, or drag in the folder path. No browser or web form is opened.
+2. Find or copy the top-level DICOM export-folder path. When ready, run `neuro-sync /path/to/dicom-export` as printed by the installer.
+3. On the first run only, answer the lab-registration prompts and review the policy summary, then confirm authorization for the folder already supplied. No browser or web form is opened.
 4. Leave the command running. If the network drops or the process closes, run `neuro-sync resume`; completed work is checkpointed locally.
 
 Researchers do not install Python, Docker, FSL, an AWS CLI, or Cloudflare credentials. The terminal installer fetches the complete release bundle, including the pinned multi-vendor `dcm2niix v1.0.20260416` converter under `libexec/`.
@@ -54,14 +54,17 @@ Scientific identity uses the uncompressed NIfTI SHA-256, not a multipart ETag or
 
 ## Command line
 
-Running `neuro-sync` with no arguments starts the guided terminal flow. Explicit subcommands support managed and automated deployments.
+The primary command takes the DICOM folder directly. Running `neuro-sync` with no arguments remains a guided fallback; explicit subcommands support managed and automated deployments.
 
 ```bash
-# Register once. The default server is https://scalingneuro.com.
+# Normal interactive use. First use registers the workstation in this terminal.
+neuro-sync /path/to/dicom-export
+
+# Optional explicit registration for managed environments.
 neuro-sync register --email researcher@example.edu --name "Researcher Name" \
   --institution "Example University" --lab "Example Neuroimaging Lab" --accept-policy
 
-# Validate, convert, and upload one exported folder.
+# Backward-compatible explicit upload form.
 neuro-sync upload /path/to/dicom-export
 
 # Non-interactive upload after the lab has independently confirmed authorization.

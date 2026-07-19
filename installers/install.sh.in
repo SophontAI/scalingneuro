@@ -132,4 +132,4 @@ printf '\nInstalled and verified neuro-sync %s.\n' "$VERSION"
 printf 'Location: %s\n' "$version_dir"
 test -z "$path_note" || printf '%s\n' "$path_note"
 printf '\nInstallation complete. Find or copy your DICOM folder path, then run:\n'
-printf '  %s/neuro-sync\n' "$bin_dir"
+printf '  %s/neuro-sync /path/to/dicom-export\n' "$bin_dir"

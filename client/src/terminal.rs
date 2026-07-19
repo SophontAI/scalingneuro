@@ -14,6 +14,20 @@ use crate::{
 const POLICY_SUMMARY: &str = "This beta accepts only confidently identified functional 4D EPI. Source DICOMs and structural, diffusion, ASL, field-map, reference, derived, or uncertain series stay local.\nUploaded bundles contain native-space NIfTI voxels, an allowlisted acquisition-metadata sidecar, site-scoped pseudonyms, QC/provenance, and hashes. Direct identifiers, dates, DICOM UIDs, institution/station/operator fields, source names and paths, free text, and private-tag dumps are prohibited.\nYou must be authorized by your institution to contribute the selected scans for research storage, validation, preservation, scientific analysis, and governed sharing. This confirmation does not replace participant consent, IRB review, a data-use agreement, or institutional review. Scaling Neuro may validate, deduplicate, quarantine, preserve, and analyze accepted bundles. A lab may request device revocation or upload withdrawal through admin@sophont.med using the pseudonymous upload ID in its local report.";
 
 pub async fn run(runtime: Runtime) -> Result<()> {
+    run_for_optional_folder(runtime, None).await
+}
+
+pub async fn run_for_folder(runtime: Runtime, folder: PathBuf) -> Result<()> {
+    let folder = folder
+        .canonicalize()
+        .with_context(|| format!("could not open selected folder: {}", folder.display()))?;
+    if !folder.is_dir() {
+        bail!("selected source is not a folder");
+    }
+    run_for_optional_folder(runtime, Some(folder)).await
+}
+
+async fn run_for_optional_folder(runtime: Runtime, folder: Option<PathBuf>) -> Result<()> {
     if !io::stdin().is_terminal() || !io::stdout().is_terminal() {
         bail!(
             "interactive setup needs a terminal. Run neuro-sync in a terminal, or use `neuro-sync register --help` and `neuro-sync upload --help` for non-interactive operation"
@@ -22,7 +36,7 @@ pub async fn run(runtime: Runtime) -> Result<()> {
 
     let mut input = BufReader::new(io::stdin());
     let mut output = io::stdout();
-    run_with_io(runtime, &mut input, &mut output, DEFAULT_API_URL).await
+    run_with_io(runtime, &mut input, &mut output, DEFAULT_API_URL, folder).await
 }
 
 async fn run_with_io(
@@ -30,6 +44,7 @@ async fn run_with_io(
     input: &mut impl BufRead,
     output: &mut impl Write,
     api_url: &str,
+    selected_folder: Option<PathBuf>,
 ) -> Result<()> {
     writeln!(output, "Scaling Neuro · functional EPI contribution")?;
     writeln!(output, "No browser is needed or opened.\n")?;
@@ -51,7 +66,10 @@ async fn run_with_io(
         config.consent_policy_version
     )?;
 
-    let folder = prompt_folder(input, output)?;
+    let folder = match selected_folder {
+        Some(folder) => folder,
+        None => prompt_folder(input, output)?,
+    };
     if !confirm_upload(input, output, &folder, &config.consent_policy_version)? {
         writeln!(output, "Cancelled. Nothing was uploaded.")?;
         return Ok(());
@@ -403,10 +421,7 @@ mod tests {
         std::fs::create_dir(&source).unwrap();
         let state = directory.path().join("state");
         let runtime = Runtime::initialize(Some(&state)).unwrap();
-        let responses = format!(
-            "Researcher Name\nresearcher@example.edu\nExample University\nExample Lab\n\nno\nyes\n{}\nno\n",
-            source.display()
-        );
+        let responses = "Researcher Name\nresearcher@example.edu\nExample University\nExample Lab\n\nno\nyes\nno\n";
         let mut input = responses.as_bytes();
         let mut output = Vec::new();
 
@@ -415,6 +430,7 @@ mod tests {
             &mut input,
             &mut output,
             &format!("http://{address}"),
+            Some(source.canonicalize().unwrap()),
         )
         .await
         .unwrap();
@@ -423,6 +439,7 @@ mod tests {
         assert!(output.contains("No browser is needed or opened."));
         assert!(output.contains("Registered. This workstation now has a private upload identity."));
         assert!(output.contains("Selected folder:"));
+        assert!(!output.contains("DICOM folder (type or paste"));
         assert!(output.contains("Cancelled. Nothing was uploaded."));
         assert!(ClientConfig::load(&runtime.paths).is_ok());
         server.abort();
