@@ -935,17 +935,38 @@ jobs:
             exit 1
           fi
 
-          jq -r '[.artifacts[] | [.url, .sbom_spdx_url, .sbom_cyclonedx_url][]] + [.installers[].url] | .[]' \
-            "$release_dir/latest.json" |
+          # Pages may expose the new index a few seconds before every edge has
+          # the matching immutable bytes. Retry content verification as a
+          # convergence unit instead of treating one stale edge response as a
+          # corrupt release.
+          artifacts_converged=false
+          for attempt in $(seq 1 20); do
+            downloads_ok=true
             while IFS= read -r url; do
               name=${url##*/}
-              curl --fail --location --silent --show-error \
-                --retry 5 --retry-all-errors \
-                --output "$release_dir/$name" \
-                "https://scalingneuro.com${url}?release=$EXPECTED_VERSION"
-            done
+              if ! curl --fail --location --silent --show-error \
+                   --retry 5 --retry-all-errors \
+                   --output "$release_dir/$name" \
+                   "https://scalingneuro.com${url}?release=$EXPECTED_VERSION&commit=$GITHUB_SHA&attempt=$attempt"; then
+                downloads_ok=false
+              fi
+            done < <(
+              jq -r '[.artifacts[] | [.url, .sbom_spdx_url, .sbom_cyclonedx_url][]] + [.installers[].url] | .[]' \
+                "$release_dir/latest.json"
+            )
+            if [[ "$downloads_ok" == true ]] &&
+               (cd "$release_dir" && sha256sum --check --strict SHA256SUMS >/dev/null 2>&1); then
+              artifacts_converged=true
+              break
+            fi
+            sleep 5
+          done
+          if [[ "$artifacts_converged" != true ]]; then
+            echo "Production release bytes did not converge" >&2
+            (cd "$release_dir" && sha256sum --check --strict SHA256SUMS) >&2 || true
+            exit 1
+          fi
 
-          (cd "$release_dir" && sha256sum --check --strict SHA256SUMS)
           jq -r '.artifacts[] | [.url, .sha256] | @tsv' "$release_dir/latest.json" |
             while IFS=$'\t' read -r url expected_sha; do
               name=${url##*/}
