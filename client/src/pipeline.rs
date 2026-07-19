@@ -280,33 +280,36 @@ impl Runtime {
         if let Some(completed) = self
             .state
             .completed_run_for_source(&canonical_source, dry_run)?
-            && completed_run_matches_config(&completed, &config)
-            && let Some(previous) = self.state.source_fingerprint(&completed.id)?
         {
-            tracing::info!(
-                files = previous.file_count,
-                "Checking whether this folder changed since its completed sync"
-            );
-            let current_snapshot = snapshot_source_with_progress(&canonical_source, |progress| {
-                tracing::info!(
-                    files_checked = progress.files_seen,
-                    "Completed folder comparison progress"
-                );
-            })?;
-            let current = current_snapshot.fingerprint(&canonical_source)?;
-            if current == previous {
-                tracing::info!(
-                    run_id = %completed.id,
-                    files = current.file_count,
-                    "Folder is already fully synced; nothing will be converted or uploaded"
-                );
-                return Ok(completed.id);
+            if completed_run_matches_config(&completed, &config) {
+                if let Some(previous) = self.state.source_fingerprint(&completed.id)? {
+                    tracing::info!(
+                        files = previous.file_count,
+                        "Checking whether this folder changed since its completed sync"
+                    );
+                    let current_snapshot =
+                        snapshot_source_with_progress(&canonical_source, |progress| {
+                            tracing::info!(
+                                files_checked = progress.files_seen,
+                                "Completed folder comparison progress"
+                            );
+                        })?;
+                    let current = current_snapshot.fingerprint(&canonical_source)?;
+                    if current == previous {
+                        tracing::info!(
+                            run_id = %completed.id,
+                            files = current.file_count,
+                            "Folder is already fully synced; nothing will be converted or uploaded"
+                        );
+                        return Ok(completed.id);
+                    }
+                    tracing::info!(
+                        previous_files = previous.file_count,
+                        current_files = current.file_count,
+                        "Folder contents changed; checking the current export for new eligible scans"
+                    );
+                }
             }
-            tracing::info!(
-                previous_files = previous.file_count,
-                current_files = current.file_count,
-                "Folder contents changed; checking the current export for new eligible scans"
-            );
         }
 
         let run_id = Uuid::new_v4().to_string();
