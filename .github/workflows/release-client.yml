@@ -525,6 +525,8 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+    outputs:
+      draft_release_id: ${{ steps.create_draft_release.outputs.id }}
     steps:
       - name: Check out source
         uses: actions/checkout@v6
@@ -646,6 +648,7 @@ jobs:
           if-no-files-found: error
 
       - name: Create private draft GitHub release
+        id: create_draft_release
         if: github.ref_type == 'tag' || inputs.publish_release == true
         uses: softprops/action-gh-release@v2
         with:
@@ -1098,20 +1101,25 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           VERSION: ${{ needs.metadata.outputs.version }}
           PRERELEASE: ${{ github.event_name == 'workflow_dispatch' && inputs.prerelease || contains(needs.metadata.outputs.version, '-') }}
+          RELEASE_ID: ${{ needs.assemble.outputs.draft_release_id }}
         shell: bash
         run: |
           set -euo pipefail
           tag="client-v${VERSION}"
-          release=$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${tag}")
-          release_id=$(jq -r '.id' <<<"$release")
-          draft=$(jq -r '.draft' <<<"$release")
+          if [[ ! "$RELEASE_ID" =~ ^[1-9][0-9]*$ ]]; then
+            echo "Draft release action returned an unsafe release ID" >&2
+            exit 1
+          fi
+          release=$(gh api "repos/${GITHUB_REPOSITORY}/releases/${RELEASE_ID}")
           release_sha=$(gh api "repos/${GITHUB_REPOSITORY}/commits/${tag}" --jq '.sha')
-          if [[ "$draft" != true || "$release_sha" != "$GITHUB_SHA" ]]; then
+          if ! jq --exit-status --arg tag "$tag" --arg id "$RELEASE_ID" '
+              .draft == true and .tag_name == $tag and (.id | tostring) == $id
+            ' <<<"$release" >/dev/null || [[ "$release_sha" != "$GITHUB_SHA" ]]; then
             echo "Refusing to publish a non-draft or source-mismatched release" >&2
             exit 1
           fi
           echo "eligible_draft=true" >> "$GITHUB_OUTPUT"
-          gh api --method PATCH "repos/${GITHUB_REPOSITORY}/releases/${release_id}" \
+          gh api --method PATCH "repos/${GITHUB_REPOSITORY}/releases/${RELEASE_ID}" \
             -F draft=false \
             -F prerelease="$PRERELEASE" >/dev/null
 
@@ -1119,6 +1127,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           VERSION: ${{ needs.metadata.outputs.version }}
+          RELEASE_ID: ${{ needs.assemble.outputs.draft_release_id }}
         shell: bash
         run: |
           set -euo pipefail
@@ -1126,7 +1135,8 @@ jobs:
           release=$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${tag}")
           jq --exit-status \
             --arg tag "$tag" \
-            '.draft == false and .tag_name == $tag and
+            --arg id "$RELEASE_ID" \
+            '.draft == false and .tag_name == $tag and (.id | tostring) == $id and
              any(.assets[]; .name == "latest.json") and
              any(.assets[]; .name == "SHA256SUMS")' <<<"$release" >/dev/null
           [[ "$(gh api "repos/${GITHUB_REPOSITORY}/commits/${tag}" --jq '.sha')" == "$GITHUB_SHA" ]]
@@ -1138,6 +1148,7 @@ jobs:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           GH_TOKEN: ${{ github.token }}
           VERSION: ${{ needs.metadata.outputs.version }}
+          RELEASE_ID: ${{ needs.assemble.outputs.draft_release_id }}
           RELEASE_WAS_ELIGIBLE: ${{ steps.publish_github_release.outputs.eligible_draft }}
         shell: bash
         run: |
@@ -1146,13 +1157,17 @@ jobs:
 
           if [[ "$RELEASE_WAS_ELIGIBLE" == true ]]; then
             tag="client-v${VERSION}"
-            release=$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${tag}" || true)
+            release=$(gh api "repos/${GITHUB_REPOSITORY}/releases/${RELEASE_ID}" || true)
             if [[ -z "$release" ]]; then
               echo "Could not determine whether the candidate GitHub release became public" >&2
               recovery_failed=true
+            elif ! jq --exit-status --arg tag "$tag" --arg id "$RELEASE_ID" '
+                .tag_name == $tag and (.id | tostring) == $id
+              ' <<<"$release" >/dev/null; then
+              echo "Candidate GitHub release identity changed during rollback" >&2
+              recovery_failed=true
             elif [[ $(jq -r '.draft' <<<"$release") == false ]]; then
-              release_id=$(jq -r '.id' <<<"$release")
-              if ! gh api --method PATCH "repos/${GITHUB_REPOSITORY}/releases/${release_id}" \
+              if ! gh api --method PATCH "repos/${GITHUB_REPOSITORY}/releases/${RELEASE_ID}" \
                 -F draft=true >/dev/null; then
                 echo "Failed to return the GitHub release to draft state" >&2
                 recovery_failed=true

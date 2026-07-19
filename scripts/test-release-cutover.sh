@@ -76,6 +76,23 @@ grep -qF 'fixture=$(find release-smoke -type d -path '\''*/derived-fixtures/siem
 # shellcheck disable=SC2016
 grep -qF 'if: ${{ failure() && steps.previous_production.outputs.deployment_id !=' "$WORKFLOW"
 grep -qF './scripts/rollback-pages-production.sh' "$WORKFLOW"
+# The creation action exposes the only safe identity for a private draft. GitHub's
+# public get-by-tag endpoint cannot resolve that draft until after publication.
+# These are intentionally literal workflow expressions and shell variables.
+# shellcheck disable=SC2016
+grep -qF 'draft_release_id: ${{ steps.create_draft_release.outputs.id }}' "$WORKFLOW"
+# shellcheck disable=SC2016
+grep -qF 'RELEASE_ID: ${{ needs.assemble.outputs.draft_release_id }}' "$WORKFLOW"
+# shellcheck disable=SC2016
+if [[ $(grep -cF 'releases/tags/${tag}' "$WORKFLOW") -ne 1 ]]; then
+  echo "Get-by-tag must be used only after the draft has been published" >&2
+  exit 1
+fi
+# shellcheck disable=SC2016
+if [[ $(grep -cF 'releases/${RELEASE_ID}' "$WORKFLOW") -ne 4 ]]; then
+  echo "Draft publication and rollback must remain bound to the creation action release ID" >&2
+  exit 1
+fi
 
 if grep -q '^  publish-release:' "$WORKFLOW"; then
   echo "GitHub publication must remain inside the rollback-protected cutover job" >&2
