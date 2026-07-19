@@ -7,6 +7,7 @@ import json
 from pathlib import Path
 import tempfile
 from threading import Event, Thread
+from typing import Literal
 import unittest
 
 from scaling_neuro_processor.api import ControlPlane
@@ -164,13 +165,19 @@ def descriptor(server: ThreadingHTTPServer, path: str, raw: bytes, **extra) -> d
 
 class FakeServerIntegrationTests(unittest.TestCase):
     def config(
-        self, root: Path, server: ThreadingHTTPServer, converter: Path
+        self,
+        root: Path,
+        server: ThreadingHTTPServer,
+        converter: Path,
+        *,
+        claim_input_format: Literal["dicom-series-v1", "nifti-v1"] | None = None,
     ) -> Config:
         return Config(
             api_url=f"http://127.0.0.1:{server.server_port}",
             token="processor-test-token",
             work_root=root / "work",
             processor_id="integration-test",
+            claim_input_format=claim_input_format,
             dcm2niix_bin=str(converter),
             disk_reserve_bytes=TEST_DISK_RESERVE_BYTES,
             allow_insecure_http=True,
@@ -206,7 +213,12 @@ class FakeServerIntegrationTests(unittest.TestCase):
                         **descriptor(server, "/objects/archive", archive),
                     },
                 }
-                config = self.config(root, server, converter)
+                config = self.config(
+                    root,
+                    server,
+                    converter,
+                    claim_input_format="dicom-series-v1",
+                )
                 api = ControlPlane(config, sleep=lambda _: None)
                 job = api.claim()
                 self.assertIsNotNone(job)
@@ -219,7 +231,11 @@ class FakeServerIntegrationTests(unittest.TestCase):
             )
             self.assertEqual(
                 state.claim_request,
-                {"processor_id": "integration-test", "lease_seconds": 900},
+                {
+                    "processor_id": "integration-test",
+                    "lease_seconds": 900,
+                    "claim_input_format": "dicom-series-v1",
+                },
             )
             self.assertTrue(
                 state.complete_request["validation"]["archive_sha256_verified"]
@@ -329,6 +345,10 @@ class FakeServerIntegrationTests(unittest.TestCase):
 
             self.assertEqual(state.uploaded, {})
             self.assertEqual(state.complete_request["outputs"], [])
+            self.assertEqual(
+                state.claim_request,
+                {"processor_id": "integration-test", "lease_seconds": 900},
+            )
             self.assertEqual(
                 state.complete_request["validation"],
                 {

@@ -276,7 +276,11 @@ describe("DICOM receipt and processing queue", () => {
     const firstResponse = await call(
       "POST",
       "/v1/processor/jobs/claim",
-      { processor_id: "claim-replay-consumer", lease_seconds: 900 },
+      {
+        processor_id: "claim-replay-consumer",
+        lease_seconds: 900,
+        claim_input_format: "dicom-series-v1",
+      },
       PROCESSOR_TOKEN,
     );
     expect(firstResponse.status).toBe(200);
@@ -288,12 +292,43 @@ describe("DICOM receipt and processing queue", () => {
     }>();
     expect(first.schema_version).toBe("1.0.0");
 
+    await env.DB.prepare(
+      `UPDATE processing_jobs SET input_format = 'nifti-v1'
+       WHERE status = 'queued'`,
+    ).run();
+
+    const mismatchedReplay = await call(
+      "POST",
+      "/v1/processor/jobs/claim",
+      {
+        processor_id: "claim-replay-consumer",
+        lease_seconds: 900,
+        claim_input_format: "nifti-v1",
+      },
+      PROCESSOR_TOKEN,
+    );
+    expect(mismatchedReplay.status).toBe(204);
+    expect(
+      await env.DB.prepare(
+        "SELECT COUNT(*) AS count FROM processing_jobs WHERE status = 'processing'",
+      ).first<number>("count"),
+    ).toBe(1);
+    expect(
+      await env.DB.prepare(
+        "SELECT COUNT(*) AS count FROM processing_jobs WHERE status = 'queued' AND input_format = 'nifti-v1'",
+      ).first<number>("count"),
+    ).toBe(1);
+
     // Model a response that was committed by D1 but never reached the
     // processor. Its automatic POST retry must return the same active lease.
     const replayResponse = await call(
       "POST",
       "/v1/processor/jobs/claim",
-      { processor_id: "claim-replay-consumer", lease_seconds: 900 },
+      {
+        processor_id: "claim-replay-consumer",
+        lease_seconds: 900,
+        claim_input_format: "dicom-series-v1",
+      },
       PROCESSOR_TOKEN,
     );
     expect(replayResponse.status).toBe(200);
@@ -318,6 +353,11 @@ describe("DICOM receipt and processing queue", () => {
       ).first<number>("count"),
     ).toBe(1);
 
+    await env.DB.prepare(
+      `UPDATE processing_jobs SET input_format = 'dicom-series-v1'
+       WHERE status = 'queued'`,
+    ).run();
+
     const otherResponse = await call(
       "POST",
       "/v1/processor/jobs/claim",
@@ -328,6 +368,58 @@ describe("DICOM receipt and processing queue", () => {
     const other = await otherResponse.json<{ job_id: string; attempt: number }>();
     expect(other.job_id).not.toBe(first.job_id);
     expect(other.attempt).toBe(1);
+  });
+
+  it("atomically limits a processor identity to one active lease", async () => {
+    const { token } = await enrolledDevice();
+    const received = await receiveSmallDicomUpload(token, [
+      "a".repeat(24),
+      "b".repeat(24),
+    ]);
+    const responses = await Promise.all(
+      Array.from({ length: 2 }, () =>
+        call(
+          "POST",
+          "/v1/processor/jobs/claim",
+          {
+            processor_id: "concurrent-same-consumer",
+            lease_seconds: 900,
+            claim_input_format: "dicom-series-v1",
+          },
+          PROCESSOR_TOKEN,
+        ),
+      ),
+    );
+    const claims: Array<{ job_id: string; lease_token: string }> = [];
+    for (const response of responses) {
+      expect([200, 204]).toContain(response.status);
+      if (response.status === 200) {
+        claims.push(
+          await response.json<{ job_id: string; lease_token: string }>(),
+        );
+      }
+    }
+    expect(claims.length).toBeGreaterThanOrEqual(1);
+    expect(
+      new Set(claims.map((claim) => `${claim.job_id}:${claim.lease_token}`)).size,
+    ).toBe(1);
+    expect(
+      await env.DB.prepare(
+        "SELECT COUNT(*) AS count FROM processing_jobs WHERE upload_id = ?1 AND status = 'processing'",
+      )
+        .bind(received.uploadId)
+        .first<number>("count"),
+    ).toBe(1);
+    expect(
+      await env.DB.prepare(
+        "SELECT COUNT(*) AS count FROM processing_jobs WHERE upload_id = ?1 AND status = 'queued'",
+      )
+        .bind(received.uploadId)
+        .first<number>("count"),
+    ).toBe(1);
+    await env.DB.prepare("DELETE FROM processing_jobs WHERE upload_id = ?1")
+      .bind(received.uploadId)
+      .run();
   });
 
   it("claims new raw DICOM work before an older legacy migration backlog", async () => {
@@ -368,6 +460,38 @@ describe("DICOM receipt and processing queue", () => {
     ).toBe("queued");
     await env.DB.prepare("DELETE FROM processing_jobs WHERE id = ?1")
       .bind(legacyJobId)
+      .run();
+  });
+
+  it("returns no work to a raw-only consumer when only legacy work is queued", async () => {
+    const { token } = await enrolledDevice();
+    const received = await receiveSmallDicomUpload(token, ["d".repeat(24)]);
+    await env.DB.prepare(
+      "UPDATE processing_jobs SET input_format = 'nifti-v1' WHERE upload_id = ?1",
+    )
+      .bind(received.uploadId)
+      .run();
+
+    const claimResponse = await call(
+      "POST",
+      "/v1/processor/jobs/claim",
+      {
+        processor_id: "raw-only-consumer",
+        lease_seconds: 900,
+        claim_input_format: "dicom-series-v1",
+      },
+      PROCESSOR_TOKEN,
+    );
+    expect(claimResponse.status).toBe(204);
+    expect(
+      await env.DB.prepare(
+        "SELECT status FROM processing_jobs WHERE upload_id = ?1",
+      )
+        .bind(received.uploadId)
+        .first<string>("status"),
+    ).toBe("queued");
+    await env.DB.prepare("DELETE FROM processing_jobs WHERE upload_id = ?1")
+      .bind(received.uploadId)
       .run();
   });
 

@@ -8,6 +8,7 @@ import re
 import secrets
 import socket
 import stat as stat_module
+from typing import Literal
 from urllib.parse import urlsplit
 
 from .errors import ProcessorError
@@ -52,9 +53,11 @@ class Config:
     token: str
     work_root: Path
     processor_id: str
+    claim_input_format: Literal["dicom-series-v1", "nifti-v1"] | None = None
     dcm2niix_bin: str = "dcm2niix"
     native_tools_slurm_image: Path | None = None
     slurm_srun_bin: str = "/opt/slurm/bin/srun"
+    slurm_job_id: str | None = None
     enroot_runtime_root: Path = field(default_factory=default_enroot_runtime_root)
     zstd_bin: str = "zstd"
     lease_seconds: int = 900
@@ -91,6 +94,12 @@ class Config:
             r"[A-Za-z0-9][A-Za-z0-9._:-]{0,95}", self.processor_id
         ):
             raise ProcessorError("PROCESSOR_ID_INVALID", retryable=False)
+        if self.claim_input_format not in {
+            None,
+            "dicom-series-v1",
+            "nifti-v1",
+        }:
+            raise ProcessorError("CLAIM_INPUT_FORMAT_INVALID", retryable=False)
         if not (300 <= self.lease_seconds <= 3600):
             raise ProcessorError("LEASE_CONFIGURATION_INVALID", retryable=False)
         if not (10 <= self.heartbeat_seconds < self.lease_seconds // 2):
@@ -107,15 +116,20 @@ class Config:
             or self.inode_reserve < 128
         ):
             raise ProcessorError("ARCHIVE_LIMIT_INVALID", retryable=False)
-        if self.native_tools_slurm_image is not None and (
-            not self.native_tools_slurm_image.is_absolute()
-            or not Path(self.slurm_srun_bin).is_absolute()
-            or not self.enroot_runtime_root.is_absolute()
-            or any(
-                character in str(self.native_tools_slurm_image)
-                for character in ",:\r\n"
+        if self.native_tools_slurm_image is None:
+            sandbox_configuration_invalid = self.slurm_job_id is not None
+        else:
+            sandbox_configuration_invalid = bool(
+                not self.native_tools_slurm_image.is_absolute()
+                or not Path(self.slurm_srun_bin).is_absolute()
+                or not self.enroot_runtime_root.is_absolute()
+                or not re.fullmatch(r"[1-9][0-9]{0,19}", self.slurm_job_id or "")
+                or any(
+                    character in str(self.native_tools_slurm_image)
+                    for character in ",:\r\n"
+                )
             )
-        ):
+        if sandbox_configuration_invalid:
             raise ProcessorError(
                 "CONVERTER_SANDBOX_CONFIGURATION_INVALID", retryable=False
             )

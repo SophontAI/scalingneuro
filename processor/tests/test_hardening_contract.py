@@ -24,7 +24,12 @@ from scaling_neuro_processor.archive import (
 )
 from scaling_neuro_processor.config import Config
 from scaling_neuro_processor.dicom_privacy import audit_dicom
-from scaling_neuro_processor.errors import CapacityFailure, InvalidArchive, InvalidJob
+from scaling_neuro_processor.errors import (
+    CapacityFailure,
+    InvalidArchive,
+    InvalidJob,
+    ProcessorError,
+)
 from scaling_neuro_processor.models import DicomInput, Download, Job
 from scaling_neuro_processor.pipeline import (
     CONVERSION_WORKING_SET_FACTOR,
@@ -137,6 +142,41 @@ class ProcessorContractTests(unittest.TestCase):
         claim["input"]["dicom_count"] = 500_001
         with self.assertRaises(InvalidJob):
             Job.from_json(claim)
+
+    def test_claim_input_format_is_exact_and_optional(self) -> None:
+        self.assertIsNone(self.config.claim_input_format)
+        for value in ("dicom-series-v1", "nifti-v1"):
+            with self.subTest(value=value):
+                config = Config(
+                    api_url="http://127.0.0.1",
+                    token="test",
+                    work_root=self.root / value,
+                    processor_id="test",
+                    claim_input_format=value,  # type: ignore[arg-type]
+                    allow_insecure_http=True,
+                )
+                self.assertEqual(config.claim_input_format, value)
+        for value in ("dicom", "DICOM-SERIES-V1", ""):
+            with self.subTest(value=value):
+                with self.assertRaisesRegex(
+                    ProcessorError, "CLAIM_INPUT_FORMAT_INVALID"
+                ):
+                    Config(
+                        api_url="http://127.0.0.1",
+                        token="test",
+                        work_root=self.root / "invalid",
+                        processor_id="test",
+                        claim_input_format=value,  # type: ignore[arg-type]
+                        allow_insecure_http=True,
+                    )
+
+    def test_native_launch_consumer_is_raw_dicom_only(self) -> None:
+        runner = (
+            Path(__file__).resolve().parents[1]
+            / "slurm"
+            / "run-processor-native.sbatch"
+        ).read_text(encoding="utf-8")
+        self.assertEqual(runner.count("--claim-input-format dicom-series-v1"), 1)
 
     def test_archive_resource_contract_has_exact_release_limits(self) -> None:
         self.assertEqual(MAX_DICOM_INSTANCES, 500_000)

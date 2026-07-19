@@ -39,6 +39,35 @@ class NativeDeploymentContractTests(unittest.TestCase):
         self.assertNotIn('os.environ["SLURM_', sandbox)
         self.assertNotIn("config.token", sandbox)
 
+    def test_native_runner_passes_parent_allocation_explicitly(self) -> None:
+        runner = (PROCESSOR_ROOT / "slurm" / "run-processor-native.sbatch").read_text(
+            encoding="utf-8"
+        )
+        sandbox = (PROCESSOR_ROOT / "scaling_neuro_processor" / "sandbox.py").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn('--slurm-job-id "$SLURM_JOB_ID"', runner)
+        self.assertIn('f"--jobid={job_id}"', sandbox)
+
+    def test_installer_version_probes_remain_in_parent_allocation(self) -> None:
+        installer = (
+            PROCESSOR_ROOT / "scripts" / "install-native-on-compute.sh"
+        ).read_text(encoding="utf-8")
+        self.assertRegex(
+            installer,
+            r'validate_sandbox_version \\\n\s+"\$release" \\\n\s+dcm2niix',
+        )
+        self.assertRegex(
+            installer,
+            r'validate_sandbox_version \\\n\s+"\$release" \\\n\s+zstd',
+        )
+        self.assertIn('--jobid="$SLURM_JOB_ID"', installer)
+        self.assertIn(
+            '"sandboxed $tool_name version probe returned $actual_status; '
+            'expected $expected_status"',
+            installer,
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

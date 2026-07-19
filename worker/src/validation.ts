@@ -124,6 +124,7 @@ export interface SignPartRequest {
 export interface ProcessorClaimRequest {
   processor_id: string;
   lease_seconds: number;
+  claim_input_format?: "dicom-series-v1" | "nifti-v1";
 }
 
 export type ProcessorOutputKind =
@@ -847,13 +848,28 @@ export function parseProcessorClaimRequest(
   value: unknown,
 ): ProcessorClaimRequest {
   const input = record(value, "request");
-  exactKeys(input, ["processor_id", "lease_seconds"], [], "request");
+  exactKeys(
+    input,
+    ["processor_id", "lease_seconds"],
+    ["claim_input_format"],
+    "request",
+  );
+  if (
+    input.claim_input_format !== undefined &&
+    input.claim_input_format !== "dicom-series-v1" &&
+    input.claim_input_format !== "nifti-v1"
+  ) {
+    invalid("claim_input_format must be dicom-series-v1 or nifti-v1");
+  }
   return {
     processor_id: text(input.processor_id, "processor_id", {
       max: 96,
       pattern: PROCESSOR_ID,
     }),
     lease_seconds: integer(input.lease_seconds, "lease_seconds", 60, 3600),
+    ...(input.claim_input_format === undefined
+      ? {}
+      : { claim_input_format: input.claim_input_format }),
   };
 }
 

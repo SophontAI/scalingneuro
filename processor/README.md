@@ -33,11 +33,16 @@ Every API request uses `Authorization: Bearer PROCESSOR_API_TOKEN`. Object GET/P
 ```json
 {
   "processor_id": "slurm-12345-0",
-  "lease_seconds": 900
+  "lease_seconds": 900,
+  "claim_input_format": "dicom-series-v1"
 }
 ```
 
-No work returns `204`. A DICOM claim returns:
+`claim_input_format` is optional for backward compatibility and accepts only
+the exact values `dicom-series-v1` or `nifti-v1`. When present, no eligible job
+of that format returns `204` even if another format is queued. A processor ID
+can hold only one active lease: changing its filter cannot acquire a second job,
+and an exact same-filter retry replays the first lease. A DICOM claim returns:
 
 ```json
 {
@@ -136,7 +141,7 @@ processor/scripts/submit-native-consumer.sh \
   /data/paul/scaling-neuro/secrets/processor-token
 ```
 
-The job polls continuously (`--idle-exit-after 0`), requests the `c` partition's infinite time limit (`--time=0`), receives a preemption warning two minutes early, and relies on Slurm `--requeue`. Multiple identical consumers are safe: the Worker's lease token makes claims exclusive. Scale with additional jobs only when queue depth warrants it.
+The job polls continuously (`--idle-exit-after 0`), requests the `c` partition's infinite time limit (`--time=0`), receives a preemption warning two minutes early, and relies on Slurm `--requeue`. The production native launch is deliberately pinned to `--claim-input-format dicom-series-v1`, so the release and public raw-DICOM path cannot be captured by the one-time legacy NIfTI backlog. Multiple identical consumers are safe: the Worker's lease token makes claims exclusive. Scale with additional jobs only when queue depth warrants it.
 
 ### Whole-processor image: reproducible packaging, not parser isolation
 

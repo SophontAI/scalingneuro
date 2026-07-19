@@ -97,10 +97,11 @@ mod windows_acl {
         },
         Security::{
             CopySid, DACL_SECURITY_INFORMATION, EqualSid, GetLengthSid,
-            GetSecurityDescriptorControl, GetTokenInformation, NO_INHERITANCE,
+            GetSecurityDescriptorControl, GetTokenInformation, INHERIT_ONLY, NO_INHERITANCE,
             PROTECTED_DACL_SECURITY_INFORMATION, PSID, SE_DACL_PROTECTED,
             SUB_CONTAINERS_AND_OBJECTS_INHERIT, TOKEN_QUERY, TOKEN_USER, TokenUser,
         },
+        Storage::FileSystem::FILE_ALL_ACCESS,
         System::Threading::{GetCurrentProcess, OpenProcessToken},
     };
 
@@ -307,22 +308,60 @@ mod windows_acl {
         if entries.is_null() {
             return Err(acl_mismatch(path, "DACL contains no explicit entry"));
         }
-        if count != 1 {
-            return Err(acl_mismatch(path, "DACL contains another account"));
+        // NTFS maps generic access on the directory itself to FILE_ALL_ACCESS.
+        // For an inheritable directory ACE, Windows may additionally split the
+        // original rule into a direct self ACE and an inherit-only descendant
+        // ACE. Both normalized representations are equivalent and private.
+        let mut direct_entries = 0_u32;
+        let mut combined_entries = 0_u32;
+        let mut descendant_entries = 0_u32;
+        for index in 0..count {
+            // SAFETY: Windows returned `count` EXPLICIT_ACCESS_W entries.
+            let entry = unsafe { *entries.add(index as usize) };
+            if entry.Trustee.TrusteeForm != TRUSTEE_IS_SID
+                || entry.Trustee.ptstrName.is_null()
+                // SAFETY: both values are valid SIDs for the duration of this function.
+                || unsafe { EqualSid(entry.Trustee.ptstrName.cast(), user_sid) } == 0
+                || entry.grfAccessMode != GRANT_ACCESS
+                || !matches!(entry.grfAccessPermissions, GENERIC_ALL | FILE_ALL_ACCESS)
+            {
+                return Err(acl_mismatch(
+                    path,
+                    "DACL grants access beyond the current account",
+                ));
+            }
+            match entry.grfInheritance {
+                NO_INHERITANCE => direct_entries += 1,
+                SUB_CONTAINERS_AND_OBJECTS_INHERIT => combined_entries += 1,
+                value if value == SUB_CONTAINERS_AND_OBJECTS_INHERIT | INHERIT_ONLY => {
+                    descendant_entries += 1;
+                }
+                _ => {
+                    return Err(acl_mismatch(
+                        path,
+                        "DACL contains unexpected inheritance flags",
+                    ));
+                }
+            }
         }
-        // SAFETY: Windows returned exactly one EXPLICIT_ACCESS_W entry.
-        let entry = unsafe { *entries };
-        if entry.Trustee.TrusteeForm != TRUSTEE_IS_SID
-            || entry.Trustee.ptstrName.is_null()
-            // SAFETY: both values are valid SIDs for the duration of this function.
-            || unsafe { EqualSid(entry.Trustee.ptstrName.cast(), user_sid) } == 0
-            || entry.grfAccessPermissions != GENERIC_ALL
-            || !matches!(entry.grfAccessMode, SET_ACCESS | GRANT_ACCESS)
-            || entry.grfInheritance != inheritance
-        {
+        let exact_file_acl = inheritance == NO_INHERITANCE
+            && count == 1
+            && direct_entries == 1
+            && combined_entries == 0
+            && descendant_entries == 0;
+        let exact_directory_acl = inheritance == SUB_CONTAINERS_AND_OBJECTS_INHERIT
+            && ((count == 1
+                && direct_entries == 0
+                && combined_entries == 1
+                && descendant_entries == 0)
+                || (count == 2
+                    && direct_entries == 1
+                    && combined_entries == 0
+                    && descendant_entries == 1));
+        if !exact_file_acl && !exact_directory_acl {
             return Err(acl_mismatch(
                 path,
-                "DACL is not exactly current-account full control",
+                "DACL is not exactly current-account full control for this object",
             ));
         }
         drop(owned_entries);

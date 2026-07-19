@@ -133,7 +133,31 @@ validate_release() {
     actual_image_sha256=$(sha256sum "$release/native-tools.sqsh" | awk '{print $1}')
     test -n "$expected_image_sha256" || return 1
     test "$actual_image_sha256" = "$expected_image_sha256" || return 1
-    env -i \
+    validate_sandbox_version \
+        "$release" \
+        dcm2niix \
+        "/opt/scaling-neuro/dcm2niix" \
+        "v$DCM2NIIX_VERSION" \
+        3 || return 1
+    validate_sandbox_version \
+        "$release" \
+        zstd \
+        "/opt/scaling-neuro/zstd" \
+        "v$ZSTD_VERSION" \
+        0 || return 1
+}
+
+validate_sandbox_version() {
+    release=$1
+    tool_name=$2
+    tool_path=$3
+    expected_version=$4
+    expected_status=$5
+    output="$enroot_runtime_root/$tool_name-version.log"
+
+    # The deliberately minimal environment must not make srun forget the parent
+    # allocation. Without --jobid, Slurm creates a separate job for each probe.
+    if env -i \
         ENROOT_RESTRICT_DEV=yes \
         ENROOT_CACHE_PATH="$enroot_runtime_root/cache" \
         ENROOT_DATA_PATH="$enroot_runtime_root/data" \
@@ -146,6 +170,7 @@ validate_release() {
         TZ=UTC \
         XDG_RUNTIME_DIR="$enroot_runtime_root/runtime" \
         /opt/slurm/bin/srun \
+        --jobid="$SLURM_JOB_ID" \
         --overlap \
         --nodes=1 \
         --ntasks=1 \
@@ -155,32 +180,22 @@ validate_release() {
         --no-container-remap-root \
         --no-container-entrypoint \
         --container-workdir=/tmp \
-        /opt/scaling-neuro/dcm2niix --version 2>&1 | \
-        grep -F "v$DCM2NIIX_VERSION" >/dev/null || return 1
-    env -i \
-        ENROOT_RESTRICT_DEV=yes \
-        ENROOT_CACHE_PATH="$enroot_runtime_root/cache" \
-        ENROOT_DATA_PATH="$enroot_runtime_root/data" \
-        ENROOT_RUNTIME_PATH="$enroot_runtime_root/runtime" \
-        ENROOT_TEMP_PATH="$enroot_runtime_root/tmp" \
-        HOME=/tmp \
-        LANG=C \
-        LC_ALL=C \
-        PATH=/opt/slurm/bin:/usr/bin:/bin \
-        TZ=UTC \
-        XDG_RUNTIME_DIR="$enroot_runtime_root/runtime" \
-        /opt/slurm/bin/srun \
-        --overlap \
-        --nodes=1 \
-        --ntasks=1 \
-        --container-image="$release/native-tools.sqsh" \
-        --container-readonly \
-        --no-container-mount-home \
-        --no-container-remap-root \
-        --no-container-entrypoint \
-        --container-workdir=/tmp \
-        /opt/scaling-neuro/zstd --version 2>&1 | \
-        grep -F "v$ZSTD_VERSION" >/dev/null || return 1
+        "$tool_path" --version >"$output" 2>&1; then
+        actual_status=0
+    else
+        actual_status=$?
+    fi
+    if [ "$actual_status" -ne "$expected_status" ]; then
+        echo "sandboxed $tool_name version probe returned $actual_status; expected $expected_status" >&2
+        sed -n '1,40p' "$output" >&2
+        return 1
+    fi
+    if ! grep -F "$expected_version" "$output" >/dev/null; then
+        echo "sandboxed $tool_name did not report the pinned version $expected_version" >&2
+        sed -n '1,40p' "$output" >&2
+        return 1
+    fi
+    rm -f "$output"
 }
 
 if [ -e "$install_root" ]; then
@@ -212,6 +227,8 @@ install -d -m 700 \
     --only-binary=:all: \
     --require-hashes \
     -r "$processor_source/requirements.lock"
+
+echo "installed hash-locked Python controller dependencies"
 
 "$python_bin" - \
     "$processor_source/scaling_neuro_processor" \
@@ -282,6 +299,8 @@ Path(sys.argv[1]).unlink()
 shutil.rmtree(sys.argv[2])
 PY
 
+echo "downloaded and verified dcm2niix v$DCM2NIIX_VERSION"
+
 sandbox_root="$staging/sandbox-root"
 install -d -m 0755 \
     "$sandbox_root/bin" \
@@ -345,6 +364,8 @@ import sys
 shutil.rmtree(Path(sys.argv[1]))
 PY
 
+echo "built native converter sandbox"
+
 printf '%s\n' \
     "processor_version=$PROCESSOR_VERSION" \
     "dcm2niix_version=v$DCM2NIIX_VERSION" \
@@ -358,6 +379,7 @@ printf '%s\n' \
     "pydicom_version=3.0.1" >"$staging/RELEASE"
 chmod 0444 "$staging/RELEASE"
 
+echo "validating native processor release"
 validate_release "$staging"
 mv "$staging" "$install_root"
 validate_release "$install_root"

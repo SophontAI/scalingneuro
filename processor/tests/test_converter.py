@@ -28,6 +28,7 @@ class ConverterSandboxTests(unittest.TestCase):
             "dcm2niix_bin": "/private/release/bin/dcm2niix",
             "native_tools_slurm_image": Path("/private/release/native-tools.sqsh"),
             "slurm_srun_bin": "/opt/slurm/bin/srun",
+            "slurm_job_id": "12345",
         }
         values.update(overrides)
         return Config(**values)
@@ -37,6 +38,14 @@ class ConverterSandboxTests(unittest.TestCase):
             {"native_tools_slurm_image": Path("relative.sqsh")},
             {"native_tools_slurm_image": Path("/release/unsafe,image.sqsh")},
             {"slurm_srun_bin": "srun"},
+            {"native_tools_slurm_image": None},
+            {"slurm_job_id": None},
+            {"slurm_job_id": "0"},
+            {"slurm_job_id": "0123"},
+            {"slurm_job_id": "-1"},
+            {"slurm_job_id": " 123"},
+            {"slurm_job_id": "123_4"},
+            {"slurm_job_id": "1" * 21},
         ):
             with self.subTest(overrides=overrides):
                 with self.assertRaisesRegex(
@@ -49,6 +58,7 @@ class ConverterSandboxTests(unittest.TestCase):
         command = version_command(config)
         self.assertEqual(command[0], "/opt/slurm/bin/srun")
         for required in (
+            "--jobid=12345",
             "--overlap",
             "--nodes=1",
             "--ntasks=1",
@@ -131,7 +141,7 @@ class ConverterSandboxTests(unittest.TestCase):
                 check_version(config)
 
     def test_direct_container_command_remains_normalized(self) -> None:
-        config = self.config(native_tools_slurm_image=None)
+        config = self.config(native_tools_slurm_image=None, slurm_job_id=None)
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             dicom = root / "dicom"

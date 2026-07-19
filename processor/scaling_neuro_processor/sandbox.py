@@ -86,8 +86,12 @@ def command(
     image = config.native_tools_slurm_image
     if image is None:
         raise ValueError("native-tools sandbox is not configured")
+    job_id = config.slurm_job_id
+    if job_id is None:
+        raise ValueError("native-tools parent Slurm allocation is not configured")
     value = [
         config.slurm_srun_bin,
+        f"--jobid={job_id}",
         "--overlap",
         "--nodes=1",
         "--ntasks=1",

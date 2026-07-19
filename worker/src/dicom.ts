@@ -1524,11 +1524,17 @@ export async function claimProcessingJob(
        WHERE j.status = 'processing' AND j.processor_id = ?3
          AND j.lease_token IS NOT NULL AND j.lease_expires_at > ?2
          AND u.status = 'committed' AND u.withdrawn_at IS NULL
+         AND (?4 IS NULL OR j.input_format = ?4)
        ORDER BY j.started_at, j.id LIMIT 1
      )
      RETURNING *`,
   )
-    .bind(timestamp + input.lease_seconds, timestamp, input.processor_id)
+    .bind(
+      timestamp + input.lease_seconds,
+      timestamp,
+      input.processor_id,
+      input.claim_input_format ?? null,
+    )
     .first<ProcessingJobRow>();
   if (replayed) return processingJobClaimResponse(env, replayed);
 
@@ -1543,6 +1549,16 @@ export async function claimProcessingJob(
        JOIN uploads u ON u.id = j.upload_id
        WHERE j.status = 'queued' AND j.next_attempt_at <= ?4
          AND u.status = 'committed' AND u.withdrawn_at IS NULL
+         AND (?5 IS NULL OR j.input_format = ?5)
+         AND NOT EXISTS (
+           SELECT 1 FROM processing_jobs active
+           JOIN uploads active_upload ON active_upload.id = active.upload_id
+           WHERE active.status = 'processing' AND active.processor_id = ?1
+             AND active.lease_token IS NOT NULL
+             AND active.lease_expires_at > ?4
+             AND active_upload.status = 'committed'
+             AND active_upload.withdrawn_at IS NULL
+         )
        ORDER BY CASE j.input_format
                   WHEN 'dicom-series-v1' THEN 0
                   ELSE 1
@@ -1557,6 +1573,7 @@ export async function claimProcessingJob(
       leaseToken,
       timestamp + input.lease_seconds,
       timestamp,
+      input.claim_input_format ?? null,
     )
     .first<ProcessingJobRow>();
   if (!job) return null;

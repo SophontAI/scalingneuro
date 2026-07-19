@@ -376,6 +376,7 @@ class ArchiveTests(unittest.TestCase):
             work_root=self.root / "controller-work",
             processor_id="zstd-sandbox-test",
             native_tools_slurm_image=Path("/release/native-tools.sqsh"),
+            slurm_job_id="12345",
             enroot_runtime_root=self.root / "enroot",
             disk_reserve_bytes=TEST_DISK_RESERVE_BYTES,
         )
@@ -412,6 +413,7 @@ class ArchiveTests(unittest.TestCase):
             work_root=self.root / "controller-work",
             processor_id="zstd-sandbox-test",
             native_tools_slurm_image=Path("/release/native-tools.sqsh"),
+            slurm_job_id="12345",
             enroot_runtime_root=self.root / "enroot",
             disk_reserve_bytes=TEST_DISK_RESERVE_BYTES,
         )

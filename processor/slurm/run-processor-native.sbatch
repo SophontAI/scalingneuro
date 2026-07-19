@@ -102,8 +102,10 @@ trap stop_processor USR1 TERM INT
         --token-file "$token_file" \
         --work-root "$work_root" \
         --processor-id "slurm-native-${SLURM_JOB_ID}-${SLURM_PROCID:-0}" \
+        --claim-input-format dicom-series-v1 \
         --native-tools-slurm-image "$native_tools_image" \
         --slurm-srun-bin "$srun_bin" \
+        --slurm-job-id "$SLURM_JOB_ID" \
         --idle-exit-after 0 &
 child_pid=$!
 wait "$child_pid"

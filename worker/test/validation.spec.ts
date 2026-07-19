@@ -8,6 +8,7 @@ import {
   parseCreateDicomUploadRequest,
   parseCreateUploadRequest,
   parseEnrollRequest,
+  parseProcessorClaimRequest,
   parseProcessorCompleteRequest,
 } from "../src/validation";
 
@@ -132,6 +133,23 @@ describe("strict request validation", () => {
         validation: { ...completion.validation, dicom_count: 500_001 },
       }),
     ).toThrow(/dicom_count must be an integer between 1 and 500000/u);
+  });
+
+  it("accepts only exact optional processor claim input formats", () => {
+    const base = { processor_id: "raw-consumer", lease_seconds: 900 };
+    expect(parseProcessorClaimRequest(base)).toEqual(base);
+    expect(
+      parseProcessorClaimRequest({
+        ...base,
+        claim_input_format: "dicom-series-v1",
+      }),
+    ).toEqual({ ...base, claim_input_format: "dicom-series-v1" });
+    expect(() =>
+      parseProcessorClaimRequest({ ...base, claim_input_format: "dicom" }),
+    ).toThrow(/claim_input_format must be dicom-series-v1 or nifti-v1/u);
+    expect(() =>
+      parseProcessorClaimRequest({ ...base, claim_input_format: null }),
+    ).toThrow(/claim_input_format must be dicom-series-v1 or nifti-v1/u);
   });
 
   it("rejects traversal, duplicate keys, and unknown fields", () => {

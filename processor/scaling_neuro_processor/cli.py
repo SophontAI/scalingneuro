@@ -25,9 +25,18 @@ def parser() -> argparse.ArgumentParser:
         "--work-root", type=Path, default=Path("/data/scaling-neuro/processor")
     )
     value.add_argument("--processor-id", default=default_processor_id())
+    value.add_argument(
+        "--claim-input-format",
+        choices=("dicom-series-v1", "nifti-v1"),
+        help="claim only the exact selected input format",
+    )
     value.add_argument("--dcm2niix-bin", default="dcm2niix")
     value.add_argument("--native-tools-slurm-image", type=Path)
     value.add_argument("--slurm-srun-bin", default="/opt/slurm/bin/srun")
+    value.add_argument(
+        "--slurm-job-id",
+        help="numeric parent Slurm allocation used for nested converter steps",
+    )
     value.add_argument("--zstd-bin", default="zstd")
     value.add_argument("--lease-seconds", type=int, default=900)
     value.add_argument("--heartbeat-seconds", type=int, default=60)
@@ -81,9 +90,11 @@ def main(argv: list[str] | None = None) -> int:
             token=read_token(args.token_file),
             work_root=args.work_root,
             processor_id=args.processor_id,
+            claim_input_format=args.claim_input_format,
             dcm2niix_bin=args.dcm2niix_bin,
             native_tools_slurm_image=args.native_tools_slurm_image,
             slurm_srun_bin=args.slurm_srun_bin,
+            slurm_job_id=args.slurm_job_id,
             zstd_bin=args.zstd_bin,
             lease_seconds=args.lease_seconds,
             heartbeat_seconds=args.heartbeat_seconds,

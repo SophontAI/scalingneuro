@@ -99,12 +99,12 @@ The reservation key is `(site_id, project_id, series_archive_id)`. If two device
 
 ## Processing jobs
 
-`POST /v1/processor/jobs/claim` accepts `processor_id` and a bounded lease duration. No work returns HTTP `204`. A claim increments the attempt, assigns a random lease token, and returns one of:
+`POST /v1/processor/jobs/claim` accepts `processor_id`, a bounded lease duration, and optional `claim_input_format` with the exact value `dicom-series-v1` or `nifti-v1`. Omitting the filter preserves the original all-format behavior. With a filter, no eligible matching work returns HTTP `204` even when another format is queued. A processor identity retains at most one active lease: an exact retry replays that lease, while changing filters during an active different-format lease returns `204` rather than granting a second job. A new claim increments the attempt, assigns a random lease token, and returns one of:
 
 - `dicom-series-v1`: `series_archive_id`, `series_id`, declared DICOM count, and a short-lived scoped archive GET with size/hash; or
 - `nifti-v1`: the legacy bundle/series identity and scoped NIfTI/sidecar GETs with compressed/uncompressed hashes.
 
-Eligible `dicom-series-v1` jobs are claimed before the one-time `nifti-v1` migration backlog, with FIFO order retained within each format. A newly received raw series and the release smoke therefore do not wait behind historical multi-gigabyte validation, while legacy work continues deterministically.
+Unfiltered consumers claim eligible `dicom-series-v1` jobs before the one-time `nifti-v1` migration backlog, with FIFO order retained within each format. The production launch consumer additionally requests only `dicom-series-v1`, so it cannot claim historical work before the release smoke archive exists. Separately configured unfiltered or `nifti-v1` consumers retain deterministic legacy processing.
 
 The processor calls:
 

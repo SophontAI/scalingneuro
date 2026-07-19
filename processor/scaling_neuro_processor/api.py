@@ -118,13 +118,16 @@ class ControlPlane:
         self._sleep(min(10.0, (2**attempt) + random.random()))
 
     def claim(self) -> Job | None:
+        payload: dict[str, Any] = {
+            "processor_id": self.config.processor_id,
+            "lease_seconds": self.config.lease_seconds,
+        }
+        if self.config.claim_input_format is not None:
+            payload["claim_input_format"] = self.config.claim_input_format
         value = self._request(
             "POST",
             "/v1/processor/jobs/claim",
-            {
-                "processor_id": self.config.processor_id,
-                "lease_seconds": self.config.lease_seconds,
-            },
+            payload,
             allow_no_content=True,
         )
         return None if value is None else Job.from_json(value)
