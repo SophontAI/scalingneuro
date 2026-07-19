@@ -93,6 +93,10 @@ if [[ $(grep -cF 'releases/${RELEASE_ID}' "$WORKFLOW") -ne 4 ]]; then
   echo "Draft publication and rollback must remain bound to the creation action release ID" >&2
   exit 1
 fi
+grep -qF '(.draft | type) == "boolean"' "$WORKFLOW"
+# shellcheck disable=SC2016
+grep -qF 'recovered_release=$(gh api --method PATCH' "$WORKFLOW"
+grep -qF 'GitHub did not confirm the candidate release returned to draft state' "$WORKFLOW"
 
 if grep -q '^  publish-release:' "$WORKFLOW"; then
   echo "GitHub publication must remain inside the rollback-protected cutover job" >&2

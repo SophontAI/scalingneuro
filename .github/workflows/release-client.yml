@@ -1162,14 +1162,21 @@ jobs:
               echo "Could not determine whether the candidate GitHub release became public" >&2
               recovery_failed=true
             elif ! jq --exit-status --arg tag "$tag" --arg id "$RELEASE_ID" '
-                .tag_name == $tag and (.id | tostring) == $id
+                .tag_name == $tag and (.id | tostring) == $id and
+                (.draft | type) == "boolean"
               ' <<<"$release" >/dev/null; then
-              echo "Candidate GitHub release identity changed during rollback" >&2
+              echo "Candidate GitHub release identity or draft state changed during rollback" >&2
               recovery_failed=true
             elif [[ $(jq -r '.draft' <<<"$release") == false ]]; then
-              if ! gh api --method PATCH "repos/${GITHUB_REPOSITORY}/releases/${RELEASE_ID}" \
-                -F draft=true >/dev/null; then
+              if ! recovered_release=$(gh api --method PATCH \
+                "repos/${GITHUB_REPOSITORY}/releases/${RELEASE_ID}" \
+                -F draft=true); then
                 echo "Failed to return the GitHub release to draft state" >&2
+                recovery_failed=true
+              elif ! jq --exit-status --arg tag "$tag" --arg id "$RELEASE_ID" '
+                  .draft == true and .tag_name == $tag and (.id | tostring) == $id
+                ' <<<"$recovered_release" >/dev/null; then
+                echo "GitHub did not confirm the candidate release returned to draft state" >&2
                 recovery_failed=true
               fi
             fi
