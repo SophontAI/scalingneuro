@@ -29,6 +29,8 @@ fn automation_flags_are_documented_in_command_help() {
     assert!(primary.status.success());
     let primary_help = String::from_utf8_lossy(&primary.stdout);
     assert!(primary_help.contains("[DICOM_FOLDER]"));
+    assert!(primary_help.contains("--state-dir"));
+    assert!(primary_help.contains("one-series staging archive"));
     assert!(!primary_help.contains("resume"));
 
     let register = Command::new(env!("CARGO_BIN_EXE_neuro-sync"))
@@ -36,14 +38,17 @@ fn automation_flags_are_documented_in_command_help() {
         .output()
         .unwrap();
     assert!(register.status.success());
-    assert!(String::from_utf8_lossy(&register.stdout).contains("--accept-policy"));
+    assert!(String::from_utf8_lossy(&register.stdout).contains("--accept-policy-version"));
 
     let upload = Command::new(env!("CARGO_BIN_EXE_neuro-sync"))
         .args(["upload", "--help"])
         .output()
         .unwrap();
     assert!(upload.status.success());
-    assert!(String::from_utf8_lossy(&upload.stdout).contains("--confirm-authorized"));
+    let upload_help = String::from_utf8_lossy(&upload.stdout);
+    assert!(upload_help.contains("--confirm-authorized"));
+    assert!(upload_help.contains("--confirm-native-pixels-authorized"));
+    assert!(upload_help.contains("--accept-policy-version"));
 }
 
 #[test]

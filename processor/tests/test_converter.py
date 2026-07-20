@@ -3,8 +3,9 @@ from __future__ import annotations
 from pathlib import Path
 import subprocess
 import tempfile
+from threading import Event
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from scaling_neuro_processor.config import Config
 from scaling_neuro_processor.converter import (
@@ -12,10 +13,11 @@ from scaling_neuro_processor.converter import (
     SANDBOX_DCM2NIIX,
     _subprocess_environment,
     check_version,
+    convert,
     conversion_command,
     version_command,
 )
-from scaling_neuro_processor.errors import ProcessorError
+from scaling_neuro_processor.errors import LeaseLost, ProcessorError
 
 
 class ConverterSandboxTests(unittest.TestCase):
@@ -158,6 +160,38 @@ class ConverterSandboxTests(unittest.TestCase):
                     str(dicom),
                 ],
             )
+
+    def test_lease_loss_terminates_running_converter(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            dicom = root / "dicom"
+            output = root / "output"
+            dicom.mkdir()
+            active = Event()
+            active.set()
+            process = Mock()
+            process.poll.return_value = None
+            process.wait.return_value = -15
+
+            with (
+                patch(
+                    "scaling_neuro_processor.converter.check_version",
+                    return_value="v1.0.20260416",
+                ),
+                patch(
+                    "scaling_neuro_processor.converter.subprocess.Popen",
+                    return_value=process,
+                ),
+                patch(
+                    "scaling_neuro_processor.converter.sleep",
+                    side_effect=lambda _seconds: active.clear(),
+                ),
+                self.assertRaises(LeaseLost),
+            ):
+                convert(self.config(), dicom, output, active)
+
+            process.terminate.assert_called_once_with()
+            process.wait.assert_called()
 
 
 if __name__ == "__main__":

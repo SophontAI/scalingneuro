@@ -3,251 +3,159 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Scaling Neuro — An Open Data Commons for Brain Foundation Models</title>
-  <meta name="description" content="An open, researcher-led pipeline for contributing approved functional EPI scans as privacy-cleared scanner-native DICOM, with reproducible cluster processing." />
-  <meta name="theme-color" content="#e1e3ec" />
+  <title>Scaling Neuro: An Open Data Commons for Brain Foundation Models</title>
+  <meta name="description" content="An open, researcher-led pipeline for syncing approved scanner-native MR DICOM, with local metadata de-identification and reproducible server verification." />
+  <meta name="theme-color" content="#faf9f6" />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-  <link href="https://fonts.googleapis.com/css2?family=EB+Garamond:ital,wght@0,400;0,500;0,600;0,700;1,400;1,500;1,600&amp;family=JetBrains+Mono:wght@400;500&amp;display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="styles.css?v=19" />
+  <link href="https://fonts.googleapis.com/css2?family=EB+Garamond:ital,wght@0,400;0,500;0,600;1,400;1,500&amp;family=JetBrains+Mono:wght@400;500&amp;display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="styles.css?v=20" />
   <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
-  <script type="importmap">
-  { "imports": {
-      "three": "https://cdn.jsdelivr.net/npm/three@0.161.0/build/three.module.js",
-      "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.161.0/examples/jsm/"
-  }}
-  </script>
 </head>
 <body>
   <a class="skip-link" href="#main-content">Skip to content</a>
+
   <!-- ============ NAV ============ -->
   <header class="nav" id="nav">
     <a class="brand" href="#top">
-      <span class="brand-mark"><svg viewBox="0 0 28 28" width="22" height="22"><use href="#logo-brain"/></svg></span>
+      <span class="brand-mark"><svg viewBox="0 0 28 28" width="20" height="20"><use href="#logo-brain"/></svg></span>
       Scaling&nbsp;Neuro
     </a>
     <nav class="nav-links" aria-label="Primary">
-      <a href="#top">Scale</a>
+      <a href="#scale">Scale</a>
       <a href="#grants">Funded labs</a>
-      <a href="#pipeline">Pipeline</a>
-      <a href="#vault">Explorer</a>
+      <a href="#pipeline">How it works</a>
       <a href="#contribute">Contribute</a>
     </nav>
-    <a class="btn btn-sage" href="downloads/">Install neuro-sync</a>
+    <a class="btn btn-primary nav-cta" href="downloads/">Install neuro-sync</a>
   </header>
 
   <main id="main-content">
     <!-- ============ HERO ============ -->
-    <section class="band band-plum hero" id="top">
-      <canvas id="neuralCanvas" aria-hidden="true"></canvas>
-      <div class="wrap hero-grid">
-        <div class="hero-copy">
-          <div class="label hero-eyebrow reveal">Academic-led infrastructure for open neuroimaging</div>
-          <h1 class="hero-statement reveal">Brain models need scale. The scans already exist.</h1>
-          <p class="hero-para reveal">
-            Our CortexMAE work found strict power-law improvement as open fMRI pretraining data grew. Scaling Neuro gives academic labs everywhere a low-friction, institution-governed path to build that shared commons together.
+    <section class="hero" id="top">
+      <div class="wrap hero-inner stagger">
+        <p class="eyebrow reveal">Academic-led infrastructure for open neuroimaging</p>
+        <h1 class="display reveal">Brain models need <em>scale</em>. The scans already exist.</h1>
+        <p class="lede reveal">
+          AI models trained on brain scans improve predictably as the training data grows.
+          Scaling Neuro gives academic labs a simple, institution-governed way to pool the fMRI they already collect into one shared open commons.
+        </p>
+        <div class="hero-cta reveal">
+          <a class="btn btn-primary" href="downloads/">Install neuro-sync</a>
+          <a class="text-link" href="#pipeline">See how it works <span aria-hidden="true">→</span></a>
+        </div>
+        <p class="provenance reveal">From the researchers behind
+          <a href="https://medarc-ai.github.io/mindeye/" target="_blank" rel="noopener">MindEye</a>,
+          <a href="https://arxiv.org/abs/2510.13768" target="_blank" rel="noopener">CortexMAE</a>, and
+          <a href="https://github.com/MedARC-AI/brainmarks" target="_blank" rel="noopener">Brainmarks</a>
+        </p>
+      </div>
+    </section>
+
+    <!-- ============ SCALE ============ -->
+    <section class="band" id="scale">
+      <div class="wrap scale-grid">
+        <div class="scale-copy stagger">
+          <p class="eyebrow reveal">The scale opportunity</p>
+          <h2 class="h-sec reveal">Just 25 centers could match every public fMRI dataset ever released.</h2>
+          <p class="body-copy reveal">
+            Every public fMRI dataset ever released adds up to about 32,200 hours of scanning.
+            A single academic MRI center collects about 25 hours each week, and nearly all of it stays on local drives.
+            If 25 centers contribute the scans they already collect, one year equals the entire public archive.
           </p>
-          <p class="hero-provenance reveal">Built by academic neuroimaging researchers behind <a href="https://medarc-ai.github.io/mindeye/" target="_blank" rel="noopener">MindEye</a>, <a href="https://arxiv.org/abs/2510.13768" target="_blank" rel="noopener">CortexMAE</a>, and <a href="https://github.com/MedARC-AI/brainmarks" target="_blank" rel="noopener">Brainmarks</a></p>
-          <div class="hero-cta reveal">
-            <a class="btn btn-sage" href="downloads/">Install neuro-sync</a>
-            <a class="hero-text-link" href="#contribute">See how it works <span aria-hidden="true">→</span></a>
-          </div>
+          <p class="takeaway reveal">The bottleneck was never scanning. It is sharing.</p>
+          <details class="sources reveal">
+            <summary>Sources + assumptions</summary>
+            <p>The public baseline is the roughly 32,200 recorded fMRI hours estimated across freely accessible archives in <a href="https://arxiv.org/abs/2411.18526" target="_blank" rel="noopener">NeuroAI for AI Safety</a>. The network bar is a planning scenario: 25 centers × 25 hours/week × 52 weeks = 32,500 acquired hours. The shareable total would be lower after consent and privacy gates. The dotted curve extends the strict data-scaling trend reported in <a href="https://arxiv.org/abs/2510.13768" target="_blank" rel="noopener">CortexMAE</a>; it is not a performance projection.</p>
+          </details>
         </div>
 
-        <figure class="hero-scale reveal" aria-labelledby="scale-title" aria-describedby="scale-note">
-          <div class="scale-kicker">
-            <span>THE SCALE OPPORTUNITY</span>
-            <span>25 CENTERS · ONE YEAR</span>
+        <figure class="scale-figure reveal" aria-label="Freely accessible archives contain an estimated 32,200 hours of fMRI. A planning scenario of 25 academic centers each acquiring 25 hours per week would produce 32,500 hours in one year, before consent and privacy filtering.">
+          <div class="bar-row">
+            <div class="bar-label"><span>All public fMRI ever released</span><strong data-count="32200" data-prefix="~" data-suffix=" hours">~32,200 hours</strong></div>
+            <div class="bar-track"><div class="bar-fill bar-public"></div></div>
+            <p class="bar-note">Across OpenNeuro and other public archives</p>
           </div>
-          <h2 id="scale-title">One year across 25 academic centers could rival today’s public fMRI archive.</h2>
-
-          <div class="scale-bars" role="img" aria-label="Freely accessible archives contain an estimated 32,200 hours of fMRI. A planning scenario of 25 academic centers each acquiring 25 hours per week would produce 32,500 hours in one year, before consent and privacy filtering.">
-            <div class="scale-bar-group">
-              <div class="scale-bar-label"><span>Freely available fMRI</span><strong>~32.2k h</strong></div>
-              <div class="scale-track">
-                <div class="scale-public"></div>
-              </div>
-              <div class="scale-key" aria-hidden="true"><span>OpenNeuro + major public datasets</span></div>
-            </div>
-
-            <div class="scale-bar-group scale-bar-year">
-              <div class="scale-bar-label"><span>25 centers · 1 year</span><strong>~32.5k h</strong></div>
-              <div class="scale-track">
-                <div class="scale-network"><i></i><i></i><i></i><i></i><i></i></div>
-                <div class="scale-threshold"><span>public total</span></div>
-              </div>
-              <div class="scale-key" aria-hidden="true"><span>25 h/week/center · planning scenario</span></div>
-            </div>
+          <div class="bar-row">
+            <div class="bar-label"><span>25 centers sharing for one year</span><strong data-count="32500" data-prefix="~" data-suffix=" hours">~32,500 hours</strong></div>
+            <div class="bar-track"><div class="bar-fill bar-network" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div></div>
+            <p class="bar-note">25 hours per week per center · each cell is one center-year</p>
           </div>
 
-          <div class="scaling-law" role="img" aria-label="A CortexMAE-style scaling curve shows the performance frontier attainable with public data today as a solid line, then extends as a dotted line toward the lower loss that coordinated sharing across academic institutions could make possible.">
-            <div class="plot-y"><span>reconstruction loss</span><b>↓</b></div>
-            <svg viewBox="0 0 520 158" aria-hidden="true">
-              <path class="plot-grid" d="M28 20H504M28 70H504M28 120H504" />
-              <path class="plot-axis" d="M28 12V132H510" />
-              <path class="plot-curve" d="M44 29C108 52 174 76 270 96" />
-              <path class="plot-forecast" d="M270 96C344 111 419 126 492 137" />
-              <path class="plot-frontier" d="M270 17V132" />
+          <div class="scaling-plot" role="img" aria-label="A CortexMAE-style scaling curve shows model error falling as training data grows: a solid line over public data today, extended by a dotted line toward the lower error that coordinated sharing could make possible.">
+            <svg viewBox="0 0 520 168">
+              <path class="plot-grid" d="M28 24H504M28 74H504M28 124H504" />
+              <path class="plot-axis" d="M28 12V136H510" />
+              <path class="plot-curve" d="M44 33C108 56 174 80 270 100" />
+              <path class="plot-forecast" d="M270 100C344 115 419 130 492 141" />
+              <path class="plot-frontier" d="M270 17V136" />
               <g class="plot-points">
-                <circle cx="52" cy="32" r="4"/><circle cx="112" cy="53" r="4"/><circle cx="178" cy="77" r="4"/><circle cx="270" cy="96" r="6" class="plot-current"/>
+                <circle cx="52" cy="36" r="4"/><circle cx="112" cy="57" r="4"/><circle cx="178" cy="81" r="4"/><circle cx="270" cy="100" r="6" class="plot-current"/>
               </g>
-              <circle cx="492" cy="137" r="5" class="plot-future"/>
-              <text x="42" y="151">PUBLIC DATA</text>
-              <text x="361" y="151">SHARED INSTITUTIONAL DATA</text>
-              <text class="plot-note plot-note-now" x="182" y="35">PUBLIC FRONTIER TODAY</text>
-              <text class="plot-note plot-note-future" x="322" y="82">COORDINATED SHARING</text>
+              <circle cx="492" cy="141" r="5" class="plot-future"/>
+              <text x="42" y="156">PUBLIC DATA</text>
+              <text x="330" y="156">SHARED INSTITUTIONAL DATA</text>
+              <text class="plot-note" x="158" y="30">MODEL ERROR ↓</text>
             </svg>
           </div>
-
-          <figcaption id="scale-note">
-            <details>
-              <summary>Sources + assumptions</summary>
-              <p>The public baseline is the ~32.2k recorded fMRI hours estimated across freely accessible archives in <a href="https://arxiv.org/abs/2411.18526" target="_blank" rel="noopener">NeuroAI for AI Safety</a>. The network bar is a planning scenario: 25 centers × 25 hours/week × 52 weeks = 32.5k acquired hours. The shareable total would be lower after consent and privacy gates. The dotted curve extends the strict data-scaling trend reported in <a href="https://arxiv.org/abs/2510.13768" target="_blank" rel="noopener">CortexMAE</a>; it is not a performance projection.</p>
-            </details>
-          </figcaption>
         </figure>
       </div>
     </section>
 
     <!-- ============ NIH / NSF FIT ============ -->
-    <section class="band band-cream grant-fit" id="grants">
-      <div class="wrap grant-fit-grid">
-        <div class="reveal">
-          <span class="label">For NIH- and NSF-funded studies</span>
-          <h2 class="h-sec">Make required data sharing automatic.</h2>
+    <section class="band band-alt" id="grants">
+      <div class="wrap grants-grid">
+        <div class="stagger">
+          <p class="eyebrow reveal">For NIH- and NSF-funded studies</p>
+          <h2 class="h-sec reveal">Make required data sharing automatic.</h2>
         </div>
-        <div class="grant-fit-copy reveal">
-          <p>Your grant’s Data Management and Sharing Plan says what must be shared, when, and where. Scaling Neuro prepares approved fMRI—with privacy checks, provenance, and hashes—for repository deposit and progress reporting.</p>
-          <div class="grant-steps" aria-label="Approved fMRI becomes repository-ready data and a grant reporting record">
+        <div class="grants-copy stagger">
+          <p class="body-copy reveal">Since 2023, NIH has required a Data Management and Sharing Plan with every new award, and NSF sets similar expectations. Scaling Neuro turns that obligation into a byproduct of scanning: approved fMRI is prepared for repository deposit and progress reporting, with privacy checks, provenance, and hashes already in place.</p>
+          <div class="grant-steps reveal" aria-label="Approved fMRI becomes repository-ready data and a grant reporting record">
             <span>Approved fMRI</span><i aria-hidden="true">→</i><span>Repository-ready</span><i aria-hidden="true">→</i><span>Grant reporting</span>
           </div>
-          <p class="grant-note">Your institution’s approved plan and named repository determine compliance.</p>
+          <p class="fine-print reveal">Each institution’s approved plan and named repository determine compliance.</p>
         </div>
       </div>
     </section>
 
     <!-- ============ PIPELINE ============ -->
-    <section class="band band-plum" id="pipeline">
+    <section class="band" id="pipeline">
       <div class="wrap">
-        <div style="max-width:760px;margin-bottom:clamp(40px,6vw,72px)">
-          <span class="label reveal" style="display:block;margin-bottom:20px">01 — The contribution flow</span>
-          <h2 class="h-sec reveal" style="color:var(--cream-txt);margin-bottom:20px">One approved folder becomes one reliable contribution.</h2>
+        <div class="section-head stagger">
+          <p class="eyebrow reveal">How it works</p>
+          <h2 class="h-sec reveal">One approved folder becomes one reliable contribution.</h2>
           <p class="lede reveal">
-            Share approved scans, not unpublished study annotations. No labels, manual curation, or cloud setup; each contribution remains attributable to its lab and policy context.
+            Share approved scans, not unpublished study annotations. No labels, manual curation, or cloud setup;
+            each contribution remains attributable to its lab and policy context.
           </p>
         </div>
-        <div class="manifesto reveal">
-          <div class="mani"><div class="mani-no"><span class="num">01</span> / Consent</div><h4>Approve</h4><p>Only approved projects enter.</p></div>
-          <div class="mani"><div class="mani-no"><span class="num">02</span> / Capture</div><h4>Read</h4><p>Inventory the selected export without changing it.</p></div>
-          <div class="mani"><div class="mani-no"><span class="num">03</span> / Gate</div><h4>Select</h4><p>Keep functional EPI; hold other modalities and uncertainty.</p></div>
-          <div class="mani"><div class="mani-no"><span class="num">04</span> / Preserve</div><h4>Protect</h4><p>Rewrite identifiers while retaining scanner-native pixels and acquisition metadata.</p></div>
-          <div class="mani"><div class="mani-no"><span class="num">05</span> / Commons</div><h4>Process</h4><p>Upload once; verify and derive NIfTI reproducibly on the research cluster.</p></div>
+        <div class="steps stagger">
+          <div class="step reveal"><p class="step-no">01 · Consent</p><h3>Approve</h3><p>Only approved projects enter.</p></div>
+          <div class="step reveal"><p class="step-no">02 · Capture</p><h3>Read</h3><p>Inventory the selected export without changing it.</p></div>
+          <div class="step reveal"><p class="step-no">03 · Gate</p><h3>Include</h3><p>Keep every supported MR Image series; hold only unsafe or unsupported objects.</p></div>
+          <div class="step reveal"><p class="step-no">04 · Preserve</p><h3>Protect</h3><p>Rewrite identifying metadata while retaining scanner-native pixels and acquisition context.</p></div>
+          <div class="step reveal"><p class="step-no">05 · Commons</p><h3>Verify</h3><p>Audit every archive on the cluster; derive NIfTI only for confirmed functional EPI.</p></div>
         </div>
       </div>
     </section>
 
-    <!-- ============ THE NEURAL VAULT ============ -->
-    <section class="band band-cream" id="vault">
+    <!-- ============ CONTRIBUTE ============ -->
+    <section class="band band-dark contribute" id="contribute">
       <div class="wrap">
-        <div style="max-width:880px;margin-bottom:clamp(36px,5vw,60px)">
-          <span class="label reveal" style="display:block;margin-bottom:20px">02 — Explore OpenNeuro</span>
-          <h2 class="h-sec reveal" style="margin-bottom:20px">Preview real public brain scans where they already live.</h2>
+        <div class="section-head stagger">
+          <p class="eyebrow reveal">Self-service beta</p>
+          <h2 class="display-sec reveal">Point it at one folder. Make eligible scans count.</h2>
           <p class="lede reveal">
-            Find a public OpenNeuro dataset, narrow its BIDS files by task or modality, and inspect the first 3D volume without mirroring the raw archive.
-            <span class="badge-demo">Live OpenNeuro snapshots · direct public S3 streaming</span>
+            Keep the scanner workflow. Install once, then run neuro-sync whenever an export folder is ready.
+            It finds every supported MR Image series, removes identifying DICOM metadata locally, and uploads each series with resumable checksums.
+            The workstation is done when transfer receives its durable receipt; independent verification and EPI-only derivation continue on the research cluster.
+          </p>
+          <p class="body-copy reveal">
+            Scanner make, model, and software are provenance, not a whitelist. Functional, structural, diffusion, field-map, reference, localizer, and derived MR use the same standard-DICOM integrity and metadata-privacy gates.
+            Secondary Capture, non-image DICOM, malformed series, declared burned-in annotation, and other unsupported privacy conditions stay local with a report code.
           </p>
         </div>
-
-        <div class="access-policy reveal" aria-label="OpenNeuro preview behavior">
-          <div><span class="policy-icon policy-open">01</span><p><strong>Snapshot pinned</strong><small>Every preview uses the exact S3 object version returned by OpenNeuro.</small></p></div>
-          <div><span class="policy-icon policy-local">02</span><p><strong>Source direct</strong><small>Image bytes travel from OpenNeuro’s public bucket to your browser.</small></p></div>
-          <div><span class="policy-icon policy-view">03</span><p><strong>First volume only</strong><small>The stream stops after one 3D frame instead of downloading a full fMRI run.</small></p></div>
-        </div>
-
-        <div class="vault-grid reveal">
-          <!-- archive browser -->
-          <aside class="vault-left" aria-label="OpenNeuro dataset and file explorer">
-            <div class="vault-head">
-              <span class="label" id="archiveRoot">OpenNeuro <b>live</b></span>
-              <span class="mchip mchip-sage" id="archiveState">public</span>
-            </div>
-            <div class="dataset-tools">
-              <label class="explorer-field" for="datasetSearch">
-                <span>Find a dataset</span>
-                <input id="datasetSearch" type="search" placeholder="Title, task, or ds000001" autocomplete="off" role="combobox" aria-autocomplete="list" aria-controls="datasetResults" aria-expanded="false" />
-              </label>
-              <div class="dataset-results" id="datasetResults" role="listbox" hidden></div>
-              <div class="dataset-shortcuts" aria-label="Featured OpenNeuro datasets">
-                <button type="button" data-dataset="ds002748">Resting state</button>
-                <button type="button" data-dataset="ds000228">Movie</button>
-                <button type="button" data-dataset="ds000105">Visual objects</button>
-                <button type="button" data-dataset="ds000001">Risk task</button>
-              </div>
-              <div class="dataset-selection" id="datasetSelection" aria-live="polite">
-                <span class="dataset-selection-id">Connecting…</span>
-                <strong>Loading OpenNeuro</strong>
-              </div>
-            </div>
-            <div class="file-tools">
-              <label class="explorer-field explorer-field-files" for="fileSearch">
-                <span>Find a preview file</span>
-                <input id="fileSearch" type="search" placeholder="Subject, task, run, or filename" autocomplete="off" />
-              </label>
-              <div class="filters" id="filters" aria-label="File modality">
-                <button class="filt" data-filt="all">All</button>
-                <button class="filt is-active" data-filt="bold">BOLD</button>
-                <button class="filt" data-filt="anat">Anatomy</button>
-                <button class="filt" data-filt="dwi">DWI</button>
-                <button class="filt" data-filt="other">Other</button>
-              </div>
-              <div class="file-result-meta"><span id="fileCount">Loading files…</span><span>raw BIDS only</span></div>
-            </div>
-            <div class="browser-list" id="scanList"><!-- populated by JS --></div>
-          </aside>
-
-          <!-- instant-view viewer -->
-          <div class="vault-right">
-            <div class="viewer-head" aria-live="polite">
-              <div><span class="label" id="viewerMode">OpenNeuro · first-volume preview</span><span class="viewer-title" id="viewerTitle">// choose a file</span></div>
-              <a class="viewer-source-link" id="openneuroDatasetLink" href="https://openneuro.org" target="_blank" rel="noopener" hidden>Open dataset ↗</a>
-            </div>
-            <div class="viewer-stage" id="viewerStage" role="img" aria-label="Interactive 3D neuroimaging preview">
-              <canvas id="brainCanvas" aria-hidden="true"></canvas>
-              <div class="viewer-metaoverlay" id="viewerMeta" hidden></div>
-              <div class="viewer-empty" id="viewerEmpty">
-                <svg viewBox="0 0 24 24" width="38" height="38"><use href="#i-cube"/></svg>
-                <p>Choose a public OpenNeuro file. Only its first 3D volume will be streamed for this preview.</p>
-              </div>
-              <div class="viewer-loading" id="viewerLoading" hidden>
-                <div class="load-ring"></div>
-                <pre id="loadLog"></pre>
-              </div>
-              <div class="viewer-hud" id="viewerHud" hidden>
-                <span class="hud-pill" id="hudPath">s3://…</span>
-                <span class="hud-pill hud-drag">drag · scroll to zoom</span>
-              </div>
-            </div>
-            <div class="viewer-controls" id="viewerControls" hidden>
-              <label class="ctrl"><span>Axial</span><input type="range" min="0" max="100" value="50" data-axis="z" /></label>
-              <label class="ctrl"><span>Coronal</span><input type="range" min="0" max="100" value="50" data-axis="y" /></label>
-              <label class="ctrl"><span>Sagittal</span><input type="range" min="0" max="100" value="50" data-axis="x" /></label>
-              <button class="ctrl-btn is-active" id="spinBtn" type="button" title="Pause auto-rotate" aria-label="Pause auto-rotate" aria-pressed="true"><svg viewBox="0 0 24 24" width="15" height="15"><use href="#i-rotate"/></svg></button>
-            </div>
-          </div>
-        </div>
-
-      </div>
-    </section>
-
-    <!-- ============ CONTRIBUTE (script) ============ -->
-    <section class="band band-plum contribute" id="contribute">
-      <div class="wrap">
-        <span class="label reveal" style="display:block;margin-bottom:24px">03 — For every new session</span>
-        <h2 class="display reveal" style="font-size:clamp(2.4rem,7vw,5rem)">Point it at one folder. Make eligible scans count.</h2>
-        <p class="hero-para reveal">
-          Keep the scanner workflow. Install once, return to the shell, and run neuro-sync whenever the export path is ready. It conservatively selects compatible functional EPI, removes identifying DICOM fields locally, and uploads each series with resumable checksums. The workstation is finished when transfer receives its durable receipt; conversion and scientific validation continue on the research cluster.
-        </p>
-        <p class="hero-para reveal">Scanner make, model, and software are provenance, not a whitelist. Classic and Enhanced functional MR from any vendor use the same standard-DICOM EPI, time-series, and privacy gates. Structural, diffusion, reference, derived, uncertain, and privacy-unsafe series stay local with a report code.</p>
 
         <div class="adoption-line reveal" aria-label="Why a lab should adopt the tool">
           <span>One terminal command</span><span>No admin, Python, or Docker</span><span>Fails closed</span>
@@ -256,11 +164,11 @@
         <div class="terminal reveal">
           <div class="term-tabs" role="tablist" aria-label="Script walkthrough">
             <button class="term-tab is-active" id="tab-install" data-tab="install" role="tab" aria-selected="true" aria-controls="pane-install">1 · Install</button>
-            <button class="term-tab" id="tab-run" data-tab="run" role="tab" aria-selected="false" aria-controls="pane-run" tabindex="-1">2 · CLI</button>
+            <button class="term-tab" id="tab-run" data-tab="run" role="tab" aria-selected="false" aria-controls="pane-run" tabindex="-1">2 · Run</button>
             <button class="term-tab" id="tab-inside" data-tab="inside" role="tab" aria-selected="false" aria-controls="pane-inside" tabindex="-1">What leaves</button>
           </div>
           <div class="term-body">
-            <pre class="term-pane is-active" id="pane-install" data-pane="install" role="tabpanel" aria-labelledby="tab-install"><code><span class="c-com"># macOS or Linux — installs, verifies, then returns to your shell</span>
+            <pre class="term-pane is-active" id="pane-install" data-pane="install" role="tabpanel" aria-labelledby="tab-install"><code><span class="c-com"># macOS or Linux: installs, verifies, then returns to your shell</span>
 <span class="c-p">$</span> curl -fsSL https://scalingneuro.com/install.sh | sh
 <span class="c-com"># Windows PowerShell: irm https://scalingneuro.com/install.ps1 | iex</span>
 <span class="c-ok">✓</span> Single neuro-sync binary downloaded and SHA-256 verified
@@ -268,57 +176,54 @@
 <span class="c-p">$</span> neuro-sync /path/to/new_session_dicoms
 <span class="c-ok">✓</span> One-minute lab registration in the terminal; no browser needed
 <span class="c-ok">✓</span> Private, revocable identity for <span class="c-hi">this workstation</span>
-<span class="c-ok">✓</span> Confirm the selected folder is approved for contribution
-<span class="c-ok">✓</span> Discover → select EPI → de-identify DICOM → upload
+<span class="c-ok">✓</span> Confirm every eligible series and native, non-defaced pixel is approved
+<span class="c-ok">✓</span> Discover all MR → de-identify metadata → upload → verify
 <span class="c-ok">✓</span> Interrupted? Rerun this same folder command; completed work is reused</code></pre>
             <pre class="term-pane" id="pane-run" data-pane="run" role="tabpanel" aria-labelledby="tab-run"><code><span class="c-com"># representative output after the one-time terminal registration</span>
 <span class="c-p">$</span> neuro-sync ./new_session_dicoms
 
 <span class="c-dim">Reading DICOM headers</span>  1842 files/1842 files (100.0%)  <span class="c-ok">ETA 00:00</span>
-<span class="c-dim">Preparing privacy-cleared EPI archives</span>  5.1 GiB/5.1 GiB (100.0%)  <span class="c-ok">ETA 00:00</span>
-<span class="c-dim">Uploading privacy-cleared EPI archives</span>  5.1 GiB/5.1 GiB (100.0%)  <span class="c-ok">ETA 00:00</span>
+<span class="c-dim">Preparing metadata-deidentified MR archives</span>  5.1 GiB/5.1 GiB (100.0%)  <span class="c-ok">ETA 00:00</span>
+<span class="c-dim">Uploading MR DICOM archives</span>  5.1 GiB/5.1 GiB (100.0%)  <span class="c-ok">ETA 00:00</span>
 
 Status: <span class="c-ok">complete</span>
-Series: 2 accepted, 3 held, 1 excluded
-Receipt: 2 DICOM series safely stored
-Processing: queued on the Scaling Neuro cluster (the upload is finished)
+Series: 27 accepted, 0 held, 0 excluded
+Receipt: 27 DICOM series safely stored
+Server: 15 EPI conversions + 12 archive verifications queued
 Check later with: neuro-sync status &lt;run-id&gt;</code></pre>
             <pre class="term-pane" id="pane-inside" data-pane="inside" role="tabpanel" aria-labelledby="tab-inside"><code><span class="c-kw">local</span>    source DICOMs remain unchanged on the lab's machine
-<span class="c-kw">raw</span>      functional DICOM pixel data is preserved without resampling or conversion
+<span class="c-kw">raw</span>      MR Pixel Data is preserved without defacing, masking, or resampling
 <span class="c-kw">metadata</span> acquisition and geometry fields remain inside rewritten DICOMs
 <span class="c-kw">identity</span> names, IDs, dates, paths, free text, and unsafe private data never upload
 <span class="c-kw">linkage</span>  site-scoped HMAC subject/session/series pseudonyms only
 <span class="c-kw">proof</span>    recursive de-identification audit, per-file hashes, and archive hash
-<span class="c-kw">derive</span>   pinned conversion and QC run asynchronously on Sophont's cluster
-<span class="c-kw">hold</span>     structural, diffusion, field maps, references, and ambiguity stay local
+<span class="c-kw">verify</span>   every archive is independently parsed and privacy-audited on Sophont
+<span class="c-kw">derive</span>   pinned conversion and QC run only for confirmed functional EPI
+<span class="c-kw">faces</span>    native structural/head pixels may retain recognizable anatomy
+<span class="c-kw">hold</span>     unsafe, malformed, and unsupported DICOM objects stay local
 <span class="c-kw">access</span>   device credentials can only upload parts to a server-created session</code></pre>
           </div>
         </div>
 
         <div class="contribute-actions reveal">
-          <a class="btn btn-sage" href="downloads/" id="dlBtn">Install neuro-sync</a>
-          <button class="btn btn-outline-d" id="copyBtn" type="button">Copy install command</button>
+          <a class="btn btn-primary" href="downloads/">Install neuro-sync</a>
+          <button class="btn btn-ghost" id="copyBtn" type="button">Copy install command</button>
         </div>
-        <div class="term-foot reveal"><span style="color:var(--sage-deep)">open self-service beta</span>&nbsp;&nbsp;·&nbsp;&nbsp;universal macOS, Windows x64, Linux x64&nbsp;&nbsp;·&nbsp;&nbsp;scanner-neutral functional EPI</div>
+        <p class="term-foot reveal">Open self-service beta&nbsp;&nbsp;·&nbsp;&nbsp;Universal macOS, Windows x64, Linux x64&nbsp;&nbsp;·&nbsp;&nbsp;Scanner-neutral MR Image intake</p>
 
       </div>
     </section>
 
     <!-- ============ FOOTER ============ -->
-    <footer class="band band-cream" id="footer">
+    <footer class="footer">
       <div class="wrap">
         <div class="footer-principles reveal">
           <span>Academic-led</span><span>Institution-governed</span><span>Open by design</span>
         </div>
-
-        <div class="plusmark reveal">
-          <svg viewBox="0 0 60 60" width="52" height="52"><circle cx="30" cy="30" r="29" stroke-width="1"/><path d="M30 18v24M18 30h24" stroke-width="1.2"/></svg>
-        </div>
-        <div class="foot-brand reveal">Scaling Neuro</div>
-        <div class="foot-legal reveal">
-          © 2026 Scaling Neuro Initiative · open functional MRI contribution beta · working name<br/>
-          All shared data intended as an open resource · source notes: “Scaling Up Neuroimaging Data…” + “Creating a web-scale neuroimaging database”
-        </div>
+        <p class="foot-legal">
+          © 2026 Scaling Neuro Initiative · governed MR contribution beta · working name<br/>
+          Scanner-native source archives are not automatically public; eligible derivatives may enter separately documented governed research datasets
+        </p>
       </div>
     </footer>
   </main>
@@ -328,13 +233,14 @@ Check later with: neuro-sync status &lt;run-id&gt;</code></pre>
   <!-- ============ SVG SPRITE ============ -->
   <svg width="0" height="0" style="position:absolute" aria-hidden="true"><defs>
     <symbol id="logo-brain" viewBox="0 0 28 28">
-      <path d="M14 4c-1.8 0-3.1 1-3.5 2.3C9.3 6.1 7.4 6.9 7 8.8 5.4 9.2 4.4 10.6 4.4 12.2c0 .9.3 1.7.9 2.3-.5.6-.9 1.4-.9 2.3 0 1.7 1.3 3.1 3 3.3.5 1.5 2 2.5 3.6 2.3.5 1.1 1.7 1.9 3 1.9s2.5-.8 3-1.9c1.6.2 3.1-.8 3.6-2.3 1.7-.2 3-1.6 3-3.3 0-.9-.4-1.7-.9-2.3.6-.6.9-1.4.9-2.3 0-1.6-1-3-2.6-3.4-.4-1.9-2.3-2.7-3.5-2.5C17.1 5 15.8 4 14 4Z" stroke-width="1.4" stroke-linejoin="round"/>
-      <path d="M14 6.3v16.4M9.6 9.8c1.3.4 2.2 1.4 2.2 2.7M18.4 9.8c-1.3.4-2.2 1.4-2.2 2.7" stroke-width="1.1" stroke-linecap="round" opacity=".6"/>
+      <rect x="2" y="2" width="24" height="24" rx="7" fill="currentColor" stroke="none"/>
+      <path d="M14 4c-1.8 0-3.1 1-3.5 2.3C9.3 6.1 7.4 6.9 7 8.8 5.4 9.2 4.4 10.6 4.4 12.2c0 .9.3 1.7.9 2.3-.5.6-.9 1.4-.9 2.3 0 1.7 1.3 3.1 3 3.3.5 1.5 2 2.5 3.6 2.3.5 1.1 1.7 1.9 3 1.9s2.5-.8 3-1.9c1.6.2 3.1-.8 3.6-2.3 1.7-.2 3-1.6 3-3.3 0-.9-.4-1.7-.9-2.3.6-.6.9-1.4.9-2.3 0-1.6-1-3-2.6-3.4-.4-1.9-2.3-2.7-3.5-2.5C17.1 5 15.8 4 14 4Z" fill="#faf9f5" stroke="none"/>
+      <circle cx="9.4" cy="17.2" r="1.2" fill="currentColor" stroke="none"/>
+      <circle cx="14" cy="13.8" r="1.4" fill="currentColor" stroke="none"/>
+      <circle cx="18.6" cy="10.4" r="1.6" fill="currentColor" stroke="none"/>
     </symbol>
-    <symbol id="i-cube" viewBox="0 0 24 24"><path d="M12 2 3 7v10l9 5 9-5V7l-9-5Zm0 0v20M3 7l9 5 9-5" stroke-width="1.4" stroke-linejoin="round"/></symbol>
-    <symbol id="i-rotate" viewBox="0 0 24 24"><path d="M20 12a8 8 0 1 1-2.3-5.6M20 4v4h-4" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></symbol>
   </defs></svg>
 
-  <script type="module" src="app.js?v=15"></script>
+  <script type="module" src="app.js?v=16"></script>
 </body>
 </html>

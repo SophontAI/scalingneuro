@@ -122,13 +122,19 @@ def make_dicom(path: Path, sop_uid: str = SOP_UID) -> bytes:
     dataset.ImageType = ["ORIGINAL", "PRIMARY", "M", "EPI", "BOLD", "MOSAIC"]
     dataset.ManufacturerModelName = "MAGNETOM Prisma_fit"
     dataset.ScanningSequence = "EP"
+    dataset.SequenceVariant = "SK"
+    dataset.ScanOptions = "FS"
     dataset.MRAcquisitionType = "2D"
     dataset.SequenceName = "ep2d_bold"
     dataset.RepetitionTime = "800"
     dataset.EchoTime = "30"
     dataset.SoftwareVersions = "Siemens E11"
+    dataset.PatientPosition = "HFS"
+    dataset.MagneticFieldStrength = "3.0"
     dataset.PatientName = SUBJECT_ID
     dataset.PatientID = SUBJECT_ID
+    dataset.PatientBirthDate = ""
+    dataset.PatientSex = ""
     dataset.PatientIdentityRemoved = "YES"
     dataset.DeidentificationMethod = (
         "Scaling Neuro scaling-neuro.dicom-deidentification 1.0.0"
@@ -136,7 +142,23 @@ def make_dicom(path: Path, sop_uid: str = SOP_UID) -> bytes:
     dataset.LongitudinalTemporalInformationModified = "REMOVED"
     dataset.StudyInstanceUID = "2.25.100000000000000000000000000000000001"
     dataset.SeriesInstanceUID = "2.25.100000000000000000000000000000000002"
+    dataset.FrameOfReferenceUID = "2.25.100000000000000000000000000000000003"
+    dataset.StudyDate = ""
+    dataset.AcquisitionDate = ""
+    dataset.ContentDate = ""
+    dataset.StudyTime = ""
+    dataset.AcquisitionTime = ""
+    dataset.ContentTime = ""
+    dataset.AccessionNumber = ""
+    dataset.ReferringPhysicianName = ""
+    dataset.StudyID = ""
+    dataset.PositionReferenceIndicator = ""
+    dataset.SeriesNumber = "7"
     dataset.AcquisitionNumber = "1"
+    dataset.InstanceNumber = "1"
+    dataset.EchoTrainLength = "1"
+    dataset.NumberOfFrames = "1"
+    dataset.DeviceSerialNumber = "SN-0123456789abcdef01234567"
     dataset.NumberOfTemporalPositions = "12"
     dataset.BurnedInAnnotation = "NO"
     dataset.add_new(Tag(0x0029, 0x0010), "LO", "SIEMENS CSA HEADER")
@@ -152,6 +174,239 @@ def make_dicom(path: Path, sop_uid: str = SOP_UID) -> bytes:
     dataset.PixelData = b"\0" * 128
     dataset.save_as(path, enforce_file_format=True)
     return path.read_bytes()
+
+
+def make_structural_dicom(path: Path, sop_uid: str = SOP_UID) -> bytes:
+    """Create a privacy-cleared, non-EPI MR Image Storage instance."""
+    from pydicom import dcmread
+    from pydicom.tag import Tag
+
+    make_dicom(path, sop_uid)
+    dataset = dcmread(path)
+    dataset.Manufacturer = "GE MEDICAL SYSTEMS"
+    dataset.ManufacturerModelName = "Discovery MR750"
+    dataset.SoftwareVersions = "GE DV26"
+    dataset.ImageType = ["ORIGINAL", "PRIMARY", "M", "T1"]
+    dataset.ScanningSequence = "GR"
+    dataset.MRAcquisitionType = "3D"
+    dataset.SequenceName = "mprage"
+    dataset.RepetitionTime = "2300"
+    dataset.EchoTime = "2.5"
+    dataset.DeidentificationMethod = (
+        "Scaling Neuro scaling-neuro.dicom-deidentification 2.0.0"
+    )
+    for tag in (
+        Tag(0x0020, 0x0105),
+        Tag(0x0029, 0x0010),
+        Tag(0x0029, 0x1010),
+    ):
+        if tag in dataset:
+            del dataset[tag]
+    dataset.save_as(path, enforce_file_format=True)
+    return path.read_bytes()
+
+
+def make_functional_dicom_v2(path: Path, sop_uid: str = SOP_UID) -> bytes:
+    from pydicom import dcmread
+
+    make_dicom(path, sop_uid)
+    dataset = dcmread(path)
+    dataset.DeidentificationMethod = (
+        "Scaling Neuro scaling-neuro.dicom-deidentification 2.0.0"
+    )
+    dataset.save_as(path, enforce_file_format=True)
+    return path.read_bytes()
+
+
+def conform_enhanced_mr(dataset: Any, *, adjust_pixel_data: bool = True) -> None:
+    """Add the bounded mandatory Enhanced MR modules used by sanitized fixtures."""
+    from pydicom.dataset import Dataset
+    from pydicom.sequence import Sequence
+    from pydicom.tag import Tag
+    from pydicom.uid import UID
+
+    enhanced_uid = "1.2.840.10008.5.1.4.1.1.4.1"
+    legacy_uid = "1.2.840.10008.5.1.4.1.1.4.4"
+    sop_class = str(dataset.SOPClassUID)
+    if sop_class not in {enhanced_uid, legacy_uid}:
+        return
+
+    dataset.ContentDate = "19000101"
+    dataset.ContentTime = "000000"
+    dataset.InstanceNumber = str(getattr(dataset, "InstanceNumber", "1") or "1")
+    dataset.add_new(Tag(0x0008, 0x9205), "CS", "MONOCHROME")
+    dataset.add_new(Tag(0x0008, 0x9206), "CS", "VOLUME")
+    dataset.add_new(Tag(0x0008, 0x9207), "CS", "NONE")
+    dataset.add_new(Tag(0x2050, 0x0020), "CS", "IDENTITY")
+    dataset.add_new(Tag(0x0040, 0x0555), "SQ", Sequence([]))
+    if sop_class == enhanced_uid:
+        dataset.add_new(Tag(0x0008, 0x9208), "CS", "MAGNITUDE")
+        dataset.add_new(Tag(0x0008, 0x9209), "CS", "UNKNOWN")
+        dataset.add_new(Tag(0x0028, 0x2110), "CS", "00")
+        dataset.add_new(Tag(0x0018, 0x9005), "SH", "ep2d")
+        dataset.add_new(Tag(0x0018, 0x9008), "CS", "GRADIENT")
+        for tag in (
+            Tag(0x0018, 0x9012),
+            Tag(0x0018, 0x9014),
+            Tag(0x0018, 0x9015),
+            Tag(0x0018, 0x9024),
+        ):
+            dataset.add_new(tag, "CS", "NO")
+        dataset.add_new(Tag(0x0018, 0x9017), "CS", "NONE")
+        dataset.add_new(Tag(0x0018, 0x9018), "CS", "YES")
+        dataset.add_new(Tag(0x0018, 0x9025), "CS", "NONE")
+        dataset.add_new(Tag(0x0018, 0x9029), "CS", "NONE")
+        dataset.add_new(Tag(0x0018, 0x9032), "CS", "RECTILINEAR")
+        dataset.add_new(Tag(0x0018, 0x9033), "CS", "SINGLE")
+        dataset.add_new(Tag(0x0018, 0x9034), "CS", "LINEAR")
+        dataset.add_new(Tag(0x0018, 0x9093), "US", 1)
+
+    frames = int(getattr(dataset, "NumberOfFrames", 1) or 1)
+    dataset.NumberOfFrames = str(frames)
+    existing_shared = list(getattr(dataset, "SharedFunctionalGroupsSequence", []))
+    shared = existing_shared[0] if len(existing_shared) == 1 else Dataset()
+    pixel_measures = Dataset()
+    pixel_measures.PixelSpacing = ["2", "2"]
+    pixel_measures.SliceThickness = "3"
+    shared.PixelMeasuresSequence = Sequence([pixel_measures])
+    plane_position = Dataset()
+    plane_position.ImagePositionPatient = ["0", "0", "0"]
+    shared.PlanePositionSequence = Sequence([plane_position])
+    plane_orientation = Dataset()
+    plane_orientation.ImageOrientationPatient = ["1", "0", "0", "0", "1", "0"]
+    shared.PlaneOrientationSequence = Sequence([plane_orientation])
+
+    if sop_class == enhanced_uid:
+        anatomy_code = Dataset()
+        anatomy_code.CodeValue = "T-A0100"
+        anatomy_code.CodingSchemeDesignator = "SRT"
+        anatomy_code.CodeMeaning = "ANATOMY"
+        frame_anatomy = Dataset()
+        frame_anatomy.AnatomicRegionSequence = Sequence([anatomy_code])
+        frame_anatomy.FrameLaterality = "U"
+        shared.FrameAnatomySequence = Sequence([frame_anatomy])
+
+        transform = Dataset()
+        transform.RescaleIntercept = "0"
+        transform.RescaleSlope = "1"
+        transform.RescaleType = "US"
+        shared.PixelValueTransformationSequence = Sequence([transform])
+
+        timing = Dataset()
+        timing.RepetitionTime = "800"
+        timing.EchoTrainLength = "1"
+        timing.FlipAngle = "70"
+        timing.add_new(Tag(0x0018, 0x9240), "US", 1)
+        timing.add_new(Tag(0x0018, 0x9241), "US", 1)
+        shared.MRTimingAndRelatedParametersSequence = Sequence([timing])
+        echo = Dataset()
+        echo.EffectiveEchoTime = 30.0
+        shared.MREchoSequence = Sequence([echo])
+        modifier = Dataset()
+        for tag, value in (
+            (Tag(0x0018, 0x9009), "NO"),
+            (Tag(0x0018, 0x9010), "NONE"),
+            (Tag(0x0018, 0x9016), "NONE"),
+            (Tag(0x0018, 0x9021), "NO"),
+            (Tag(0x0018, 0x9026), "NONE"),
+            (Tag(0x0018, 0x9027), "NONE"),
+            (Tag(0x0018, 0x9077), "NO"),
+            (Tag(0x0018, 0x9081), "NO"),
+        ):
+            modifier.add_new(tag, "CS", value)
+        shared.MRModifierSequence = Sequence([modifier])
+        imaging_modifier = Dataset()
+        imaging_modifier.PixelBandwidth = "2000"
+        imaging_modifier.add_new(Tag(0x0018, 0x9020), "CS", "NONE")
+        imaging_modifier.add_new(Tag(0x0018, 0x9022), "CS", "NO")
+        imaging_modifier.add_new(Tag(0x0018, 0x9028), "CS", "NONE")
+        imaging_modifier.add_new(Tag(0x0018, 0x9098), "FD", 123.25)
+        shared.MRImagingModifierSequence = Sequence([imaging_modifier])
+        receive = Dataset()
+        receive.ReceiveCoilName = "HEAD_32"
+        receive.add_new(Tag(0x0018, 0x9041), "LO", "")
+        receive.add_new(Tag(0x0018, 0x9043), "CS", "VOLUME")
+        receive.add_new(Tag(0x0018, 0x9044), "CS", "YES")
+        shared.MRReceiveCoilSequence = Sequence([receive])
+        transmit = Dataset()
+        transmit.TransmitCoilName = "BODY"
+        transmit.add_new(Tag(0x0018, 0x9050), "LO", "")
+        transmit.add_new(Tag(0x0018, 0x9051), "CS", "BODY")
+        shared.MRTransmitCoilSequence = Sequence([transmit])
+        averages = Dataset()
+        averages.NumberOfAverages = "1"
+        shared.MRAveragesSequence = Sequence([averages])
+        fov = Dataset()
+        fov.PercentSampling = "100"
+        fov.PercentPhaseFieldOfView = "100"
+        fov.InPlanePhaseEncodingDirection = "COLUMN"
+        fov.add_new(Tag(0x0018, 0x9058), "US", 64)
+        fov.add_new(Tag(0x0018, 0x9231), "US", 64)
+        shared.MRFOVGeometrySequence = Sequence([fov])
+    else:
+        shared.add_new(Tag(0x0020, 0x9170), "SQ", Sequence([Dataset()]))
+    dataset.SharedFunctionalGroupsSequence = Sequence([shared])
+
+    organization_uid = UID("2.25.100000000000000000000000000000000004")
+    organization = Dataset()
+    organization.DimensionOrganizationUID = organization_uid
+    dataset.DimensionOrganizationSequence = Sequence([organization])
+    dimension = Dataset()
+    dimension.DimensionOrganizationUID = organization_uid
+    dimension.DimensionIndexPointer = Tag(0x0020, 0x9057)
+    dimension.FunctionalGroupPointer = Tag(0x0020, 0x9111)
+    dataset.DimensionIndexSequence = Sequence([dimension])
+
+    existing_frames = list(getattr(dataset, "PerFrameFunctionalGroupsSequence", []))
+    per_frame = []
+    for index in range(frames):
+        frame = existing_frames[index] if index < len(existing_frames) else Dataset()
+        direct_frame_type = frame.get(Tag(0x0008, 0x9007))
+        existing_frame_type = frame.get(Tag(0x0018, 0x9226))
+        if (
+            existing_frame_type is not None
+            and len(existing_frame_type.value) == 1
+            and Tag(0x0008, 0x9007) in existing_frame_type.value[0]
+        ):
+            frame_type_values = list(
+                existing_frame_type.value[0][Tag(0x0008, 0x9007)].value
+            )
+        elif direct_frame_type is not None:
+            frame_type_values = list(direct_frame_type.value)
+        else:
+            frame_type_values = list(dataset.ImageType)
+        frame.pop(Tag(0x0008, 0x9007), None)
+        frame_type = Dataset()
+        frame_type.FrameType = frame_type_values
+        frame_type.add_new(Tag(0x0008, 0x9205), "CS", "MONOCHROME")
+        frame_type.add_new(Tag(0x0008, 0x9206), "CS", "VOLUME")
+        frame_type.add_new(Tag(0x0008, 0x9207), "CS", "NONE")
+        frame.MRImageFrameTypeSequence = Sequence([frame_type])
+        frame_content = Dataset()
+        frame_content.DimensionIndexValues = [index + 1]
+        frame_content.InStackPositionNumber = index + 1
+        if sop_class == enhanced_uid:
+            frame_content.FrameAcquisitionDateTime = "19000101000000"
+            frame_content.FrameReferenceDateTime = "19000101000000"
+            frame_content.FrameAcquisitionDuration = 10.0
+        frame.FrameContentSequence = Sequence([frame_content])
+        if sop_class == legacy_uid:
+            frame.add_new(Tag(0x0020, 0x9171), "SQ", Sequence([Dataset()]))
+        per_frame.append(frame)
+    dataset.PerFrameFunctionalGroupsSequence = Sequence(per_frame)
+
+    if (
+        adjust_pixel_data
+        and not UID(str(dataset.file_meta.TransferSyntaxUID)).is_compressed
+    ):
+        expected = (
+            int(dataset.Rows)
+            * int(dataset.Columns)
+            * int(dataset.SamplesPerPixel)
+            * frames
+            * (int(dataset.BitsAllocated) // 8)
+        )
+        dataset.PixelData = b"\0" * (expected + expected % 2)
 
 
 def archive_manifest(dicom: bytes, *, archive_id: str = ARCHIVE_ID) -> dict[str, Any]:
@@ -220,24 +475,100 @@ def archive_manifest(dicom: bytes, *, archive_id: str = ARCHIVE_ID) -> dict[str,
     }
 
 
+def archive_manifest_v2(
+    dicom: bytes,
+    *,
+    archive_id: str = ARCHIVE_ID,
+    series_kind: str = "structural_t1w",
+    processing_route: str = "archive-verify-v1",
+    evidence_code: str = "structural_t1w_detected",
+    source: dict[str, Any] | None = None,
+    safe_private_exceptions: list[str] | None = None,
+) -> dict[str, Any]:
+    deidentification: dict[str, Any] = {
+        "policy_id": "scaling-neuro.dicom-deidentification",
+        "policy_version": "2.0.0",
+        "method": "scaling-neuro-recursive-allowlist-v2",
+        "recursive": True,
+        "private_text_removed": True,
+        "unknown_private_removed": True,
+        "uids_remapped": True,
+        "pixel_data_retained": True,
+        "burned_in_annotation_status": "verified_no",
+        "defacing_performed": False,
+        "recognizable_visual_features": "may_be_present",
+    }
+    if safe_private_exceptions:
+        deidentification["safe_private_exceptions"] = safe_private_exceptions
+    return {
+        "schema_version": "2.0.0",
+        "series_archive_id": archive_id,
+        "series_id": SERIES_ID,
+        "subject_id": SUBJECT_ID,
+        "session_id": SESSION_ID,
+        "protocol_group_id": PROTOCOL_ID,
+        "modality": "mr",
+        "series_kind": series_kind,
+        "processing_route": processing_route,
+        "pixel_data_policy": "scanner-native-not-defaced",
+        "dicom_instance_count": 1,
+        "writer_contract": {"name": "neuro-sync", "version": "2.0.0"},
+        "deidentification": deidentification,
+        "source": source
+        or {
+            "dicom_count": 1,
+            "manufacturer": "GE MEDICAL SYSTEMS",
+            "model": "Discovery MR750",
+            "software_versions": ["GE DV26"],
+            "scanning_sequence": ["GR"],
+            "sequence_name": "mprage",
+            "mr_acquisition_type": "3D",
+            "image_type": ["ORIGINAL", "PRIMARY", "M", "T1"],
+            "series_number": 7,
+        },
+        "classification": {
+            "decision": "accepted",
+            "kind": series_kind,
+            "confidence": 0.98,
+            "evidence": [
+                {
+                    "code": evidence_code,
+                    "source": "dicom_header",
+                    "effect": "supports",
+                }
+            ],
+        },
+        "instances": [
+            {
+                "path": "dicom/000001.dcm",
+                "size_bytes": len(dicom),
+                "sha256": hashlib.sha256(dicom).hexdigest(),
+                "sop_instance_uid": SOP_UID,
+            }
+        ],
+    }
+
+
 def make_archive(
     path: Path,
     dicom: bytes,
     manifest: dict[str, Any],
     *,
+    dicoms: list[bytes] | None = None,
     extra_member: tarfile.TarInfo | None = None,
     dicom_header_mutator: Callable[[bytearray], None] | None = None,
     dicom_padding_byte: int = 0,
 ) -> bytes:
     tar_path = path.with_suffix(".tar")
     archive = bytearray()
-    _append_canonical_member(
-        archive,
-        "dicom/000001.dcm",
-        dicom,
-        header_mutator=dicom_header_mutator,
-        padding_byte=dicom_padding_byte,
-    )
+    for index, payload in enumerate(dicoms or [dicom], start=1):
+        _append_canonical_member(
+            archive,
+            f"dicom/{index:06d}.dcm",
+            payload,
+            header_mutator=dicom_header_mutator,
+            padding_byte=dicom_padding_byte,
+        )
     if extra_member is not None:
         payload = b"x" * extra_member.size if extra_member.isfile() else b""
         if extra_member.isfile():

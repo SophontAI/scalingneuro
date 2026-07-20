@@ -9,7 +9,7 @@ from pathlib import Path
 import re
 import shutil
 import subprocess
-from threading import Event, Timer
+from threading import Event, Thread, Timer
 from typing import Any, Mapping
 
 from .config import Config
@@ -18,8 +18,10 @@ from .dicom_privacy import (
     SAFE_PRIVATE_EXCEPTION_ORDER,
     SAFE_PRIVATE_EXCEPTIONS,
     audit_dicom,
+    safe_scanner_text,
 )
-from .errors import CapacityFailure, ConverterFailure, InvalidArchive
+from .errors import CapacityFailure, ConverterFailure, InvalidArchive, LeaseLost
+from .models import PIXEL_DATA_POLICY, PROCESSING_ROUTES, SERIES_KINDS
 from . import sandbox
 
 
@@ -29,73 +31,10 @@ UID_RE = re.compile(r"^[0-9]+(?:\.[0-9]+)+$")
 SEMVER_RE = re.compile(
     r"^(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)(?:[-+][A-Za-z0-9.-]+)?$"
 )
-SOFTWARE_VERSION_RE = re.compile(
-    r"^(?:Siemens (?:[A-E][0-9]{2}[A-Z]?|V[A-E][0-9]{2}[A-Z]?|X[AB][0-9]{2}[A-Z]?)|"
-    r"(?:Philips|Canon/Toshiba|United Imaging|Bruker) [1-9][0-9]?(?:\.[0-9]{1,2}){1,3}|"
-    r"GE (?:DV[0-9]{1,2}(?:\.[0-9]{1,2})?|[1-9][0-9]?(?:\.[0-9]{1,2}){1,3}))$"
-)
 CANONICAL_COIL_RE = re.compile(
-    r"^(?:HEAD(?:_NECK)?|NECK|BODY|SPINE|KNEE|FLEX|BREAST|CARDIAC|FOOT|ANKLE|SHOULDER|WRIST)"
+    r"^(?:MULTI_COIL|SURFACE|HEAD(?:_NECK)?|NECK|BODY|SPINE|KNEE|FLEX|BREAST|CARDIAC|FOOT|ANKLE|SHOULDER|WRIST)"
     r"(?:_(?:[1-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-6]))?$"
 )
-SCANNER_MODELS = {
-    "MAGNETOM Prisma_fit",
-    "MAGNETOM Prisma",
-    "MAGNETOM Skyra",
-    "MAGNETOM TrioTim",
-    "MAGNETOM Trio",
-    "MAGNETOM Vida",
-    "MAGNETOM Verio",
-    "MAGNETOM Terra",
-    "MAGNETOM Cima.X",
-    "MAGNETOM Connectom",
-    "MAGNETOM Sola",
-    "MAGNETOM Aera",
-    "MAGNETOM Avanto",
-    "MAGNETOM Allegra",
-    "MAGNETOM Espree",
-    "Biograph mMR",
-    "Ingenia Elition X",
-    "Ingenia Ambition X",
-    "Ingenia CX",
-    "Ingenia",
-    "Achieva dStream",
-    "Achieva",
-    "Intera",
-    "MR 7700",
-    "Discovery MR750w",
-    "Discovery MR750",
-    "Optima MR450w",
-    "SIGNA Premier",
-    "SIGNA Architect",
-    "SIGNA PET/MR",
-    "SIGNA HDxt",
-    "SIGNA Voyager",
-    "SIGNA Artist",
-    "SIGNA Hero",
-    "Vantage Galan",
-    "Vantage Titan",
-    "Vantage Orian",
-    "Vantage Elan",
-    "uMR Jupiter",
-    "uMR Omega",
-    "uMR 790",
-    "uMR 780",
-    "uMR 770",
-    "uMR 670",
-    "uMR 570",
-    "uMR 560",
-    "BioSpec",
-    "PharmaScan",
-}
-CANONICAL_MANUFACTURERS = {
-    "SIEMENS",
-    "Philips Medical Systems",
-    "GE MEDICAL SYSTEMS",
-    "Canon/Toshiba",
-    "United Imaging",
-    "Bruker",
-}
 PHILIPS_REQUIRED_PRIVATE_FIELDS = frozenset(
     {"scale_intercept", "scale_slope", "number_of_slices", "water_fat_shift"}
 )
@@ -107,8 +46,17 @@ SEQUENCE_NAMES = {
     "ep2d",
     "epfid",
     "epi",
+    "mprage",
+    "flair",
+    "bravo",
+    "spgr",
+    "space",
+    "diffusion",
+    "pcasl",
+    "pasl",
+    "fieldmap",
 }
-CLASSIFICATION_EVIDENCE = {
+LEGACY_FUNCTIONAL_EVIDENCE = {
     "echo_planar_pulse_sequence",
     "echo_planar_scanning_sequence",
     "functional_image_type",
@@ -117,8 +65,78 @@ CLASSIFICATION_EVIDENCE = {
     "functional_tr_range",
     "multiple_temporal_positions",
 }
+CLASSIFICATION_EVIDENCE_EFFECTS = {
+    **{code: frozenset({"supports"}) for code in LEGACY_FUNCTIONAL_EVIDENCE},
+    "functional_epi_confirmed": frozenset({"supports"}),
+    "diffusion_detected": frozenset({"supports"}),
+    "diffusion_scientific_metadata_contract_verified": frozenset({"supports"}),
+    "asl_or_perfusion_detected": frozenset({"supports"}),
+    "asl_scientific_metadata_contract_verified": frozenset({"supports"}),
+    "perfusion_detected": frozenset({"supports"}),
+    "fieldmap_detected": frozenset({"supports"}),
+    "sbref_detected": frozenset({"supports"}),
+    "localizer_detected": frozenset({"supports"}),
+    "structural_t1w_detected": frozenset({"supports"}),
+    "structural_t2w_detected": frozenset({"supports"}),
+    "structural_detected": frozenset({"supports"}),
+    "derived_or_secondary": frozenset({"supports"}),
+    "supported_mr_image": frozenset({"supports"}),
+    "missing_tr_in_series_instance": frozenset({"limits_processing"}),
+    "missing_te_in_series_instance": frozenset({"limits_processing"}),
+    "tr_out_of_range_in_series_instance": frozenset({"limits_processing"}),
+    "te_out_of_range_in_series_instance": frozenset({"limits_processing"}),
+    "tr_inconsistent_across_series_instances": frozenset({"limits_processing"}),
+    "philips_private_metadata_dropped_public_pixel_scaling_retained": frozenset(
+        {"limits_processing"}
+    ),
+}
+CLASSIFICATION_EVIDENCE = frozenset(CLASSIFICATION_EVIDENCE_EFFECTS)
+METADATA_TRANSFORMATION_ORDER = (
+    "replaced_unknown_classic_image_type_components_with_other",
+    "suppressed_redundant_philips_dynamic_trigger_time",
+    "emptied_asl_technique_description",
+    "redacted_asl_crusher_description",
+    "emptied_asl_bolus_cutoff_technique",
+)
+PRIVATE_EXCEPTION_MANUFACTURERS = {
+    "siemens_csa_image_header_numeric_v1": "SIEMENS",
+    "dicom_ps3.15_siemens_mr_header_diffusion": "SIEMENS",
+    "dicom_ps3.15_philips_diffusion": "Philips Medical Systems",
+    "dicom_ps3.15_philips_phase_number": "Philips Medical Systems",
+    "dicom_ps3.15_ge_diffusion_b_value": "GE MEDICAL SYSTEMS",
+    "uih_image_private_header_grid_slice_count_numeric_v1": "United Imaging",
+    "uih_image_private_header_diffusion_numeric_v1": "United Imaging",
+    "philips_mr_imaging_dd_001_diffusion_gradient_vector_numeric_v1": "Philips Medical Systems",
+    "philips_mr_imaging_dd_005_diffusion_indices_numeric_v1": "Philips Medical Systems",
+    "philips_mr_imaging_dd_005_asl_label_code_v1": "Philips Medical Systems",
+    "ge_gems_acqu_01_diffusion_gradient_vector_numeric_v1": "GE MEDICAL SYSTEMS",
+    "ge_gems_parm_01_asl_technique_duration_v1": "GE MEDICAL SYSTEMS",
+    "dicom_ps3.15_philips_scale_intercept_slope": "Philips Medical Systems",
+    "dicom_ps3.15_philips_number_of_slices": "Philips Medical Systems",
+    "dicom_ps3.15_philips_water_fat_shift": "Philips Medical Systems",
+    "dicom_ps3.15_philips_per_frame_scale_slope": "Philips Medical Systems",
+}
+
+
+def _scanner_vendor_family(value: str) -> str | None:
+    upper = " ".join(value.split()).upper()
+    if upper == "SIEMENS" or upper.startswith("SIEMENS "):
+        return "SIEMENS"
+    if upper == "PHILIPS" or upper.startswith("PHILIPS "):
+        return "Philips Medical Systems"
+    if upper == "GE" or upper.startswith(("GE ", "GENERAL ELECTRIC")):
+        return "GE MEDICAL SYSTEMS"
+    if "CANON" in upper or "TOSHIBA" in upper:
+        return "Canon/Toshiba"
+    if upper == "UIH" or "UNITEDIMAGING" in upper or "UNITED IMAGING" in upper:
+        return "United Imaging"
+    if "BRUKER" in upper:
+        return "Bruker"
+    return None
+
+
 MAX_MANIFEST_BYTES = 128 * 1024**2
-MAX_DICOM_BYTES = 256 * 1024**2
+MAX_DICOM_BYTES = 64 * 1024**3
 MAX_DICOM_INSTANCES = 500_000
 MAX_COMPRESSED_ARCHIVE_BYTES = 64 * 1024**3
 TAR_BLOCK_BYTES = 512
@@ -133,10 +151,27 @@ class ArchiveManifest:
     value: dict[str, Any]
     sha256: str
     extracted_bytes: int = 0
+    functional_epi_headers_confirmed: bool = False
 
     @property
     def dicom_count(self) -> int:
         return self.value["dicom_instance_count"]
+
+    @property
+    def series_kind(self) -> str:
+        return self.value.get("series_kind", "functional_epi")
+
+    @property
+    def processing_route(self) -> str:
+        return self.value.get("processing_route", "functional-epi-v1")
+
+    @property
+    def pixel_data_policy(self) -> str:
+        return self.value.get("pixel_data_policy", PIXEL_DATA_POLICY)
+
+    @property
+    def deidentification_policy_version(self) -> str:
+        return self.value["deidentification"]["policy_version"]
 
 
 def _unique_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
@@ -211,7 +246,9 @@ def _validate_source(source: Any, count: int) -> None:
         "image_type": (
             {
                 "ORIGINAL",
+                "DERIVED",
                 "PRIMARY",
+                "SECONDARY",
                 "M",
                 "MAGNITUDE",
                 "P",
@@ -224,13 +261,39 @@ def _validate_source(source: Any, count: int) -> None:
                 "ND",
                 "NORM",
                 "MOSAIC",
+                "GRID",
+                "VFRAME",
                 "DIS2D",
                 "FMRI",
                 "BOLD",
                 "EPI",
+                "T1",
+                "T1W",
+                "T2",
+                "T2W",
+                "T2_STAR",
+                "T2STAR",
+                "FLAIR",
+                "DIFFUSION",
+                "DWI",
+                "ADC",
+                "TRACEW",
+                "FA",
+                "DTI",
+                "ASL",
+                "PERFUSION",
+                "FIELD_MAP",
+                "FIELDMAP",
+                "PHASEDIFF",
+                "SBREF",
+                "LOCALIZER",
+                "SCOUT",
+                "SURVEY",
+                "REF",
+                "REFERENCE",
                 "NONE",
             },
-            19,
+            48,
         ),
     }
     for key, (allowed, maximum) in enum_lists.items():
@@ -253,16 +316,16 @@ def _validate_source(source: Any, count: int) -> None:
             or not 1 <= len(versions) <= 16
             or any(not isinstance(item, str) for item in versions)
             or len(versions) != len(set(versions))
-            or any(SOFTWARE_VERSION_RE.fullmatch(item) is None for item in versions)
+            or any(not safe_scanner_text(item) for item in versions)
         ):
             raise InvalidArchive("ARCHIVE_MANIFEST_SCHEMA")
     if "manufacturer" in source and (
         not isinstance(source["manufacturer"], str)
-        or source["manufacturer"] not in CANONICAL_MANUFACTURERS
+        or not safe_scanner_text(source["manufacturer"])
     ):
         raise InvalidArchive("ARCHIVE_MANIFEST_SCHEMA")
     if "model" in source and (
-        not isinstance(source["model"], str) or source["model"] not in SCANNER_MODELS
+        not isinstance(source["model"], str) or not safe_scanner_text(source["model"])
     ):
         raise InvalidArchive("ARCHIVE_MANIFEST_SCHEMA")
     for key in ("receive_coil_name", "transmit_coil_name"):
@@ -304,6 +367,9 @@ def validate_manifest(
     expected_series_archive_id: str,
     expected_series_id: str,
     expected_dicom_count: int,
+    expected_series_kind: str = "functional_epi",
+    expected_processing_route: str = "functional-epi-v1",
+    expected_pixel_data_policy: str = PIXEL_DATA_POLICY,
 ) -> ArchiveManifest:
     try:
         value = json.loads(
@@ -317,25 +383,62 @@ def validate_manifest(
         raise InvalidArchive("ARCHIVE_MANIFEST_JSON") from exc
     if not isinstance(value, dict):
         raise InvalidArchive("ARCHIVE_MANIFEST_SCHEMA")
+    schema_version = value.get("schema_version")
+    required = {
+        "schema_version",
+        "series_archive_id",
+        "series_id",
+        "subject_id",
+        "session_id",
+        "protocol_group_id",
+        "modality",
+        "dicom_instance_count",
+        "deidentification",
+        "source",
+        "classification",
+        "instances",
+    }
+    if schema_version == "1.0.0":
+        required.add("client")
+    if schema_version == "2.0.0":
+        required.update(
+            {"series_kind", "processing_route", "pixel_data_policy", "writer_contract"}
+        )
     _exact_keys(
         value,
-        {
-            "schema_version",
-            "series_archive_id",
-            "series_id",
-            "subject_id",
-            "session_id",
-            "protocol_group_id",
-            "modality",
-            "dicom_instance_count",
-            "client",
-            "deidentification",
-            "source",
-            "classification",
-            "instances",
-        },
+        required,
     )
-    if value["schema_version"] != "1.0.0" or value["modality"] != "functional_epi":
+    if schema_version == "1.0.0":
+        if (
+            value["modality"] != "functional_epi"
+            or expected_series_kind != "functional_epi"
+            or expected_processing_route != "functional-epi-v1"
+            or expected_pixel_data_policy != PIXEL_DATA_POLICY
+        ):
+            raise InvalidArchive("ARCHIVE_PROCESSING_ROUTE_MISMATCH")
+        manifest_series_kind = "functional_epi"
+        manifest_processing_route = "functional-epi-v1"
+        manifest_pixel_data_policy = PIXEL_DATA_POLICY
+    elif schema_version == "2.0.0":
+        manifest_series_kind = value["series_kind"]
+        manifest_processing_route = value["processing_route"]
+        manifest_pixel_data_policy = value["pixel_data_policy"]
+        if (
+            value["modality"] != "mr"
+            or manifest_series_kind not in SERIES_KINDS
+            or manifest_processing_route not in PROCESSING_ROUTES
+            or manifest_pixel_data_policy != PIXEL_DATA_POLICY
+        ):
+            raise InvalidArchive("ARCHIVE_MANIFEST_SCHEMA")
+        if (
+            manifest_series_kind != expected_series_kind
+            or manifest_processing_route != expected_processing_route
+            or manifest_pixel_data_policy != expected_pixel_data_policy
+            or (manifest_series_kind == "functional_epi")
+            != (manifest_processing_route == "functional-epi-v1")
+        ):
+            raise InvalidArchive("ARCHIVE_PROCESSING_ROUTE_MISMATCH")
+    else:
         raise InvalidArchive("ARCHIVE_MANIFEST_SCHEMA")
     archive_id = _pseudonym(value["series_archive_id"])
     if archive_id != expected_series_archive_id:
@@ -353,33 +456,41 @@ def validate_manifest(
     ):
         raise InvalidArchive("ARCHIVE_DICOM_COUNT_MISMATCH")
 
-    client = value["client"]
-    if not isinstance(client, dict):
+    writer_contract = (
+        value["client"] if schema_version == "1.0.0" else value["writer_contract"]
+    )
+    if not isinstance(writer_contract, dict):
         raise InvalidArchive("ARCHIVE_MANIFEST_SCHEMA")
-    _exact_keys(client, {"name", "version"})
+    _exact_keys(writer_contract, {"name", "version"})
     if (
-        client["name"] != "neuro-sync"
-        or not isinstance(client["version"], str)
-        or not SEMVER_RE.fullmatch(client["version"])
+        writer_contract["name"] != "neuro-sync"
+        or not isinstance(writer_contract["version"], str)
+        or not SEMVER_RE.fullmatch(writer_contract["version"])
+        or (schema_version == "2.0.0" and writer_contract["version"] != "2.0.0")
     ):
         raise InvalidArchive("ARCHIVE_MANIFEST_SCHEMA")
 
     deid = value["deidentification"]
     if not isinstance(deid, dict):
         raise InvalidArchive("ARCHIVE_MANIFEST_SCHEMA")
+    deidentification_required = {
+        "policy_id",
+        "policy_version",
+        "method",
+        "recursive",
+        "private_text_removed",
+        "unknown_private_removed",
+        "uids_remapped",
+        "pixel_data_retained",
+        "burned_in_annotation_status",
+    }
+    if schema_version == "2.0.0":
+        deidentification_required.update(
+            {"defacing_performed", "recognizable_visual_features"}
+        )
     _exact_keys(
         deid,
-        {
-            "policy_id",
-            "policy_version",
-            "method",
-            "recursive",
-            "private_text_removed",
-            "unknown_private_removed",
-            "uids_remapped",
-            "pixel_data_retained",
-            "burned_in_annotation_status",
-        },
+        deidentification_required,
         {"safe_private_exceptions", "metadata_transformations"},
     )
     for key in (
@@ -391,12 +502,21 @@ def validate_manifest(
     ):
         if deid[key] is not True:
             raise InvalidArchive("ARCHIVE_DEIDENTIFICATION_UNVERIFIED")
+    expected_deidentification = (
+        ("1.0.0", "scaling-neuro-recursive-allowlist-v1")
+        if schema_version == "1.0.0"
+        else ("2.0.0", "scaling-neuro-recursive-allowlist-v2")
+    )
     if (
         deid["policy_id"] != "scaling-neuro.dicom-deidentification"
-        or deid["policy_version"] != "1.0.0"
-        or deid["method"] != "scaling-neuro-recursive-allowlist-v1"
+        or (deid["policy_version"], deid["method"]) != expected_deidentification
         or not isinstance(deid["burned_in_annotation_status"], str)
         or deid["burned_in_annotation_status"] not in {"verified_no", "not_declared"}
+    ):
+        raise InvalidArchive("ARCHIVE_DEIDENTIFICATION_POLICY_MISMATCH")
+    if schema_version == "2.0.0" and (
+        deid["defacing_performed"] is not False
+        or deid["recognizable_visual_features"] != "may_be_present"
     ):
         raise InvalidArchive("ARCHIVE_DEIDENTIFICATION_POLICY_MISMATCH")
     declared_private_exceptions = deid.get("safe_private_exceptions", [])
@@ -415,9 +535,18 @@ def validate_manifest(
     ):
         raise InvalidArchive("ARCHIVE_DEIDENTIFICATION_POLICY_MISMATCH")
     metadata_transformations = deid.get("metadata_transformations", [])
-    if "metadata_transformations" in deid and metadata_transformations != [
-        "suppressed_redundant_philips_dynamic_trigger_time"
-    ]:
+    if "metadata_transformations" in deid and (
+        not isinstance(metadata_transformations, list)
+        or not metadata_transformations
+        or any(not isinstance(item, str) for item in metadata_transformations)
+        or len(metadata_transformations) != len(set(metadata_transformations))
+        or metadata_transformations
+        != [
+            item
+            for item in METADATA_TRANSFORMATION_ORDER
+            if item in metadata_transformations
+        ]
+    ):
         raise InvalidArchive("ARCHIVE_DEIDENTIFICATION_POLICY_MISMATCH")
 
     _validate_source(value["source"], count)
@@ -425,11 +554,10 @@ def validate_manifest(
     if not isinstance(classification, dict):
         raise InvalidArchive("ARCHIVE_MANIFEST_SCHEMA")
     _exact_keys(classification, {"decision", "kind", "confidence", "evidence"})
-    if (
-        classification["decision"] != "accepted"
-        or classification["kind"] != "functional_epi"
-    ):
-        raise InvalidArchive("ARCHIVE_NOT_FUNCTIONAL_EPI")
+    if classification["decision"] != "accepted":
+        raise InvalidArchive("ARCHIVE_MANIFEST_SCHEMA")
+    if classification["kind"] != manifest_series_kind:
+        raise InvalidArchive("ARCHIVE_PROCESSING_ROUTE_MISMATCH")
     _finite_number(classification["confidence"], 0.9, 1.0)
     evidence = classification["evidence"]
     if not isinstance(evidence, list) or not 1 <= len(evidence) <= 64:
@@ -442,12 +570,22 @@ def validate_manifest(
         code = item["code"]
         if (
             not isinstance(code, str)
-            or code not in CLASSIFICATION_EVIDENCE
+            or code
+            not in (
+                LEGACY_FUNCTIONAL_EVIDENCE
+                if schema_version == "1.0.0"
+                else CLASSIFICATION_EVIDENCE
+            )
             or code in observed_evidence
         ):
             raise InvalidArchive("ARCHIVE_MANIFEST_SCHEMA")
         observed_evidence.add(code)
-        if item["source"] != "dicom_header" or item["effect"] != "supports":
+        expected_effects = (
+            frozenset({"supports"})
+            if schema_version == "1.0.0"
+            else CLASSIFICATION_EVIDENCE_EFFECTS[code]
+        )
+        if item["source"] != "dicom_header" or item["effect"] not in expected_effects:
             raise InvalidArchive("ARCHIVE_MANIFEST_SCHEMA")
 
     instances = value["instances"]
@@ -629,6 +767,8 @@ def _functional_epi_headers_confirmed(audits: list[DicomAudit]) -> bool:
         if (
             audit.acquisition_contrast & negative_contrasts
             or (audit.diffusion_b_value is not None and audit.diffusion_b_value > 1.0)
+            or audit.diffusion_semantic_evidence
+            or audit.asl_metadata_present
             or audit.asl_technique_present
         ):
             return False
@@ -675,6 +815,35 @@ def _archive_extraction_contract_bytes(config: Config, archive_bytes: int) -> in
     )
 
 
+EXTRACTION_LEASE_POLL_SECONDS = 0.05
+
+
+def _require_active_lease(lease_active: Event) -> None:
+    if not lease_active.is_set():
+        raise LeaseLost()
+
+
+def _terminate_process(process: subprocess.Popen[bytes]) -> None:
+    try:
+        if process.poll() is None:
+            process.kill()
+    except OSError:
+        pass
+    try:
+        process.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        try:
+            process.kill()
+        except OSError:
+            pass
+        try:
+            process.wait(timeout=5)
+        except (OSError, subprocess.TimeoutExpired):
+            pass
+    except OSError:
+        pass
+
+
 def _extract_archive(
     config: Config,
     archive_path: Path,
@@ -683,7 +852,12 @@ def _extract_archive(
     expected_series_archive_id: str,
     expected_series_id: str,
     expected_dicom_count: int,
+    expected_series_kind: str,
+    expected_processing_route: str,
+    expected_pixel_data_policy: str,
+    lease_active: Event,
 ) -> ArchiveManifest:
+    _require_active_lease(lease_active)
     if not 1 <= expected_dicom_count <= MAX_DICOM_INSTANCES:
         raise InvalidArchive("ARCHIVE_DICOM_COUNT_MISMATCH")
     destination.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -718,6 +892,8 @@ def _extract_archive(
         raise ConverterFailure("ZSTD_UNAVAILABLE", retryable=True) from exc
     assert process.stdout is not None
     extraction_timed_out = Event()
+    lease_cancelled = Event()
+    lease_monitor_stop = Event()
 
     def terminate_slow_extraction() -> None:
         extraction_timed_out.set()
@@ -736,9 +912,30 @@ def _extract_archive(
     extraction_timer = Timer(extraction_seconds, terminate_slow_extraction)
     extraction_timer.daemon = True
     extraction_timer.start()
+
+    def terminate_after_lease_loss() -> None:
+        while not lease_monitor_stop.is_set():
+            if not lease_active.is_set():
+                lease_cancelled.set()
+                try:
+                    process.kill()
+                except OSError:
+                    pass
+                return
+            if lease_monitor_stop.wait(EXTRACTION_LEASE_POLL_SECONDS):
+                return
+
+    lease_monitor = Thread(
+        target=terminate_after_lease_loss,
+        name="archive-lease-monitor",
+        daemon=True,
+    )
+    lease_monitor.start()
     try:
         while True:
+            _require_active_lease(lease_active)
             header = _read_exact(process.stdout, TAR_BLOCK_BYTES)
+            _require_active_lease(lease_active)
             if header == b"\0" * TAR_BLOCK_BYTES:
                 if (
                     _read_exact(process.stdout, TAR_BLOCK_BYTES)
@@ -775,7 +972,9 @@ def _extract_archive(
                 with path.open("xb") as output:
                     path.chmod(0o600)
                     while remaining:
+                        _require_active_lease(lease_active)
                         chunk = _read_exact(process.stdout, min(8 * 1024**2, remaining))
+                        _require_active_lease(lease_active)
                         remaining -= len(chunk)
                         digest.update(chunk)
                         output.write(chunk)
@@ -783,25 +982,32 @@ def _extract_archive(
             padding = (-member_size) % TAR_BLOCK_BYTES
             if padding and any(_read_exact(process.stdout, padding)):
                 raise InvalidArchive("ARCHIVE_TAR_PADDING_INVALID")
+        _require_active_lease(lease_active)
         process.stdout.close()
         try:
             completed_returncode = process.wait(timeout=30)
         except subprocess.TimeoutExpired as exc:
             extraction_timer.cancel()
-            process.kill()
-            process.wait()
+            _terminate_process(process)
+            if lease_cancelled.is_set() or not lease_active.is_set():
+                raise LeaseLost() from exc
             raise ConverterFailure("ZSTD_SANDBOX_TIMEOUT", retryable=True) from exc
         extraction_timer.cancel()
+        _require_active_lease(lease_active)
         if extraction_timed_out.is_set():
-            raise InvalidArchive("ARCHIVE_EXTRACTION_TIMEOUT")
+            raise ConverterFailure("ARCHIVE_EXTRACTION_TIMEOUT", retryable=True)
         _check_zstd_returncode(config, completed_returncode)
     except InvalidArchive as error:
         extraction_timer.cancel()
         process.stdout.close()
+        if lease_cancelled.is_set() or not lease_active.is_set():
+            _terminate_process(process)
+            raise LeaseLost() from error
         if extraction_timed_out.is_set():
-            process.kill()
-            process.wait()
-            raise InvalidArchive("ARCHIVE_EXTRACTION_TIMEOUT") from error
+            _terminate_process(process)
+            raise ConverterFailure(
+                "ARCHIVE_EXTRACTION_TIMEOUT", retryable=True
+            ) from error
         if error.code == "ARCHIVE_TRUNCATED":
             try:
                 polled_returncode = process.wait(timeout=5)
@@ -815,15 +1021,17 @@ def _extract_archive(
             except (InvalidArchive, ConverterFailure) as process_error:
                 raise process_error from error
         else:
-            process.kill()
-            process.wait()
+            _terminate_process(process)
         raise
     except BaseException:
         extraction_timer.cancel()
         process.stdout.close()
-        process.kill()
-        process.wait()
+        _terminate_process(process)
         raise
+    finally:
+        lease_monitor_stop.set()
+        lease_monitor.join(timeout=1)
+    _require_active_lease(lease_active)
     if manifest_raw is None:
         raise InvalidArchive("ARCHIVE_MANIFEST_MISSING")
     manifest = validate_manifest(
@@ -831,16 +1039,24 @@ def _extract_archive(
         expected_series_archive_id=expected_series_archive_id,
         expected_series_id=expected_series_id,
         expected_dicom_count=expected_dicom_count,
+        expected_series_kind=expected_series_kind,
+        expected_processing_route=expected_processing_route,
+        expected_pixel_data_policy=expected_pixel_data_policy,
     )
+    _require_active_lease(lease_active)
     if len(extracted) != manifest.dicom_count:
         raise InvalidArchive("ARCHIVE_DICOM_COUNT_MISMATCH")
     burned_in_declared: list[bool] = []
     dicom_audits: list[DicomAudit] = []
     observed_private_exceptions: set[str] = set()
     trigger_time_present = False
+    asl_technique_descriptions_emptied = 0
+    asl_crusher_descriptions_redacted = 0
+    asl_bolus_cutoff_techniques_emptied = 0
     for extracted_item, declared in zip(
         extracted, manifest.value["instances"], strict=True
     ):
+        _require_active_lease(lease_active)
         name, size, file_sha256, path = extracted_item
         if (
             name != declared["path"]
@@ -851,12 +1067,16 @@ def _extract_archive(
         audit = audit_dicom(
             path,
             expected_subject_id=manifest.value["subject_id"],
+            expected_deidentification_policy_version=(
+                manifest.deidentification_policy_version
+            ),
         )
         if audit.sop_instance_uid != declared["sop_instance_uid"]:
             raise InvalidArchive("ARCHIVE_SOP_UID_MISMATCH")
         source_manufacturer = manifest.value["source"].get("manufacturer")
         if (
             source_manufacturer is not None
+            and audit.manufacturer is not None
             and audit.manufacturer != source_manufacturer
         ):
             raise InvalidArchive("ARCHIVE_MANUFACTURER_MISMATCH")
@@ -864,53 +1084,235 @@ def _extract_archive(
         source_versions = manifest.value["source"].get("software_versions")
         if (
             source_model is not None
+            and audit.model is not None
             and audit.model != source_model
             or source_versions is not None
+            and audit.software_versions
             and audit.software_versions != frozenset(source_versions)
         ):
             raise InvalidArchive("ARCHIVE_SCANNER_METADATA_MISMATCH")
+        source = manifest.value["source"]
+        scalar_acquisition_fields = (
+            ("patient_position", audit.patient_position),
+            ("receive_coil_name", audit.receive_coil_name),
+            ("transmit_coil_name", audit.transmit_coil_name),
+            ("sequence_name", audit.sequence_name),
+            ("mr_acquisition_type", audit.mr_acquisition_type),
+            ("series_number", audit.series_number),
+        )
+        if any(
+            source.get(name) is not None
+            and observed is not None
+            and source[name] != observed
+            for name, observed in scalar_acquisition_fields
+        ):
+            raise InvalidArchive("ARCHIVE_ACQUISITION_METADATA_MISMATCH")
+        source_field_strength = source.get("magnetic_field_strength")
+        if (
+            source_field_strength is not None
+            and audit.magnetic_field_strength is not None
+            and not math.isclose(
+                float(source_field_strength),
+                audit.magnetic_field_strength,
+                rel_tol=1.0e-6,
+                abs_tol=1.0e-6,
+            )
+        ):
+            raise InvalidArchive("ARCHIVE_ACQUISITION_METADATA_MISMATCH")
+        set_acquisition_fields = (
+            ("scanning_sequence", audit.scanning_sequence),
+            ("sequence_variant", audit.sequence_variant),
+            ("scan_options", audit.scan_options),
+        )
+        if any(
+            source.get(name) is not None
+            and observed
+            and frozenset(source[name]) != observed
+            for name, observed in set_acquisition_fields
+        ):
+            raise InvalidArchive("ARCHIVE_ACQUISITION_METADATA_MISMATCH")
         if audit.sop_class_uid not in {
             "1.2.840.10008.5.1.4.1.1.4",
             "1.2.840.10008.5.1.4.1.1.4.1",
             "1.2.840.10008.5.1.4.1.1.4.4",
         }:
             raise InvalidArchive("ARCHIVE_UNSUPPORTED_DICOM_FORM")
-        if audit.manufacturer == "SIEMENS":
-            if any(
-                exception.startswith("dicom_ps3.15_philips_")
-                for exception in audit.private_exceptions
-            ):
-                raise InvalidArchive("ARCHIVE_VENDOR_METADATA_MISMATCH")
-            if (
-                "MOSAIC" in audit.image_type
-                and "siemens_csa_image_header_numeric_v1"
-                not in audit.private_exceptions
-            ):
-                raise InvalidArchive("ARCHIVE_SIEMENS_CSA_REQUIRED")
-        elif audit.manufacturer == "Philips Medical Systems":
-            if any(
-                exception == "siemens_csa_image_header_numeric_v1"
-                for exception in audit.private_exceptions
-            ):
-                raise InvalidArchive("ARCHIVE_VENDOR_METADATA_MISMATCH")
-        elif audit.manufacturer is None:
-            has_siemens = (
-                "siemens_csa_image_header_numeric_v1" in audit.private_exceptions
-            )
-            has_philips = any(
-                exception.startswith("dicom_ps3.15_philips_")
-                for exception in audit.private_exceptions
-            )
-            if has_siemens and has_philips:
-                raise InvalidArchive("ARCHIVE_VENDOR_METADATA_MISMATCH")
-        elif audit.private_exceptions:
+        private_vendor_families = {
+            PRIVATE_EXCEPTION_MANUFACTURERS.get(exception, "unsupported")
+            for exception in audit.private_exceptions
+        }
+        if "unsupported" in private_vendor_families:
             raise InvalidArchive("ARCHIVE_VENDOR_METADATA_MISMATCH")
+        audited_vendor_family = (
+            _scanner_vendor_family(audit.manufacturer)
+            if audit.manufacturer is not None
+            else None
+        )
+        if audit.manufacturer is not None and (
+            private_vendor_families
+            and (
+                audited_vendor_family is None
+                or private_vendor_families - {audited_vendor_family}
+            )
+        ):
+            raise InvalidArchive("ARCHIVE_VENDOR_METADATA_MISMATCH")
+        if audit.manufacturer is None and len(private_vendor_families) > 1:
+            raise InvalidArchive("ARCHIVE_VENDOR_METADATA_MISMATCH")
+        if (
+            "MOSAIC" in audit.image_type
+            and "siemens_csa_image_header_numeric_v1" not in audit.private_exceptions
+        ):
+            raise InvalidArchive("ARCHIVE_MOSAIC_CSA_REQUIRED")
+        if audit.image_type & {"GRID", "VFRAME"} and (
+            "uih_image_private_header_grid_slice_count_numeric_v1"
+            not in audit.private_exceptions
+        ):
+            raise InvalidArchive("ARCHIVE_GRID_SLICE_COUNT_REQUIRED")
         dicom_audits.append(audit)
         burned_in_declared.append(audit.burned_in_annotation_declared_no)
         observed_private_exceptions.update(audit.private_exceptions)
         trigger_time_present = trigger_time_present or audit.trigger_time_present
-    if not _functional_epi_headers_confirmed(dicom_audits):
-        raise InvalidArchive("FUNCTIONAL_EPI_NOT_CONFIRMED")
+        asl_technique_descriptions_emptied += audit.asl_technique_descriptions_emptied
+        asl_crusher_descriptions_redacted += audit.asl_crusher_descriptions_redacted
+        asl_bolus_cutoff_techniques_emptied += audit.asl_bolus_cutoff_techniques_emptied
+    _require_active_lease(lease_active)
+    if (
+        len({audit.study_instance_uid for audit in dicom_audits}) != 1
+        or len({audit.series_instance_uid for audit in dicom_audits}) != 1
+        or len({audit.sop_class_uid for audit in dicom_audits}) != 1
+    ):
+        raise InvalidArchive("ARCHIVE_SERIES_METADATA_MISMATCH")
+    known_manufacturers = {
+        audit.manufacturer for audit in dicom_audits if audit.manufacturer is not None
+    }
+    known_models = {audit.model for audit in dicom_audits if audit.model is not None}
+    known_software_versions = {
+        audit.software_versions for audit in dicom_audits if audit.software_versions
+    }
+    archive_private_vendor_families = {
+        PRIVATE_EXCEPTION_MANUFACTURERS.get(exception, "unsupported")
+        for audit in dicom_audits
+        for exception in audit.private_exceptions
+    }
+    audited_vendor_families = {
+        family
+        for manufacturer in known_manufacturers
+        if (family := _scanner_vendor_family(manufacturer)) is not None
+    }
+    if (
+        len(known_manufacturers) > 1
+        or len(known_models) > 1
+        or len(known_software_versions) > 1
+        or len(archive_private_vendor_families) > 1
+        or (
+            bool(known_manufacturers)
+            and bool(archive_private_vendor_families - audited_vendor_families)
+        )
+    ):
+        raise InvalidArchive("ARCHIVE_SCANNER_METADATA_MISMATCH")
+    source = manifest.value["source"]
+    observed_manufacturer = (
+        next(iter(known_manufacturers), None)
+        if all(audit.manufacturer is not None for audit in dicom_audits)
+        else None
+    )
+    observed_model = (
+        next(iter(known_models), None)
+        if all(audit.model is not None for audit in dicom_audits)
+        else None
+    )
+    observed_versions = (
+        next(iter(known_software_versions), frozenset())
+        if all(audit.software_versions for audit in dicom_audits)
+        else frozenset()
+    )
+    if source.get("manufacturer") != observed_manufacturer:
+        raise InvalidArchive("ARCHIVE_MANUFACTURER_MISMATCH")
+    if source.get("model") != observed_model or (
+        (source_versions := source.get("software_versions")) is None
+        and observed_versions
+        or source_versions is not None
+        and frozenset(source_versions) != observed_versions
+    ):
+        raise InvalidArchive("ARCHIVE_SCANNER_METADATA_MISMATCH")
+    known_acquisition_values = (
+        {audit.patient_position for audit in dicom_audits if audit.patient_position},
+        {
+            audit.magnetic_field_strength
+            for audit in dicom_audits
+            if audit.magnetic_field_strength is not None
+        },
+        {audit.receive_coil_name for audit in dicom_audits if audit.receive_coil_name},
+        {
+            audit.transmit_coil_name
+            for audit in dicom_audits
+            if audit.transmit_coil_name
+        },
+        {audit.sequence_name for audit in dicom_audits if audit.sequence_name},
+        {audit.scanning_sequence for audit in dicom_audits if audit.scanning_sequence},
+        {audit.sequence_variant for audit in dicom_audits if audit.sequence_variant},
+        {audit.scan_options for audit in dicom_audits if audit.scan_options},
+        {
+            audit.mr_acquisition_type
+            for audit in dicom_audits
+            if audit.mr_acquisition_type
+        },
+        {
+            audit.series_number
+            for audit in dicom_audits
+            if audit.series_number is not None
+        },
+    )
+    if any(len(values) > 1 for values in known_acquisition_values):
+        raise InvalidArchive("ARCHIVE_ACQUISITION_METADATA_MISMATCH")
+    functional_epi_headers_confirmed = _functional_epi_headers_confirmed(dicom_audits)
+    evidence_codes = {
+        item["code"] for item in manifest.value["classification"]["evidence"]
+    }
+    derived_headers = any(
+        bool(audit.image_type & {"DERIVED", "SECONDARY"}) for audit in dicom_audits
+    )
+    if manifest.series_kind == "diffusion":
+        if (
+            derived_headers
+            or not all(
+                audit.diffusion_metadata_present
+                and audit.diffusion_metadata_contract_verified
+                for audit in dicom_audits
+            )
+            or not any(audit.diffusion_semantic_evidence for audit in dicom_audits)
+            or not {
+                "diffusion_detected",
+                "diffusion_scientific_metadata_contract_verified",
+            }.issubset(evidence_codes)
+            or any(audit.asl_metadata_present for audit in dicom_audits)
+            or "asl_scientific_metadata_contract_verified" in evidence_codes
+        ):
+            raise InvalidArchive("ARCHIVE_SCIENTIFIC_METADATA_UNVERIFIED")
+    elif manifest.series_kind == "asl_perfusion":
+        if (
+            derived_headers
+            or not all(
+                audit.asl_metadata_present and audit.asl_metadata_contract_verified
+                for audit in dicom_audits
+            )
+            or not {
+                "asl_or_perfusion_detected",
+                "asl_scientific_metadata_contract_verified",
+            }.issubset(evidence_codes)
+            or "diffusion_scientific_metadata_contract_verified" in evidence_codes
+        ):
+            raise InvalidArchive("ARCHIVE_SCIENTIFIC_METADATA_UNVERIFIED")
+    elif evidence_codes & {
+        "diffusion_scientific_metadata_contract_verified",
+        "asl_scientific_metadata_contract_verified",
+    }:
+        raise InvalidArchive("ARCHIVE_SCIENTIFIC_METADATA_UNVERIFIED")
+    elif manifest.series_kind != "derived_mr" and (
+        any(audit.diffusion_semantic_evidence for audit in dicom_audits)
+        or any(audit.asl_metadata_present for audit in dicom_audits)
+    ):
+        raise InvalidArchive("ARCHIVE_SCIENTIFIC_METADATA_UNVERIFIED")
     burned_in_status = manifest.value["deidentification"]["burned_in_annotation_status"]
     if (burned_in_status == "verified_no" and not all(burned_in_declared)) or (
         burned_in_status == "not_declared" and all(burned_in_declared)
@@ -920,17 +1322,45 @@ def _extract_archive(
         manifest.value["deidentification"].get("safe_private_exceptions", [])
     ):
         raise InvalidArchive("ARCHIVE_DEIDENTIFICATION_UNVERIFIED")
-    if "suppressed_redundant_philips_dynamic_trigger_time" in manifest.value[
-        "deidentification"
-    ].get("metadata_transformations", []) and (
+    metadata_transformations = manifest.value["deidentification"].get(
+        "metadata_transformations", []
+    )
+    if "replaced_unknown_classic_image_type_components_with_other" in (
+        metadata_transformations
+    ) and (
+        manifest.value["schema_version"] != "2.0.0"
+        or not any(
+            audit.sop_class_uid == "1.2.840.10008.5.1.4.1.1.4"
+            and "OTHER" in audit.image_type
+            for audit in dicom_audits
+        )
+    ):
+        raise InvalidArchive("ARCHIVE_DEIDENTIFICATION_UNVERIFIED")
+    if "suppressed_redundant_philips_dynamic_trigger_time" in (
+        metadata_transformations
+    ) and (
         manifest.value["source"].get("manufacturer") != "Philips Medical Systems"
+        or manifest.series_kind != "functional_epi"
         or trigger_time_present
+    ):
+        raise InvalidArchive("ARCHIVE_DEIDENTIFICATION_UNVERIFIED")
+    if ("emptied_asl_technique_description" in metadata_transformations) != (
+        asl_technique_descriptions_emptied > 0
+    ):
+        raise InvalidArchive("ARCHIVE_DEIDENTIFICATION_UNVERIFIED")
+    if ("redacted_asl_crusher_description" in metadata_transformations) != (
+        asl_crusher_descriptions_redacted > 0
+    ):
+        raise InvalidArchive("ARCHIVE_DEIDENTIFICATION_UNVERIFIED")
+    if ("emptied_asl_bolus_cutoff_technique" in metadata_transformations) != (
+        asl_bolus_cutoff_techniques_emptied > 0
     ):
         raise InvalidArchive("ARCHIVE_DEIDENTIFICATION_UNVERIFIED")
     return ArchiveManifest(
         value=manifest.value,
         sha256=manifest.sha256,
         extracted_bytes=total_bytes,
+        functional_epi_headers_confirmed=functional_epi_headers_confirmed,
     )
 
 
@@ -942,8 +1372,15 @@ def extract_archive(
     expected_series_archive_id: str,
     expected_series_id: str,
     expected_dicom_count: int,
+    expected_series_kind: str = "functional_epi",
+    expected_processing_route: str = "functional-epi-v1",
+    expected_pixel_data_policy: str = PIXEL_DATA_POLICY,
+    lease_active: Event | None = None,
 ) -> ArchiveManifest:
     """Extract one archive and leave no partial stage after a failed attempt."""
+    if lease_active is None:
+        lease_active = Event()
+        lease_active.set()
     try:
         return _extract_archive(
             config,
@@ -952,6 +1389,10 @@ def extract_archive(
             expected_series_archive_id=expected_series_archive_id,
             expected_series_id=expected_series_id,
             expected_dicom_count=expected_dicom_count,
+            expected_series_kind=expected_series_kind,
+            expected_processing_route=expected_processing_route,
+            expected_pixel_data_policy=expected_pixel_data_policy,
+            lease_active=lease_active,
         )
     except OSError as exc:
         shutil.rmtree(destination, ignore_errors=True)

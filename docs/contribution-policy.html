@@ -3,37 +3,38 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>EPI contribution policy — Scaling Neuro</title>
-  <meta name="description" content="The policy for contributing functional EPI scans through neuro-sync." />
+  <title>MR contribution policy — Scaling Neuro</title>
+  <meta name="description" content="The policy for contributing scanner-native MR Image DICOM through neuro-sync." />
   <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
   <style>
     :root{color-scheme:light;--paper:#ececf2;--ink:#1d2337;--muted:#5f6578;--line:#cfd0da;--plum:#242238}*{box-sizing:border-box}body{margin:0;background:var(--paper);color:var(--ink);font:18px/1.65 Georgia,serif}main{width:min(760px,calc(100% - 36px));margin:auto;padding:56px 0 96px}a{color:inherit;text-underline-offset:3px}.brand{text-decoration:none;font-weight:700}h1{font-size:clamp(38px,7vw,64px);line-height:1;margin:64px 0 16px;letter-spacing:-.03em}h2{margin:40px 0 10px;font-size:27px}.version,li strong{font-family:ui-monospace,SFMono-Regular,Menlo,monospace}.version{font-size:12px;letter-spacing:.06em;color:var(--muted);border:1px solid var(--line);border-radius:999px;padding:7px 10px;display:inline-block}p,li{color:#41475a}li{margin:9px 0}.notice{margin-top:42px;border-left:4px solid var(--plum);padding:2px 0 2px 18px}</style>
 </head>
 <body><main>
   <a class="brand" href="/">🧠 Scaling Neuro</a>
-  <h1>Functional EPI contribution policy</h1>
-  <div class="version">open-epi-1.0.0 · effective 14 July 2026</div>
+  <h1>MR contribution policy</h1>
+  <div class="version">open-mri-1.0.0 · effective 19 July 2026</div>
 
   <h2>What this covers</h2>
-  <p>This policy covers the open beta of <strong>neuro-sync</strong>. The client accepts only confidently identified functional 4D EPI series. Structural MRI, diffusion, ASL, field maps, reference scans, derived images, and uncertain series remain local.</p>
+  <p>This policy covers the open beta of <strong>neuro-sync</strong>. The client uploads every supported MR Image DICOM series in the selected folder that passes its local format, integrity, and metadata-de-identification gates. This includes functional EPI, structural MRI, diffusion, ASL/perfusion, field maps, reference scans, localizers, and derived MR images. Secondary Capture, presentation objects, non-image DICOM documents, non-MR objects, malformed series, overlays or graphics, declared burned-in annotations, and unsupported privacy conditions remain local and are reported.</p>
 
   <h2>Your authority to contribute</h2>
-  <p>By continuing, you confirm that you are authorized by your institution to contribute the selected scans for research use, including the storage, validation, preservation, scientific analysis, and governed sharing needed to build the Scaling Neuro research commons. This confirmation does not replace participant consent, an IRB determination, a data-use agreement, or institutional review.</p>
+  <p>By continuing, you confirm that you are authorized by your institution to contribute every eligible MR series in the selected folder for research use, including storage, validation, preservation, scientific analysis, and governed sharing needed to build the Scaling Neuro research commons. This confirmation includes scanner-native structural and head images whose pixels have not been defaced, cropped, masked, or otherwise altered. It does not replace participant consent, an IRB determination, a data-use agreement, or institutional review.</p>
 
   <h2>What leaves the workstation</h2>
   <ul>
-    <li><strong>scanner-native voxels</strong> — functional EPI DICOM pixel data, without registration, masking, resampling, quantization, or local NIfTI conversion;</li>
+    <li><strong>scanner-native pixels</strong> — Pixel Data from supported MR Image DICOM, without defacing, cropping, masking, registration, resampling, quantization, or local NIfTI conversion;</li>
     <li><strong>acquisition metadata</strong> — privacy-cleared DICOM attributes needed to interpret the pixels, plus a normalized default-deny manifest covering scanner context, timing, geometry, classifier evidence, and hashes;</li>
     <li><strong>linkage</strong> — site-scoped pseudonymous subject, session, series, protocol-group, and bundle IDs; and</li>
     <li><strong>operations</strong> — client version, upload state, checksums, and a contributor contact stored separately from scan metadata.</li>
   </ul>
   <p>The original source files stay local and unchanged. Before any DICOM copy leaves the workstation, neuro-sync recursively removes direct identifiers, medical-record and accession numbers, birth dates, source dates and times, institution/station/operator fields, source filenames and paths, free-text protocol descriptions, overlays, graphics, and unsafe private data. Patient and instance identifiers are replaced with site-scoped pseudonyms, referential DICOM UIDs are remapped consistently, file metadata is rebuilt, and the result is audited before it becomes uploadable. A series with declared burned-in annotation or another unsupported privacy condition remains local.</p>
+  <p><strong>Important pixel boundary:</strong> metadata de-identification does not make scanner-native MR Pixel Data anonymous. High-resolution head or neck images can contain recognizable facial anatomy. neuro-sync records that recognizable visual features may be present and does not claim that defacing occurred. These source archives must therefore be treated as governed, potentially identifiable research data. They are not automatically made public.</p>
 
   <h2>Server processing</h2>
-  <p>A completed upload means the locally privacy-cleared DICOM archives have been received durably with exact byte and multipart receipts. Scaling Neuro then verifies the whole archive hash, parses and re-audits every DICOM, converts the series with a pinned multi-vendor converter, validates the native-space functional NIfTI and minimized sidecar, and records those outputs as derived artifacts. This processing is asynchronous and does not keep the contributing workstation open. If the server finds a privacy, archive-boundary, hash, or functional-EPI purpose violation, it deletes that rejected source object and retains a non-identifying audit tombstone; converter or scientific-compatibility failures retain the de-identified source for review.</p>
+  <p>A completed upload means the locally metadata-deidentified DICOM archives have been received durably with exact byte and multipart receipts. Scaling Neuro then independently verifies the whole archive hash, every member hash, DICOM parsing, routing declaration, and metadata-privacy contract. Confirmed functional EPI continues through pinned multi-vendor conversion and scientific QC to native-space NIfTI and minimized metadata derivatives. Other MR series finish as verified scanner-native source archives without being sent through the EPI converter. This processing is asynchronous and does not keep the contributing workstation open. A server-side privacy, archive-boundary, hash, or routing violation deletes the rejected source object and leaves a non-identifying audit tombstone; converter or scientific-compatibility failures retain the governed source archive for review.</p>
 
   <h2>Archive stewardship</h2>
-  <p>Scaling Neuro may validate, deduplicate, quarantine, preserve, and analyze accepted bundles and may include them in documented, governed research datasets. Objects rejected by the server privacy, archive-integrity, or functional-EPI purpose checks may instead be purged as described above. The beta does not by itself promise immediate public release or a specific final data license. Dataset access and licensing terms must be published before a governed release; the canonical privacy-cleared source archive and its provenance remain distinct from derived training caches and model artifacts.</p>
+  <p>Scaling Neuro may validate, deduplicate, quarantine, preserve, and analyze accepted bundles and may include eligible derivatives in documented, governed research datasets. Objects rejected by server privacy, archive-integrity, or routing checks may instead be purged as described above. The beta does not itself promise immediate public release or a specific final data license. Dataset access, face-privacy treatment, and licensing terms must be defined before any governed release. The scanner-native source archive and its provenance remain distinct from defaced derivatives, training caches, and model artifacts.</p>
 
   <h2>Withdrawal and contact</h2>
   <p>A lab may request that its device be revoked or a contributed upload be withdrawn by emailing <a href="mailto:admin@sophont.med?subject=Scaling%20Neuro%20contribution">admin@sophont.med</a> with the pseudonymous upload ID from its local report. Withdrawal removes the archived objects and leaves a non-identifying audit tombstone so the same bundle is not silently reintroduced. Separately distributed governed datasets or research derived before a withdrawal may not always be retractable; release-specific terms will describe that boundary.</p>

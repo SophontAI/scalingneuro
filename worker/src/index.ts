@@ -2,6 +2,7 @@ import { AppError } from "./errors";
 import type { Env } from "./env";
 import {
   claimProcessingJob,
+  checkpointDicomUpload,
   cleanupPendingRejectedDicomInputs,
   completeDicomUpload,
   completeProcessingJob,
@@ -15,6 +16,7 @@ import {
 } from "./dicom";
 import {
   adminCleanup,
+  acceptPublicContributionPolicy,
   cleanupAbandoned,
   completeUpload,
   createAdminInvite,
@@ -39,6 +41,7 @@ import {
   parseEnrollRequest,
   parseJsonText,
   parsePublicRegistrationRequest,
+  parsePublicPolicyAcceptanceRequest,
   parseProcessorClaimRequest,
   parseProcessorCompleteRequest,
   parseProcessorFailRequest,
@@ -62,6 +65,10 @@ const dicomCredentialsRoute = new RegExp(
 );
 const dicomCompleteRoute = new RegExp(
   `^/v1/dicom-uploads/${UUID}/complete$`,
+  "u",
+);
+const dicomCheckpointRoute = new RegExp(
+  `^/v1/dicom-uploads/${UUID}/checkpoint$`,
   "u",
 );
 const dicomPartRoute = new RegExp(`^/v1/dicom-uploads/${UUID}/parts$`, "u");
@@ -160,6 +167,7 @@ function routeLabel(pathname: string): string {
   if (
     pathname === "/health" ||
     pathname === "/v1/contribution" ||
+    pathname === "/v1/device/policy" ||
     pathname === "/v1/enroll" ||
     pathname === "/v1/register" ||
     pathname === "/v1/uploads" ||
@@ -180,6 +188,8 @@ function routeLabel(pathname: string): string {
     return "/v1/dicom-uploads/:id/credentials";
   if (dicomCompleteRoute.test(pathname))
     return "/v1/dicom-uploads/:id/complete";
+  if (dicomCheckpointRoute.test(pathname))
+    return "/v1/dicom-uploads/:id/checkpoint";
   if (dicomPartRoute.test(pathname)) return "/v1/dicom-uploads/:id/parts";
   if (dicomStatusRoute.test(pathname)) return "/v1/dicom-uploads/:id";
   if (processorHeartbeatRoute.test(pathname))
@@ -220,6 +230,19 @@ export async function fetchHandler(
     if (request.method === "GET" && path === "/v1/contribution") {
       return json(
         publicContributionInfo(request.headers.get("user-agent")),
+        requestId,
+      );
+    }
+    if (
+      request.method === "POST" &&
+      path === "/v1/device/policy"
+    ) {
+      return json(
+        await acceptPublicContributionPolicy(
+          request,
+          env,
+          parsePublicPolicyAcceptanceRequest(await requestJson(request)),
+        ),
         requestId,
       );
     }
@@ -323,6 +346,18 @@ export async function fetchHandler(
           request,
           env,
           dicomCompleteUploadId,
+          parseCompleteUploadRequest(await requestJson(request)),
+        ),
+        requestId,
+      );
+    }
+    const dicomCheckpointUploadId = idMatch(dicomCheckpointRoute, path);
+    if (request.method === "POST" && dicomCheckpointUploadId) {
+      return json(
+        await checkpointDicomUpload(
+          request,
+          env,
+          dicomCheckpointUploadId,
           parseCompleteUploadRequest(await requestJson(request)),
         ),
         requestId,

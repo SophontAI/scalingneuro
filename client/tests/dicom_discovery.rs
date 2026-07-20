@@ -9,6 +9,9 @@ use neuro_sync::{
 };
 use tempfile::tempdir;
 
+use support::FixtureVendor;
+use support::{FixturePurpose, FunctionalDicomOptions};
+
 #[test]
 fn synthetic_part10_files_group_and_classify_as_functional_epi() {
     let directory = tempdir().unwrap();
@@ -21,6 +24,72 @@ fn synthetic_part10_files_group_and_classify_as_functional_epi() {
     assert_eq!(discovery.series[0].files.len(), 2);
     let classification = classify_header(&discovery.series[0]);
     assert_eq!(classification.decision, ClassificationDecision::Accepted);
+}
+
+#[test]
+fn every_supported_privacy_clearable_mr_kind_is_accepted() {
+    let cases = [
+        (FixturePurpose::FunctionalEpi, "functional_epi"),
+        (FixturePurpose::StructuralT1w, "structural_t1w"),
+        (FixturePurpose::StructuralT2w, "structural_t2w"),
+        (FixturePurpose::StructuralOther, "structural_other"),
+        (FixturePurpose::Diffusion, "diffusion"),
+        (FixturePurpose::AslPerfusion, "asl_perfusion"),
+        (FixturePurpose::Fieldmap, "fieldmap"),
+        (FixturePurpose::Sbref, "sbref"),
+        (FixturePurpose::Localizer, "localizer"),
+        (FixturePurpose::DerivedMr, "derived_mr"),
+        (FixturePurpose::OtherMr, "other_mr"),
+    ];
+    for (purpose, expected_kind) in cases {
+        let directory = tempdir().unwrap();
+        support::write_functional_epi_fixture(
+            &directory.path().join("image.dcm"),
+            1,
+            &FunctionalDicomOptions {
+                purpose,
+                vendor: if purpose == FixturePurpose::AslPerfusion {
+                    FixtureVendor::PhilipsEnhanced
+                } else {
+                    FixtureVendor::Siemens
+                },
+                siemens_mosaic: false,
+                ..Default::default()
+            },
+        );
+        let discovery = discover(directory.path()).unwrap();
+        let classification = classify_header(&discovery.series[0]);
+        assert_eq!(
+            classification.decision,
+            ClassificationDecision::Accepted,
+            "purpose {purpose:?}: kind={} evidence={:?}",
+            classification.kind,
+            classification.evidence
+        );
+        assert_eq!(classification.kind, expected_kind, "purpose {purpose:?}");
+    }
+}
+
+#[test]
+fn enhanced_color_and_spectroscopy_stay_local_until_their_pixel_contracts_are_supported() {
+    for (sop_class, expected) in [
+        ("1.2.840.10008.5.1.4.1.1.4.3", ClassificationDecision::Held),
+        ("1.2.840.10008.5.1.4.1.1.4.2", ClassificationDecision::Held),
+    ] {
+        let directory = tempdir().unwrap();
+        support::write_functional_epi_fixture(
+            &directory.path().join("image.dcm"),
+            1,
+            &FunctionalDicomOptions {
+                sop_class_override: Some(sop_class),
+                siemens_mosaic: false,
+                ..Default::default()
+            },
+        );
+        let discovery = discover(directory.path()).unwrap();
+        let classification = classify_header(&discovery.series[0]);
+        assert_eq!(classification.decision, expected, "SOP {sop_class}");
+    }
 }
 
 #[test]
@@ -37,7 +106,7 @@ fn otherwise_functional_unknown_vendor_is_accepted() {
     let discovery = discover(directory.path()).unwrap();
     let classification = classify_header(&discovery.series[0]);
     assert_eq!(classification.decision, ClassificationDecision::Accepted);
-    assert_eq!(classification.kind, "functional_epi_candidate");
+    assert_eq!(classification.kind, "functional_epi");
 }
 
 #[test]
@@ -87,15 +156,12 @@ fn unmeasured_same_vendor_model_or_software_is_accepted() {
             ClassificationDecision::Accepted,
             "case {name}"
         );
-        assert_eq!(
-            classification.kind, "functional_epi_candidate",
-            "case {name}"
-        );
+        assert_eq!(classification.kind, "functional_epi", "case {name}");
     }
 }
 
 #[test]
-fn unmeasured_nonrepresentative_scanner_release_is_accepted() {
+fn conflicting_nonrepresentative_scanner_release_holds_the_series() {
     let directory = tempdir().unwrap();
     support::write_functional_epi(&directory.path().join("measured-first.dcm"), 1);
     support::write_functional_epi_fixture(
@@ -109,8 +175,8 @@ fn unmeasured_nonrepresentative_scanner_release_is_accepted() {
     let discovery = discover(directory.path()).unwrap();
     assert_eq!(discovery.series.len(), 1);
     let classification = classify_header(&discovery.series[0]);
-    assert_eq!(classification.decision, ClassificationDecision::Accepted);
-    assert_eq!(classification.kind, "functional_epi_candidate");
+    assert_eq!(classification.decision, ClassificationDecision::Held);
+    assert_eq!(classification.kind, "inconsistent_series_metadata");
 }
 
 #[test]
@@ -143,7 +209,7 @@ fn source_snapshot_detects_dicom_changed_after_discovery() {
 }
 
 #[test]
-fn discovery_reports_counts_and_lightweight_snapshots_cover_every_source_file() {
+fn discovery_reports_all_files_but_source_identity_tracks_only_dicom_candidates() {
     let directory = tempdir().unwrap();
     support::write_functional_epi(&directory.path().join("image-1.dcm"), 1);
     std::fs::write(directory.path().join("export-note.txt"), b"complete").unwrap();
@@ -181,8 +247,13 @@ fn discovery_reports_counts_and_lightweight_snapshots_cover_every_source_file() 
     assert!(discovery.source_snapshot.is_stable_with(&stable));
 
     std::fs::write(directory.path().join("export-note.txt"), b"changed").unwrap();
-    let changed = snapshot_source_with_progress(directory.path(), |_| {}).unwrap();
-    assert!(!stable.is_stable_with(&changed));
+    std::fs::write(directory.path().join("README"), b"operator notes").unwrap();
+    let notes_changed = snapshot_source_with_progress(directory.path(), |_| {}).unwrap();
+    assert!(stable.is_stable_with(&notes_changed));
+
+    std::fs::write(directory.path().join("incomplete.dcm"), b"DICM truncated").unwrap();
+    let dicom_candidate_added = snapshot_source_with_progress(directory.path(), |_| {}).unwrap();
+    assert!(!stable.is_stable_with(&dicom_candidate_added));
 }
 
 #[cfg(unix)]

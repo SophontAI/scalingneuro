@@ -12,19 +12,22 @@ import unittest
 
 from scaling_neuro_processor.api import ControlPlane
 from scaling_neuro_processor.config import Config
-from scaling_neuro_processor.errors import ApiFailure, InvalidArchive
+from scaling_neuro_processor.errors import ApiFailure
 from scaling_neuro_processor.pipeline import process_job
 
 from tests.helpers import (
     ARCHIVE_ID,
     TEST_DISK_RESERVE_BYTES,
     archive_manifest,
+    archive_manifest_v2,
     canonical_json,
     fake_converter,
     gzip_bytes,
     legacy_sidecar,
     make_archive,
     make_dicom,
+    make_functional_dicom_v2,
+    make_structural_dicom,
     nifti_bytes,
 )
 
@@ -40,7 +43,9 @@ class State:
         self.complete_request: dict | None = None
         self.fail_request: dict | None = None
         self.object_authorization: list[str | None] = []
+        self.object_gets = 0
         self.output_failures = 0
+        self.complete_failures = 0
 
 
 def handler_for(state: State):
@@ -95,6 +100,10 @@ def handler_for(state: State):
                 return
             if self.path.endswith("/complete"):
                 state.complete_request = body
+                if state.complete_failures:
+                    state.complete_failures -= 1
+                    self.send_json(503, {"code": "TEMPORARY"})
+                    return
                 self.send_json(200, {})
                 return
             if self.path.endswith("/fail"):
@@ -104,6 +113,7 @@ def handler_for(state: State):
             self.send_error(404)
 
         def do_GET(self) -> None:
+            state.object_gets += 1
             state.object_authorization.append(self.headers.get("Authorization"))
             raw = state.objects.get(self.path)
             if raw is None:
@@ -171,6 +181,7 @@ class FakeServerIntegrationTests(unittest.TestCase):
         converter: Path,
         *,
         claim_input_format: Literal["dicom-series-v1", "nifti-v1"] | None = None,
+        controller_source_sha256: str | None = None,
     ) -> Config:
         return Config(
             api_url=f"http://127.0.0.1:{server.server_port}",
@@ -178,6 +189,7 @@ class FakeServerIntegrationTests(unittest.TestCase):
             work_root=root / "work",
             processor_id="integration-test",
             claim_input_format=claim_input_format,
+            controller_source_sha256=controller_source_sha256,
             dcm2niix_bin=str(converter),
             disk_reserve_bytes=TEST_DISK_RESERVE_BYTES,
             allow_insecure_http=True,
@@ -218,6 +230,7 @@ class FakeServerIntegrationTests(unittest.TestCase):
                     server,
                     converter,
                     claim_input_format="dicom-series-v1",
+                    controller_source_sha256="a" * 64,
                 )
                 api = ControlPlane(config, sleep=lambda _: None)
                 job = api.claim()
@@ -235,6 +248,9 @@ class FakeServerIntegrationTests(unittest.TestCase):
                     "processor_id": "integration-test",
                     "lease_seconds": 900,
                     "claim_input_format": "dicom-series-v1",
+                    "processor_version": "0.2.0",
+                    "pipeline_version": "dicom-mr-v2",
+                    "controller_source_sha256": "a" * 64,
                 },
             )
             self.assertTrue(
@@ -254,7 +270,247 @@ class FakeServerIntegrationTests(unittest.TestCase):
             )
             self.assertEqual(state.object_authorization, [None, None, None, None])
 
-    def test_dicom_download_hash_mismatch_is_terminal_archive_failure(self) -> None:
+    def test_archive_only_mr_verifies_without_converter_or_output_uploads(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            dicom = make_structural_dicom(root / "source.dcm")
+            archive = make_archive(
+                root / "series.tar.zst", dicom, archive_manifest_v2(dicom)
+            )
+            converter = root / "fake-dcm2niix"
+            fake_converter(converter)
+            state = State({}, {"/objects/archive": archive})
+            with fake_server(state) as server:
+                state.job = {
+                    "schema_version": "1.0.0",
+                    "job_id": "job-archive-only",
+                    "upload_id": "upload-archive-only",
+                    "bundle_id": ARCHIVE_ID,
+                    "series_archive_id": ARCHIVE_ID,
+                    "series_id": "b" * 24,
+                    "series_kind": "structural_t1w",
+                    "processing_route": "archive-verify-v1",
+                    "pixel_data_policy": "scanner-native-not-defaced",
+                    "attempt": 1,
+                    "lease_token": "lease-token",
+                    "lease_expires_at": "2030-01-01T00:00:00Z",
+                    "input_format": "dicom-series-v1",
+                    "input": {
+                        "format": "dicom-tar-zstd",
+                        "dicom_count": 1,
+                        **descriptor(server, "/objects/archive", archive),
+                    },
+                }
+                config = self.config(root, server, converter)
+                api = ControlPlane(config, sleep=lambda _: None)
+                job = api.claim()
+                assert job is not None
+                active = Event()
+                active.set()
+                process_job(config, api, job, active)
+
+            self.assertEqual(state.uploaded, {})
+            self.assertIsNone(state.output_request)
+            self.assertFalse(Path(str(converter) + ".count").exists())
+            self.assertNotIn("dcm2niix_version", state.complete_request)
+            self.assertEqual(state.complete_request["outputs"], [])
+            self.assertEqual(
+                state.complete_request["validation"],
+                {
+                    "archive_sha256_verified": True,
+                    "dicom_count": 1,
+                    "dicom_parse_succeeded": True,
+                    "dicom_privacy_audit_succeeded": True,
+                    "functional_epi_confirmed": False,
+                },
+            )
+
+    def test_functional_route_header_disagreement_downgrades_to_cached_archive(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            dicom = make_structural_dicom(root / "source.dcm")
+            manifest = archive_manifest_v2(
+                dicom,
+                series_kind="functional_epi",
+                processing_route="functional-epi-v1",
+                evidence_code="functional_epi_confirmed",
+            )
+            archive = make_archive(root / "series.tar.zst", dicom, manifest)
+            converter = root / "fake-dcm2niix"
+            fake_converter(converter)
+            state = State({}, {"/objects/archive": archive})
+            state.complete_failures = 4
+            with fake_server(state) as server:
+                state.job = {
+                    "schema_version": "1.0.0",
+                    "job_id": "job-purpose-downgrade",
+                    "upload_id": "upload-purpose-downgrade",
+                    "bundle_id": ARCHIVE_ID,
+                    "series_archive_id": ARCHIVE_ID,
+                    "series_id": "b" * 24,
+                    "client_version": "0.4.0",
+                    "series_kind": "functional_epi",
+                    "processing_route": "functional-epi-v1",
+                    "pixel_data_policy": "scanner-native-not-defaced",
+                    "attempt": 1,
+                    "lease_token": "lease-token",
+                    "lease_expires_at": "2030-01-01T00:00:00Z",
+                    "input_format": "dicom-series-v1",
+                    "input": {
+                        "format": "dicom-tar-zstd",
+                        "dicom_count": 1,
+                        **descriptor(server, "/objects/archive", archive),
+                    },
+                }
+                config = self.config(root, server, converter)
+                api = ControlPlane(config, sleep=lambda _: None)
+                job = api.claim()
+                assert job is not None
+                active = Event()
+                active.set()
+                with self.assertRaises(ApiFailure):
+                    process_job(config, api, job, active)
+                self.assertEqual(state.object_gets, 1)
+                process_job(config, api, job, active)
+
+            self.assertEqual(state.object_gets, 1)
+            self.assertEqual(state.uploaded, {})
+            self.assertIsNone(state.output_request)
+            self.assertFalse(Path(str(converter) + ".count").exists())
+            self.assertNotIn("dcm2niix_version", state.complete_request)
+            self.assertEqual(state.complete_request["outputs"], [])
+            self.assertEqual(
+                state.complete_request["validation"],
+                {
+                    "archive_sha256_verified": True,
+                    "dicom_count": 1,
+                    "dicom_parse_succeeded": True,
+                    "dicom_privacy_audit_succeeded": True,
+                    "functional_epi_confirmed": False,
+                },
+            )
+
+    def test_v2_functional_route_still_produces_three_verified_outputs(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            dicom = make_functional_dicom_v2(root / "source.dcm")
+            source = archive_manifest(dicom)["source"]
+            manifest = archive_manifest_v2(
+                dicom,
+                series_kind="functional_epi",
+                processing_route="functional-epi-v1",
+                evidence_code="functional_epi_confirmed",
+                source=source,
+                safe_private_exceptions=["siemens_csa_image_header_numeric_v1"],
+            )
+            archive = make_archive(root / "series.tar.zst", dicom, manifest)
+            converter = root / "fake-dcm2niix"
+            fake_converter(converter)
+            state = State({}, {"/objects/archive": archive})
+            with fake_server(state) as server:
+                state.job = {
+                    "schema_version": "1.0.0",
+                    "job_id": "job-v2-functional",
+                    "upload_id": "upload-v2-functional",
+                    "bundle_id": ARCHIVE_ID,
+                    "series_archive_id": ARCHIVE_ID,
+                    "series_id": "b" * 24,
+                    "client_version": "0.4.0",
+                    "series_kind": "functional_epi",
+                    "processing_route": "functional-epi-v1",
+                    "pixel_data_policy": "scanner-native-not-defaced",
+                    "attempt": 1,
+                    "lease_token": "lease-token",
+                    "lease_expires_at": "2030-01-01T00:00:00Z",
+                    "input_format": "dicom-series-v1",
+                    "input": {
+                        "format": "dicom-tar-zstd",
+                        "dicom_count": 1,
+                        **descriptor(server, "/objects/archive", archive),
+                    },
+                }
+                config = self.config(root, server, converter)
+                api = ControlPlane(config, sleep=lambda _: None)
+                job = api.claim()
+                assert job is not None
+                active = Event()
+                active.set()
+                process_job(config, api, job, active)
+
+            self.assertEqual(
+                set(state.uploaded), {"nifti", "sidecar", "processing_manifest"}
+            )
+            self.assertEqual(
+                json.loads(state.uploaded["sidecar"])["conversion"]["client_version"],
+                "0.4.0",
+            )
+            self.assertTrue(
+                state.complete_request["validation"]["functional_epi_confirmed"]
+            )
+            self.assertTrue(
+                state.complete_request["validation"]["dicom_privacy_audit_succeeded"]
+            )
+            self.assertEqual(
+                state.complete_request["dcm2niix_version"], "v1.0.20260416"
+            )
+
+    def test_archive_only_completion_retry_reuses_zero_output_result(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            dicom = make_structural_dicom(root / "source.dcm")
+            archive = make_archive(
+                root / "series.tar.zst", dicom, archive_manifest_v2(dicom)
+            )
+            converter = root / "fake-dcm2niix"
+            fake_converter(converter)
+            state = State({}, {"/objects/archive": archive})
+            state.complete_failures = 4
+            with fake_server(state) as server:
+                state.job = {
+                    "schema_version": "1.0.0",
+                    "job_id": "job-archive-resume",
+                    "upload_id": "upload-archive-resume",
+                    "bundle_id": ARCHIVE_ID,
+                    "series_archive_id": ARCHIVE_ID,
+                    "series_id": "b" * 24,
+                    "series_kind": "structural_t1w",
+                    "processing_route": "archive-verify-v1",
+                    "pixel_data_policy": "scanner-native-not-defaced",
+                    "attempt": 1,
+                    "lease_token": "lease-token",
+                    "lease_expires_at": "2030-01-01T00:00:00Z",
+                    "input_format": "dicom-series-v1",
+                    "input": {
+                        "format": "dicom-tar-zstd",
+                        "dicom_count": 1,
+                        **descriptor(server, "/objects/archive", archive),
+                    },
+                }
+                config = self.config(root, server, converter)
+                api = ControlPlane(config, sleep=lambda _: None)
+                job = api.claim()
+                assert job is not None
+                active = Event()
+                active.set()
+                with self.assertRaises(ApiFailure):
+                    process_job(config, api, job, active)
+                self.assertEqual(state.object_gets, 1)
+                self.assertTrue(
+                    (
+                        config.job_root(job.job_id, job.attempt, job.lease_token)
+                        / "result.json"
+                    ).exists()
+                )
+
+                process_job(config, api, job, active)
+
+            self.assertEqual(state.object_gets, 1)
+            self.assertFalse(Path(str(converter) + ".count").exists())
+            self.assertFalse(
+                config.job_root(job.job_id, job.attempt, job.lease_token).exists()
+            )
+
+    def test_dicom_download_hash_mismatch_is_retryable_transport_failure(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             dicom = make_dicom(root / "source.dcm")
@@ -290,9 +546,10 @@ class FakeServerIntegrationTests(unittest.TestCase):
                 active = Event()
                 active.set()
                 with self.assertRaisesRegex(
-                    InvalidArchive, "ARCHIVE_DOWNLOAD_INTEGRITY_MISMATCH"
-                ):
+                    ApiFailure, "OBJECT_DOWNLOAD_INTEGRITY_MISMATCH"
+                ) as raised:
                     process_job(config, api, job, active)
+                self.assertTrue(raised.exception.retryable)
 
             self.assertEqual(state.uploaded, {})
             self.assertFalse(Path(str(converter) + ".count").exists())

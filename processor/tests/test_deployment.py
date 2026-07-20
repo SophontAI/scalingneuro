@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from pathlib import Path
-import re
 import unittest
 
 
@@ -16,21 +15,18 @@ class NativeDeploymentContractTests(unittest.TestCase):
         runner = (PROCESSOR_ROOT / "slurm" / "run-processor-native.sbatch").read_text(
             encoding="utf-8"
         )
-        pattern = re.compile(
-            r"<<'CONTROLLER_DIGEST_PY'\n(?P<body>.*?)\nCONTROLLER_DIGEST_PY",
-            re.DOTALL,
+        digest_script = "controller-source-sha256.py"
+        self.assertIn(f'"$processor_source/scripts/{digest_script}"', installer)
+        self.assertIn(f'"$release/bin/{digest_script}"', runner)
+        self.assertIn(
+            f'"$processor_source/scripts/{digest_script}" \\\n    "$staging/bin/{digest_script}"',
+            installer,
         )
-        installer_digest = pattern.search(installer)
-        runner_digest = pattern.search(runner)
-        self.assertIsNotNone(installer_digest)
-        self.assertIsNotNone(runner_digest)
-        assert installer_digest is not None
-        assert runner_digest is not None
-        self.assertEqual(installer_digest.group("body"), runner_digest.group("body"))
         field = "controller_source_sha256"
         self.assertIn(f'"{field}=$source_controller_sha256"', installer)
         self.assertIn(f'grep -Fx "{field}=$source_controller_sha256"', installer)
         self.assertIn(f"s/^{field}=//p", runner)
+        self.assertIn('--controller-source-sha256 "$actual_controller_sha256"', runner)
 
     def test_installer_hardens_host_python_before_first_invocation(self) -> None:
         installer = (
@@ -64,6 +60,12 @@ class NativeDeploymentContractTests(unittest.TestCase):
         self.assertIn('--slurm-job-id "$SLURM_JOB_ID"', runner)
         self.assertIn('f"--jobid={job_id}"', sandbox)
 
+    def test_native_runner_supports_the_maximum_archive_transfer_window(self) -> None:
+        runner = (PROCESSOR_ROOT / "slurm" / "run-processor-native.sbatch").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("--object-transfer-timeout-seconds 86400", runner)
+
     def test_native_runner_passes_only_explicit_controller_environment(self) -> None:
         runner = (PROCESSOR_ROOT / "slurm" / "run-processor-native.sbatch").read_text(
             encoding="utf-8"
@@ -72,7 +74,7 @@ class NativeDeploymentContractTests(unittest.TestCase):
         self.assertNotIn("SLURM_EXPORT_ENV", runner)
         self.assertNotIn("--export=ALL", runner)
         self.assertNotIn("export ENROOT_RESTRICT_DEV", runner)
-        digest_invocation = runner.index('actual_controller_sha256=$("$python_bin" -')
+        digest_invocation = runner.index("actual_controller_sha256=")
         self.assertIn("export PYTHONSAFEPATH=1", runner[:digest_invocation])
         self.assertRegex(
             runner,

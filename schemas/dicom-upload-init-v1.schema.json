@@ -17,7 +17,7 @@
       "required": ["policy_id", "policy_version"],
       "properties": {
         "policy_id": { "const": "scaling-neuro.dicom-deidentification" },
-        "policy_version": { "const": "1.0.0" }
+        "policy_version": { "enum": ["1.0.0", "2.0.0"] }
       }
     },
     "series": {
@@ -43,6 +43,26 @@
           "session_id": { "$ref": "https://scalingneuro.com/schemas/common-v1.schema.json#/$defs/pseudonymId" },
           "protocol_group_id": { "$ref": "https://scalingneuro.com/schemas/common-v1.schema.json#/$defs/pseudonymId" },
           "dicom_count": { "type": "integer", "minimum": 1, "maximum": 500000 },
+          "series_kind": {
+            "enum": [
+              "functional_epi",
+              "structural_t1w",
+              "structural_t2w",
+              "structural_other",
+              "diffusion",
+              "asl_perfusion",
+              "perfusion",
+              "fieldmap",
+              "sbref",
+              "localizer",
+              "derived_mr",
+              "other_mr"
+            ]
+          },
+          "processing_route": {
+            "enum": ["functional-epi-v1", "archive-verify-v1"]
+          },
+          "pixel_data_policy": { "const": "scanner-native-not-defaced" },
           "archive": {
             "type": "object",
             "additionalProperties": false,
@@ -59,8 +79,69 @@
               "sha256": { "$ref": "https://scalingneuro.com/schemas/common-v1.schema.json#/$defs/sha256" }
             }
           }
+        },
+        "allOf": [
+          {
+            "if": {
+              "type": "object",
+              "properties": { "series_kind": { "const": "functional_epi" } },
+              "required": ["series_kind"]
+            },
+            "then": {
+              "properties": { "processing_route": { "const": "functional-epi-v1" } }
+            },
+            "else": {
+              "properties": { "processing_route": { "const": "archive-verify-v1" } }
+            }
+          }
+        ]
+      }
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "type": "object",
+        "properties": {
+          "deidentification": {
+            "type": "object",
+            "properties": { "policy_version": { "const": "1.0.0" } },
+            "required": ["policy_version"]
+          }
+        },
+        "required": ["deidentification"]
+      },
+      "then": {
+        "properties": {
+          "series": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "series_kind": false,
+                "processing_route": false,
+                "pixel_data_policy": false
+              }
+            }
+          }
+        }
+      },
+      "else": {
+        "properties": {
+          "series": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "series_kind": {},
+                "processing_route": {},
+                "pixel_data_policy": {}
+              },
+              "required": ["series_kind", "processing_route", "pixel_data_policy"]
+            }
+          }
         }
       }
     }
-  }
+  ]
 }

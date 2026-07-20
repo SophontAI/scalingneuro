@@ -1,15 +1,17 @@
 {
-  "schema_version": "2.0.0",
+  "schema_version": "3.0.0",
   "run_id": "0190f86f-e0de-7f2a-a24c-0a6abf16ec84",
   "site_id": "0190f870-1111-7f2a-a24c-0a6abf16ec81",
   "project_id": "0190f870-2222-7f2a-a24c-0a6abf16ec81",
-  "consent_policy_version": "pilot-2026-07",
-  "client_version": "0.2.0",
+  "consent_policy_version": "open-mri-1.0.0",
+  "client_version": "0.4.0",
+  "classifier_contract_version": "2.0.0",
+  "archive_contract_version": "2.0.0",
   "metadata_policy": {
-    "policy_id": "scaling-neuro-epi-default-deny",
-    "policy_version": "1.1.0"
+    "policy_id": "scaling-neuro.dicom-deidentification",
+    "policy_version": "2.0.0"
   },
-  "created_at": "2026-07-12T03:14:02Z",
+  "created_at": "2026-07-19T03:14:02Z",
   "source_summary": {
     "files_seen": 1500,
     "dicom_files": 1500,
@@ -25,18 +27,18 @@
       "subject_id": "a4b73d9e6f12a2b011223344",
       "session_id": "b9e5cf2f5a74a3f811223344",
       "protocol_group_id": "27f2a6f4d9a3aa6b11223344",
-      "nifti": {
-        "relative_key": "7c2a5f77f3ab6c6d9e011234/scan_bold.nii.gz",
-        "local_path": "/private/var/neuro-sync/bundles/scan_bold.nii.gz",
-        "size": 184237921,
-        "sha256": "85c21ffb8a905454f874b1a0391b6e3b54b8f4d256362a89ae95a4f42e794ea7",
-        "uncompressed_sha256": "16dba13ef49dd70fce8a3a5f8bcfb201af58535312082bd73eec43baa8af6f67"
-      },
-      "metadata": {
-        "relative_key": "7c2a5f77f3ab6c6d9e011234/scan_bold.json",
-        "local_path": "/private/var/neuro-sync/bundles/scan_bold.json",
-        "size": 5432,
-        "sha256": "9da36272e3fc683b429e193a81a3aa2f9416be29b14241585257cc0e98759f90"
+      "series_kind": "functional_epi",
+      "processing_route": "functional-epi-v1",
+      "pixel_data_policy": "scanner-native-not-defaced",
+      "archive": {
+        "relative_key": "7c2a5f77f3ab6c6d9e011234/dicom.tar.zst",
+        "local_path": "/private/var/neuro-sync/bundles/7c2a5f77f3ab6c6d9e011234/dicom.tar.zst",
+        "size": 104857600,
+        "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "format": "dicom-tar-zstd",
+        "dicom_instance_count": 1200,
+        "deidentification_profile": "scaling-neuro.dicom-deidentification",
+        "deidentification_profile_version": "2.0.0"
       },
       "source_dicom_count": 1200,
       "classification": {
@@ -45,47 +47,7 @@
         "confidence": 0.99,
         "evidence": [
           {
-            "code": "mr_image_storage",
-            "source": "dicom_header",
-            "effect": "supports"
-          }
-        ]
-      },
-      "qc": {
-        "passed": true,
-        "checks": [
-          {
-            "code": "privacy_allowlist",
-            "status": "pass"
-          }
-        ],
-        "warnings": []
-      }
-    },
-    {
-      "bundle_id": "8d3b6a88f4bc7d7e0f122345",
-      "series_id": "4e6b098d125ef730af122345",
-      "subject_id": "a4b73d9e6f12a2b011223344",
-      "session_id": "b9e5cf2f5a74a3f811223344",
-      "protocol_group_id": "cc2d5fa34ca8e913af122345",
-      "archive": {
-        "relative_key": "8d3b6a88f4bc7d7e0f122345/dicom.tar.zst",
-        "local_path": "/private/var/neuro-sync/bundles/8d3b6a88f4bc7d7e0f122345/dicom.tar.zst",
-        "size": 104857600,
-        "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-        "format": "dicom-tar-zstd",
-        "dicom_instance_count": 300,
-        "deidentification_profile": "scaling-neuro.dicom-deidentification",
-        "deidentification_profile_version": "1.0.0"
-      },
-      "source_dicom_count": 300,
-      "classification": {
-        "decision": "accepted",
-        "kind": "functional_epi",
-        "confidence": 0.99,
-        "evidence": [
-          {
-            "code": "mr_image_storage",
+            "code": "functional_epi_evidence",
             "source": "dicom_header",
             "effect": "supports"
           }
@@ -100,6 +62,52 @@
           }
         ],
         "warnings": []
+      }
+    },
+    {
+      "bundle_id": "8d3b6a88f4bc7d7e0f122345",
+      "series_id": "4e6b098d125ef730af122345",
+      "subject_id": "a4b73d9e6f12a2b011223344",
+      "session_id": "b9e5cf2f5a74a3f811223344",
+      "protocol_group_id": "cc2d5fa34ca8e913af122345",
+      "series_kind": "structural_t1w",
+      "processing_route": "archive-verify-v1",
+      "pixel_data_policy": "scanner-native-not-defaced",
+      "archive": {
+        "relative_key": "8d3b6a88f4bc7d7e0f122345/dicom.tar.zst",
+        "local_path": "/private/var/neuro-sync/bundles/8d3b6a88f4bc7d7e0f122345/dicom.tar.zst",
+        "size": 157286400,
+        "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "format": "dicom-tar-zstd",
+        "dicom_instance_count": 300,
+        "deidentification_profile": "scaling-neuro.dicom-deidentification",
+        "deidentification_profile_version": "2.0.0"
+      },
+      "source_dicom_count": 300,
+      "classification": {
+        "decision": "accepted",
+        "kind": "structural_t1w",
+        "confidence": 0.98,
+        "evidence": [
+          {
+            "code": "structural_t1w_evidence",
+            "source": "dicom_header",
+            "effect": "supports"
+          }
+        ]
+      },
+      "qc": {
+        "passed": true,
+        "checks": [
+          {
+            "code": "recursive_public_attribute_allowlist",
+            "status": "pass"
+          }
+        ],
+        "warnings": [
+          "recognizable_visual_features_may_be_present",
+          "rewritten_numeric_siemens_csa_image_headers:1"
+        ]
       }
     }
   ]

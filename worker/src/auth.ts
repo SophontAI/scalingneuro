@@ -2,9 +2,10 @@ import { constantTimeEqual, sha256Hex } from "./crypto";
 import { AppError } from "./errors";
 import type { DeviceContext, Env } from "./env";
 
-interface DeviceRow extends DeviceContext {
+interface DeviceRow extends Omit<DeviceContext, "self_service"> {
   revoked_at: number | null;
   project_active: number;
+  self_service: number | boolean;
 }
 
 function bearerToken(request: Request): string {
@@ -23,9 +24,10 @@ function bearerToken(request: Request): string {
   return token;
 }
 
-export async function authenticateDevice(
+async function authenticateDeviceContext(
   request: Request,
   env: Env,
+  allowPolicyDrift: boolean,
 ): Promise<DeviceContext> {
   const tokenHash = await sha256Hex(bearerToken(request));
   const row = await env.DB.prepare(
@@ -38,6 +40,7 @@ export async function authenticateDevice(
             p.name AS project_name,
             CASE WHEN r.project_id IS NULL THEN p.upload_quota_bytes ELSE NULL END
               AS upload_quota_bytes,
+            CASE WHEN r.device_id IS NULL THEN 0 ELSE 1 END AS self_service,
             p.active AS project_active
      FROM devices d
      JOIN projects p ON p.id = d.project_id
@@ -57,6 +60,7 @@ export async function authenticateDevice(
     );
   }
   if (
+    !allowPolicyDrift &&
     row.accepted_consent_policy_version !== row.current_consent_policy_version
   ) {
     throw new AppError(
@@ -79,7 +83,22 @@ export async function authenticateDevice(
     current_consent_policy_version: row.current_consent_policy_version,
     project_name: row.project_name,
     upload_quota_bytes: row.upload_quota_bytes,
+    self_service: Boolean(row.self_service),
   };
+}
+
+export function authenticateDevice(
+  request: Request,
+  env: Env,
+): Promise<DeviceContext> {
+  return authenticateDeviceContext(request, env, false);
+}
+
+export function authenticateDeviceForPolicyAcceptance(
+  request: Request,
+  env: Env,
+): Promise<DeviceContext> {
+  return authenticateDeviceContext(request, env, true);
 }
 
 export async function authenticateAdmin(

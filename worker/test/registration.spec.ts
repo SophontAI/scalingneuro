@@ -4,6 +4,7 @@ import {
   waitOnExecutionContext,
 } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
+import { sha256Hex } from "../src/crypto";
 import { fetchHandler } from "../src/index";
 
 const ADMIN_TOKEN = "test-admin-token-with-sufficient-entropy";
@@ -39,13 +40,16 @@ function deviceToken(): string {
   return `sn_device_${entropy}`;
 }
 
-function registration(): Record<string, unknown> {
+function registration(
+  clientVersion = "0.4.0",
+  consentPolicyVersion = "open-mri-1.0.0",
+): Record<string, unknown> {
   const suffix = crypto.randomUUID().replaceAll("-", "");
   return {
     registration_id: crypto.randomUUID(),
     device_token: deviceToken(),
     device_name: "scanner-transfer-workstation",
-    client_version: "0.3.0",
+    client_version: clientVersion,
     platform: "linux-x64",
     contact_email: `Researcher+${suffix}@Example.edu`,
     contact_name: "Example Researcher",
@@ -53,7 +57,7 @@ function registration(): Record<string, unknown> {
     institution_ror_id: "https://ror.org/03yrm5c26",
     lab_name: "Example Neuroimaging Lab",
     contact_opt_in: true,
-    accepted_consent_policy_version: "open-epi-1.0.0",
+    accepted_consent_policy_version: consentPolicyVersion,
   };
 }
 
@@ -63,8 +67,8 @@ describe("open contributor registration", () => {
     expect(info.status).toBe(200);
     expect(await info.json()).toEqual({
       registration_open: true,
-      project_name: "Scaling Neuro public EPI contribution",
-      consent_policy_version: "open-epi-1.0.0",
+      project_name: "Scaling Neuro public MRI contribution",
+      consent_policy_version: "open-mri-1.0.0",
       policy_url: "https://scalingneuro.com/docs/contribution-policy",
       self_service_quota_bytes: null,
       minimum_client_version: "0.2.8",
@@ -78,8 +82,8 @@ describe("open contributor registration", () => {
     expect(enrollment).toMatchObject({
       enrollment_id: request.registration_id,
       device_token: request.device_token,
-      project_name: "Scaling Neuro public EPI contribution",
-      consent_policy_version: "open-epi-1.0.0",
+      project_name: "Scaling Neuro public MRI contribution",
+      consent_policy_version: "open-mri-1.0.0",
     });
     expect(enrollment.pseudonym_key_b64).toMatch(/^[A-Za-z0-9+/]{43}=$/u);
 
@@ -108,7 +112,7 @@ describe("open contributor registration", () => {
     expect(await replay.json()).toEqual(enrollment);
     const upgradedReplay = await call("POST", "/v1/register", {
       ...request,
-      client_version: "0.3.1",
+      client_version: "0.4.1",
       platform: "macos-aarch64",
     });
     expect(upgradedReplay.status).toBe(201);
@@ -138,7 +142,7 @@ describe("open contributor registration", () => {
           lab_name: "Example Neuroimaging Lab",
           contact_opt_in: true,
           platform: "macos-aarch64",
-          client_version: "0.3.1",
+          client_version: "0.4.1",
           committed_uploads: 0,
           committed_series: 0,
           committed_bytes: 0,
@@ -158,15 +162,20 @@ describe("open contributor registration", () => {
     );
     expect(info.status).toBe(200);
     expect(await info.json()).toMatchObject({
+      project_name: "Scaling Neuro public EPI contribution",
+      consent_policy_version: "open-epi-1.0.0",
       self_service_quota_bytes: 9_007_199_254_740_991,
       minimum_client_version: "0.2.8",
     });
 
-    const request = registration();
-    request.client_version = "0.2.8";
+    const request = registration("0.2.8", "open-epi-1.0.0");
     const created = await call("POST", "/v1/register", request);
     expect(created.status).toBe(201);
     const enrollment = await created.json<Record<string, unknown>>();
+    expect(enrollment).toMatchObject({
+      project_name: "Scaling Neuro public EPI contribution",
+      consent_policy_version: "open-epi-1.0.0",
+    });
     const quota = await env.DB.prepare(
       "SELECT upload_quota_bytes FROM projects WHERE id = ?1",
     )
@@ -183,8 +192,54 @@ describe("open contributor registration", () => {
       "neuro-sync/0.3.0",
     );
     expect(await modernInfo.json()).toMatchObject({
+      project_name: "Scaling Neuro public EPI contribution",
+      consent_policy_version: "open-epi-1.0.0",
       self_service_quota_bytes: null,
       minimum_client_version: "0.2.8",
+    });
+
+    const allMrInfo = await call(
+      "GET",
+      "/v1/contribution",
+      undefined,
+      undefined,
+      undefined,
+      "neuro-sync/0.4.0",
+    );
+    expect(await allMrInfo.json()).toMatchObject({
+      project_name: "Scaling Neuro public MRI contribution",
+      consent_policy_version: "open-mri-1.0.0",
+      self_service_quota_bytes: null,
+    });
+  });
+
+  it("binds registration policy acceptance to the client version", async () => {
+    const legacyAcceptingMr = registration("0.3.0", "open-mri-1.0.0");
+    const legacyRejected = await call(
+      "POST",
+      "/v1/register",
+      legacyAcceptingMr,
+    );
+    expect(legacyRejected.status).toBe(409);
+    expect(await legacyRejected.json()).toMatchObject({
+      error: {
+        code: "CONSENT_POLICY_UPDATE_REQUIRED",
+        details: { consent_policy_version: "open-epi-1.0.0" },
+      },
+    });
+
+    const currentAcceptingEpi = registration("0.4.0", "open-epi-1.0.0");
+    const currentRejected = await call(
+      "POST",
+      "/v1/register",
+      currentAcceptingEpi,
+    );
+    expect(currentRejected.status).toBe(409);
+    expect(await currentRejected.json()).toMatchObject({
+      error: {
+        code: "CONSENT_POLICY_UPDATE_REQUIRED",
+        details: { consent_policy_version: "open-mri-1.0.0" },
+      },
     });
   });
 
@@ -226,6 +281,216 @@ describe("open contributor registration", () => {
     expect(registrations?.count).toBe(2);
   });
 
+  it("updates an existing self-service device policy without changing its identity", async () => {
+    const request = registration("0.3.0", "open-epi-1.0.0");
+    const created = await call("POST", "/v1/register", request);
+    expect(created.status).toBe(201);
+    const enrollment = await created.json<{
+      device_id: string;
+      site_id: string;
+      project_id: string;
+      device_token: string;
+      project_name: string;
+      consent_policy_version: string;
+    }>();
+    expect(enrollment).toMatchObject({
+      project_name: "Scaling Neuro public EPI contribution",
+      consent_policy_version: "open-epi-1.0.0",
+    });
+    const keyBefore = await env.DB.prepare(
+      "SELECT pseudonym_key_ciphertext FROM sites WHERE id = ?1",
+    )
+      .bind(enrollment.site_id)
+      .first<string>("pseudonym_key_ciphertext");
+
+    const seriesArchiveId = "a".repeat(24);
+    const payload = new TextEncoder().encode(
+      "legacy-upload-started-before-policy-acceptance".padEnd(96, "."),
+    );
+    const relativeKey = `${seriesArchiveId}/dicom.tar.zst`;
+    const legacyUploadRequest = {
+      format: "dicom-series-v1",
+      client_version: "0.3.0",
+      deidentification: {
+        policy_id: "scaling-neuro.dicom-deidentification",
+        policy_version: "1.0.0",
+      },
+      series: [
+        {
+          series_archive_id: seriesArchiveId,
+          series_id: "b".repeat(24),
+          subject_id: "c".repeat(24),
+          session_id: "d".repeat(24),
+          protocol_group_id: "e".repeat(24),
+          dicom_count: 3,
+          archive: {
+            format: "dicom-tar-zstd",
+            relative_key: relativeKey,
+            size: payload.byteLength,
+            sha256: await sha256Hex(payload),
+          },
+        },
+      ],
+    };
+    const legacyAllocated = await call(
+      "POST",
+      "/v1/dicom-uploads",
+      legacyUploadRequest,
+      enrollment.device_token,
+    );
+    expect(legacyAllocated.status).toBe(201);
+    const legacyAllocation = await legacyAllocated.json<{
+      upload_id: string;
+      multipart_objects: Array<{ key: string; upload_id: string }>;
+    }>();
+    const legacyObject = legacyAllocation.multipart_objects[0]!;
+
+    const oldClientCannotAcceptMr = await call(
+      "POST",
+      "/v1/device/policy",
+      { accepted_consent_policy_version: "open-mri-1.0.0" },
+      enrollment.device_token,
+      undefined,
+      "neuro-sync/0.3.0",
+    );
+    expect(oldClientCannotAcceptMr.status).toBe(426);
+    expect(await oldClientCannotAcceptMr.json()).toMatchObject({
+      error: {
+        code: "CLIENT_UPDATE_REQUIRED",
+        details: { minimum_client_version: "0.4.0" },
+      },
+    });
+
+    const missingClientVersion = await call(
+      "POST",
+      "/v1/device/policy",
+      { accepted_consent_policy_version: "open-mri-1.0.0" },
+      enrollment.device_token,
+    );
+    expect(missingClientVersion.status).toBe(426);
+
+    const stale = await call(
+      "POST",
+      "/v1/device/policy",
+      { accepted_consent_policy_version: "open-epi-1.0.0" },
+      enrollment.device_token,
+      undefined,
+      "neuro-sync/0.4.0",
+    );
+    expect(stale.status).toBe(409);
+    expect(await stale.json()).toMatchObject({
+      error: {
+        code: "CONSENT_POLICY_UPDATE_REQUIRED",
+        details: { consent_policy_version: "open-mri-1.0.0" },
+      },
+    });
+
+    const accepted = await call(
+      "POST",
+      "/v1/device/policy",
+      { accepted_consent_policy_version: "open-mri-1.0.0" },
+      enrollment.device_token,
+      undefined,
+      "neuro-sync/0.4.0",
+    );
+    expect(accepted.status).toBe(200);
+    expect(await accepted.json()).toEqual({
+      device_id: enrollment.device_id,
+      site_id: enrollment.site_id,
+      project_id: enrollment.project_id,
+      project_name: "Scaling Neuro public MRI contribution",
+      consent_policy_version: "open-mri-1.0.0",
+      status: "accepted",
+    });
+
+    const resumed = await call(
+      "POST",
+      "/v1/dicom-uploads",
+      legacyUploadRequest,
+      enrollment.device_token,
+    );
+    expect(resumed.status).toBe(200);
+    expect(await resumed.json()).toMatchObject({
+      upload_id: legacyAllocation.upload_id,
+      status: "uploading",
+    });
+    const uploadedPart = await env.ARCHIVE.resumeMultipartUpload(
+      legacyObject.key,
+      legacyObject.upload_id,
+    ).uploadPart(1, payload);
+    const completed = await call(
+      "POST",
+      `/v1/dicom-uploads/${legacyAllocation.upload_id}/complete`,
+      {
+        objects: [
+          {
+            key: legacyObject.key,
+            size: payload.byteLength,
+            sha256: legacyUploadRequest.series[0]!.archive.sha256,
+            parts: [{ part_number: 1, etag: uploadedPart.etag }],
+          },
+        ],
+      },
+      enrollment.device_token,
+    );
+    expect(completed.status, await completed.clone().text()).toBe(200);
+    expect(await completed.json()).toMatchObject({
+      upload_id: legacyAllocation.upload_id,
+      status: "committed",
+    });
+    const replay = await call(
+      "POST",
+      "/v1/device/policy",
+      { accepted_consent_policy_version: "open-mri-1.0.0" },
+      enrollment.device_token,
+      undefined,
+      "neuro-sync/0.4.0",
+    );
+    expect(replay.status).toBe(200);
+    const state = await env.DB.prepare(
+      `SELECT p.name AS project_name, p.slug AS project_slug,
+              p.consent_policy_version AS project_policy,
+              d.accepted_consent_policy_version AS device_policy,
+              d.client_version, s.pseudonym_key_ciphertext
+       FROM projects p JOIN devices d ON d.project_id = p.id
+       JOIN sites s ON s.id = p.site_id WHERE d.id = ?1`,
+    )
+      .bind(enrollment.device_id)
+      .first<{
+        project_name: string;
+        project_slug: string;
+        project_policy: string;
+        device_policy: string;
+        client_version: string;
+        pseudonym_key_ciphertext: string;
+      }>();
+    expect(state).toEqual({
+      project_name: "Scaling Neuro public MRI contribution",
+      project_slug: "public-mri",
+      project_policy: "open-mri-1.0.0",
+      device_policy: "open-mri-1.0.0",
+      client_version: "0.4.0",
+      pseudonym_key_ciphertext: keyBefore,
+    });
+    const audit = await env.DB.prepare(
+      `SELECT COUNT(*) AS count FROM audit_events
+       WHERE event_type = 'device.consent_policy_accepted'
+         AND device_id = ?1 AND detail_code = 'open-mri-1.0.0'`,
+    )
+      .bind(enrollment.device_id)
+      .first<{ count: number }>();
+    expect(audit?.count).toBe(1);
+
+    const oldRegistrationReplay = await call("POST", "/v1/register", request);
+    expect(oldRegistrationReplay.status).toBe(426);
+    expect(await oldRegistrationReplay.json()).toMatchObject({
+      error: {
+        code: "CLIENT_UPDATE_REQUIRED",
+        details: { minimum_client_version: "0.4.0" },
+      },
+    });
+  });
+
   it("rejects stale clients, policy drift, and changed replays without reviving a public quota", async () => {
     const stale = registration();
     stale.client_version = "0.2.7";
@@ -245,7 +510,7 @@ describe("open contributor registration", () => {
     expect(await policyResponse.json()).toMatchObject({
       error: {
         code: "CONSENT_POLICY_UPDATE_REQUIRED",
-        details: { consent_policy_version: "open-epi-1.0.0" },
+        details: { consent_policy_version: "open-mri-1.0.0" },
       },
     });
 

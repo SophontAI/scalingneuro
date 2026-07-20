@@ -8,16 +8,18 @@ client internals:
 2. build a SHA-256-pinned dcm2niix release (unless an equivalent binary is
    supplied explicitly);
 3. deterministically expand the short Siemens and Philips fixtures to ten
-   temporal positions with synthetic, non-PHI identity and timing;
+   temporal positions with synthetic, non-PHI identity and timing, and derive
+   a one-instance Siemens T1-like routing fixture from those same public bytes;
 4. run the current neuro-sync executable in dry-run mode;
 5. require the current cluster processor to extract and audit the exact client archive;
-6. convert both source and privacy-cleared DICOM with pinned dcm2niix; and
+6. convert functional source and privacy-cleared DICOM with pinned dcm2niix; and
 7. compare voxel bytes, non-text NIfTI headers, and critical acquisition
    metadata while auditing the retained private-tag surface.
 
-GE classic and Philips Enhanced are negative controls. They must remain local
-with their exact compatibility reason until their private-metadata contracts
-are independently implemented and validated.
+GE classic and Philips Enhanced exercise scanner-neutral intake and the
+independent server archive/privacy boundary. They are accepted when their
+standard metadata contract passes, but are not labelled conversion-certified
+until the public fixture also passes the complete pinned conversion matrix.
 """
 
 from __future__ import annotations
@@ -110,6 +112,10 @@ PUBLIC_FIXTURES = {
 # of the upstream directories. A mismatch means the derivation itself drifted.
 DERIVED_FIXTURE_TREE_SHA256 = {
     "siemens": "69e04c568c4476f673a1019a5951e7a0fa80035e73655a95623cf106ba4efb53",
+    # This is a routing/privacy fixture, not a scientifically valid T1 image:
+    # it retains one pinned public Siemens image's Pixel Data while replacing
+    # the acquisition labels with deterministic T1-like metadata.
+    "siemens-structural-t1like": "b8bca6aa2370d9aa17deefa1be493a6d591aeddf641e0c412e8bbf007d8d0dc2",
     "philips": "0f6ebfe419d41079dee7948abb8ea09bb37b75282ec372df584ca3590713a7cc",
 }
 
@@ -189,11 +195,19 @@ EXPECTED_PRIVATE_TAGS = {
     "siemens": {(0x0029, 0x0010), (0x0029, 0x1010)},
     "philips": {
         (0x2001, 0x0010),
+        (0x2001, 0x1003),
+        (0x2001, 0x1008),
         (0x2001, 0x1018),
         (0x2001, 0x1022),
         (0x2005, 0x0010),
+        (0x2005, 0x0014),
         (0x2005, 0x100D),
         (0x2005, 0x100E),
+        (0x2005, 0x10B0),
+        (0x2005, 0x10B1),
+        (0x2005, 0x10B2),
+        (0x2005, 0x1412),
+        (0x2005, 0x1413),
     },
 }
 
@@ -232,6 +246,7 @@ REMOVED_SENSITIVE_TAGS = DIRECT_IDENTITY_TAGS | {
     (0x0010, 0x4000),  # Patient Comments
     (0x0018, 0x1000),  # Device Serial Number
 }
+DEVICE_SERIAL_NUMBER = (0x0018, 0x1000)
 
 
 # Public-fixture scanner and study labels deliberately survive in the local
@@ -595,6 +610,44 @@ def generate_siemens(source: Path, destination: Path) -> None:
         )
 
 
+def generate_siemens_structural_t1like(source: Path, destination: Path) -> None:
+    """Derive a deterministic, non-PHI structural-routing fixture.
+
+    The source pixels remain the pinned public Siemens EPI fixture's pixels.
+    This deliberately proves routing, scanner-native Pixel Data preservation,
+    de-identification, and archive-only processor behavior; it is not evidence
+    that the pixels constitute a scientifically valid T1-weighted acquisition.
+    """
+    pydicom = require_pydicom()
+    destination.mkdir(parents=True)
+    sources = [pydicom.dcmread(path) for path in sorted(source.glob("*.dcm"))]
+    if len(sources) != 2:
+        raise QaFailure(f"expected two Siemens source mosaics, found {len(sources)}")
+    dataset = scrub_fixture_identity(
+        copy.deepcopy(sources[0]), "siemens-structural-t1like", 1
+    )
+    dataset.InstanceNumber = 1
+    dataset.AcquisitionNumber = 1
+    dataset.ImageType = ["ORIGINAL", "PRIMARY", "M", "T1"]
+    dataset.ScanningSequence = "GR"
+    dataset.MRAcquisitionType = "3D"
+    dataset.SequenceName = "tfl3d1"
+    dataset.ProtocolName = "T1w MPRAGE ROUTING QA"
+    dataset.SeriesDescription = "T1w MPRAGE ROUTING QA"
+    dataset.RepetitionTime = "2300"
+    dataset.EchoTime = "2.98"
+    dataset.FlipAngle = "9"
+    if "EchoPlanarPulseSequence" in dataset:
+        dataset.EchoPlanarPulseSequence = "NO"
+    for keyword in ("TemporalPositionIdentifier", "NumberOfTemporalPositions"):
+        if keyword in dataset:
+            del dataset[keyword]
+    dataset.save_as(
+        destination / "t1like-routing-001.dcm",
+        enforce_file_format=True,
+    )
+
+
 def generate_philips(source: Path, destination: Path) -> None:
     pydicom = require_pydicom()
     destination.mkdir(parents=True)
@@ -686,13 +739,21 @@ def run_client(client: Path, source: Path, state: Path) -> dict[str, Any]:
             source,
             "--dry-run",
             "--confirm-authorized",
+            "--confirm-native-pixels-authorized",
         ],
         env=env,
     )
     return load_single_report(state)
 
 
-def accepted_archive(report: dict[str, Any], state: Path, count: int) -> Path:
+def accepted_archive(
+    report: dict[str, Any],
+    state: Path,
+    count: int,
+    *,
+    expected_series_kind: str | None = None,
+    expected_processing_route: str | None = None,
+) -> Path:
     summary = report.get("source_summary", {})
     if (
         summary.get("accepted") != 1
@@ -702,6 +763,22 @@ def accepted_archive(report: dict[str, Any], state: Path, count: int) -> Path:
     ):
         raise QaFailure(f"expected one accepted series, got {summary}")
     bundle = report["bundles"][0]
+    if (
+        expected_series_kind is not None
+        and bundle.get("series_kind") != expected_series_kind
+    ):
+        raise QaFailure(
+            f"series kind changed: {bundle.get('series_kind')} != "
+            f"{expected_series_kind}"
+        )
+    if (
+        expected_processing_route is not None
+        and bundle.get("processing_route") != expected_processing_route
+    ):
+        raise QaFailure(
+            f"processing route changed: {bundle.get('processing_route')} != "
+            f"{expected_processing_route}"
+        )
     archive = bundle.get("archive", {})
     if archive.get("dicom_instance_count") != count:
         raise QaFailure(
@@ -761,6 +838,35 @@ def processor_archive_expectations(
     return series_archive_id, series_id, expected_count
 
 
+def processor_route_expectations(bundle: dict[str, Any]) -> tuple[str, str, str]:
+    series_kind = bundle.get("series_kind")
+    processing_route = bundle.get("processing_route")
+    pixel_data_policy = bundle.get("pixel_data_policy")
+    supported_kinds = {
+        "functional_epi",
+        "structural_t1w",
+        "structural_t2w",
+        "structural_other",
+        "diffusion",
+        "asl_perfusion",
+        "perfusion",
+        "fieldmap",
+        "sbref",
+        "localizer",
+        "derived_mr",
+        "other_mr",
+    }
+    if (
+        series_kind not in supported_kinds
+        or processing_route not in {"functional-epi-v1", "archive-verify-v1"}
+        or pixel_data_policy != "scanner-native-not-defaced"
+        or (series_kind == "functional_epi")
+        != (processing_route == "functional-epi-v1")
+    ):
+        raise QaFailure("client report does not contain a valid all-MR route contract")
+    return series_kind, processing_route, pixel_data_policy
+
+
 def processor_qa_config(config_type: type[Any], destination: Path, zstd: str) -> Any:
     return config_type(
         api_url="http://127.0.0.1",
@@ -805,6 +911,9 @@ def validate_processor_boundary(
     series_archive_id, series_id, dicom_count = processor_archive_expectations(
         bundle, expected_count
     )
+    series_kind, processing_route, pixel_data_policy = processor_route_expectations(
+        bundle
+    )
     config = processor_qa_config(Config, destination, zstd)
     try:
         manifest = processor_extract_archive(
@@ -814,6 +923,9 @@ def validate_processor_boundary(
             expected_series_archive_id=series_archive_id,
             expected_series_id=series_id,
             expected_dicom_count=dicom_count,
+            expected_series_kind=series_kind,
+            expected_processing_route=processing_route,
+            expected_pixel_data_policy=pixel_data_policy,
         )
     except ProcessorError as error:
         raise QaFailure(
@@ -828,11 +940,140 @@ def validate_processor_boundary(
         "pipeline_version": PIPELINE_VERSION,
         "series_archive_id": manifest.value["series_archive_id"],
         "series_id": manifest.value["series_id"],
+        "series_kind": manifest.series_kind,
+        "processing_route": manifest.processing_route,
+        "pixel_data_policy": manifest.pixel_data_policy,
         "archive_manifest_sha256": manifest.sha256,
         "dicom_count": manifest.dicom_count,
         "dicom_parse_succeeded": True,
         "privacy_audit_passed": True,
-        "functional_epi_confirmed": True,
+        "functional_epi_confirmed": processing_route == "functional-epi-v1",
+        "conversion_expected": processing_route == "functional-epi-v1",
+        "expected_output_count": 3 if processing_route == "functional-epi-v1" else 0,
+    }
+
+
+def validate_archive_only_processor_route(
+    repo_root: Path,
+    archive: Path,
+    bundle: dict[str, Any],
+    expected_count: int,
+    destination: Path,
+) -> dict[str, Any]:
+    """Run the real processor route and prove it never invokes conversion."""
+    processor_root = repo_root / "processor"
+    processor_path = os.fspath(processor_root)
+    if processor_path not in sys.path:
+        sys.path.insert(0, processor_path)
+    try:
+        from threading import Event
+
+        from scaling_neuro_processor.config import Config
+        from scaling_neuro_processor.models import DicomInput, Download, Job
+        import scaling_neuro_processor.pipeline as processor_pipeline
+    except ImportError as error:
+        raise QaFailure(
+            "current processor imports failed; install its pinned Python dependencies"
+        ) from error
+
+    series_archive_id, series_id, dicom_count = processor_archive_expectations(
+        bundle, expected_count
+    )
+    series_kind, processing_route, pixel_data_policy = processor_route_expectations(
+        bundle
+    )
+    if processing_route != "archive-verify-v1":
+        raise QaFailure("archive-only route QA received a conversion-routed series")
+    zstd = shutil.which("zstd")
+    if zstd is None:
+        raise QaFailure("zstd is required for the processor archive boundary check")
+    config = processor_qa_config(Config, destination, zstd)
+    archive_bytes = archive.stat().st_size
+    archive_sha256 = sha256_file(archive)
+    descriptor = DicomInput(
+        archive=Download(
+            url="http://127.0.0.1/vendor-qa-archive",
+            size_bytes=archive_bytes,
+            sha256=archive_sha256,
+            headers={},
+        ),
+        format="dicom-tar-zstd",
+        dicom_count=dicom_count,
+        series_kind=series_kind,
+        processing_route=processing_route,
+        pixel_data_policy=pixel_data_policy,
+    )
+    job = Job(
+        job_id="vendor-qa-archive-only",
+        upload_id="vendor-qa-upload",
+        series_archive_id=series_archive_id,
+        series_id=series_id,
+        attempt=1,
+        lease_token="vendor-qa-lease",
+        lease_expires_at="2030-01-01T00:00:00Z",
+        input_format="dicom-series-v1",
+        input=descriptor,
+    )
+
+    class LocalArchiveTransport:
+        def download(self, requested: Any, target: Path, lease_active: Event) -> None:
+            if not lease_active.is_set():
+                raise QaFailure("processor archive QA lost its synthetic lease")
+            if (
+                requested.size_bytes != archive_bytes
+                or requested.sha256 != archive_sha256
+            ):
+                raise QaFailure("processor requested an unexpected archive identity")
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(archive, target)
+
+    active = Event()
+    active.set()
+    original_converter = processor_pipeline.convert
+
+    def forbidden_converter(*_: Any, **__: Any) -> Any:
+        raise QaFailure("archive-only processor route invoked dcm2niix")
+
+    processor_pipeline.convert = forbidden_converter
+    try:
+        outputs, validation = processor_pipeline.prepare_dicom_job(
+            config, job, descriptor, LocalArchiveTransport(), active
+        )
+    finally:
+        processor_pipeline.convert = original_converter
+    expected_validation = {
+        "archive_sha256_verified": True,
+        "dicom_count": dicom_count,
+        "dicom_parse_succeeded": True,
+        "dicom_privacy_audit_succeeded": True,
+        "functional_epi_confirmed": False,
+    }
+    if outputs or validation != expected_validation:
+        raise QaFailure(
+            "archive-only processor route produced conversion output or an invalid audit"
+        )
+    result_path = config.job_root(job.job_id, job.attempt, job.lease_token) / "result.json"
+    try:
+        result = json.loads(result_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as error:
+        raise QaFailure(
+            "archive-only processor result is missing or invalid"
+        ) from error
+    if (
+        result.get("processing_route") != "archive-verify-v1"
+        or result.get("series_kind") != series_kind
+        or result.get("dcm2niix_version") is not None
+        or result.get("outputs") != []
+        or result.get("validation") != expected_validation
+    ):
+        raise QaFailure("archive-only processor result retained conversion assumptions")
+    return {
+        "verified": True,
+        "series_kind": series_kind,
+        "processing_route": processing_route,
+        "dcm2niix_invoked": False,
+        "output_count": 0,
+        "validation": validation,
     }
 
 
@@ -847,15 +1088,42 @@ def recursive_private_tags(dataset: Any) -> set[tuple[int, int]]:
     return tags
 
 
-def recursive_date_time_count(dataset: Any) -> int:
+def recursive_nonempty_date_time_count(dataset: Any) -> int:
     count = 0
     for element in dataset:
-        if element.VR in {"DA", "DT", "TM"}:
+        # Standards-required Type 2 DA/TM attributes remain as zero-length
+        # shells in a conformant de-identified MR IOD. Only a retained value is
+        # a privacy failure; the VR by itself contains no source information.
+        if element.VR in {"DA", "DT", "TM"} and not element.is_empty:
             count += 1
         if element.VR == "SQ":
             for item in element.value:
-                count += recursive_date_time_count(item)
+                count += recursive_nonempty_date_time_count(item)
     return count
+
+
+def pseudonymous_device_serial(value: Any) -> bool:
+    text = str(value)
+    return (
+        len(text) == 27
+        and text.startswith("SN-")
+        and all(character in "0123456789abcdef" for character in text[3:])
+    )
+
+
+def recursive_unsafe_sensitive_tags(dataset: Any) -> set[tuple[int, int]]:
+    unsafe: set[tuple[int, int]] = set()
+    for element in dataset:
+        tag = (element.tag.group, element.tag.element)
+        if tag in REMOVED_SENSITIVE_TAGS and not element.is_empty:
+            if tag != DEVICE_SERIAL_NUMBER or not pseudonymous_device_serial(
+                element.value
+            ):
+                unsafe.add(tag)
+        if element.VR == "SQ":
+            for item in element.value:
+                unsafe.update(recursive_unsafe_sensitive_tags(item))
+    return unsafe
 
 
 def pixel_inventory(datasets: Iterable[Any]) -> Counter[tuple[str, str]]:
@@ -880,14 +1148,14 @@ def audit_sanitized_dicom(name: str, raw: Path, sanitized: Path) -> None:
         raise QaFailure(f"{name} PixelData or transfer syntax changed")
     private: set[tuple[int, int]] = set()
     for path, cleaned in zip(sanitized_paths, sanitized_datasets, strict=True):
-        if recursive_date_time_count(cleaned) != 0:
-            raise QaFailure(f"{name} sanitized DICOM retained DA/DT/TM in {path.name}")
-        retained_sensitive = sorted(
-            tag for tag in REMOVED_SENSITIVE_TAGS if tag in cleaned
-        )
+        if recursive_nonempty_date_time_count(cleaned) != 0:
+            raise QaFailure(
+                f"{name} sanitized DICOM retained non-empty DA/DT/TM in {path.name}"
+            )
+        retained_sensitive = sorted(recursive_unsafe_sensitive_tags(cleaned))
         if retained_sensitive:
             raise QaFailure(
-                f"{name} sanitized DICOM retained sensitive standard tags in "
+                f"{name} sanitized DICOM retained sensitive standard values in "
                 f"{path.name}: {retained_sensitive}"
             )
         private.update(recursive_private_tags(cleaned))
@@ -1030,6 +1298,48 @@ def run_positive_fixture(
     }
 
 
+def run_structural_routing_fixture(
+    fixture: Path,
+    client: Path,
+    repo_root: Path,
+    work: Path,
+) -> dict[str, Any]:
+    count = 1
+    state = work / "state-siemens-structural-t1like"
+    report = run_client(client, fixture, state)
+    archive = accepted_archive(
+        report,
+        state,
+        count,
+        expected_series_kind="structural_t1w",
+        expected_processing_route="archive-verify-v1",
+    )
+    extracted, processor = validate_processor_boundary(
+        repo_root,
+        archive,
+        report["bundles"][0],
+        count,
+        work / "processor-archive-siemens-structural-t1like",
+    )
+    audit_sanitized_dicom("siemens", fixture, extracted)
+    archive_only = validate_archive_only_processor_route(
+        repo_root,
+        archive,
+        report["bundles"][0],
+        count,
+        work / "processor-route-siemens-structural-t1like",
+    )
+    return {
+        "derived_fixture_tree_sha256": dicom_tree_hash(fixture),
+        "archive_sha256": sha256_file(archive),
+        "archive_bytes": archive.stat().st_size,
+        "processor_boundary": processor,
+        "archive_only_route": archive_only,
+        "conversion_certified": False,
+        "fixture_semantics": "t1-like-routing-only-not-scientific-t1",
+    }
+
+
 def run_intake_fixture(
     name: str,
     fixture: Path,
@@ -1103,10 +1413,15 @@ def execute(args: argparse.Namespace, work: Path) -> dict[str, Any]:
 
     derived = work / "derived-fixtures"
     siemens = derived / "siemens"
+    siemens_structural = derived / "siemens-structural-t1like"
     philips = derived / "philips"
     generate_siemens(sources["siemens"], siemens)
+    generate_siemens_structural_t1like(sources["siemens"], siemens_structural)
     generate_philips(sources["philips"], philips)
     siemens_tree = assert_derived_fixture("siemens", siemens)
+    siemens_structural_tree = assert_derived_fixture(
+        "siemens-structural-t1like", siemens_structural
+    )
     philips_tree = assert_derived_fixture("philips", philips)
 
     dcm2niix = build_dcm2niix(work, args.dcm2niix_bin)
@@ -1115,6 +1430,10 @@ def execute(args: argparse.Namespace, work: Path) -> dict[str, Any]:
     print("\nValidating Siemens classic mosaic", flush=True)
     siemens_result = run_positive_fixture(
         "siemens", siemens, 10, client, dcm2niix, args.repo_root, work
+    )
+    print("\nValidating Siemens structural T1-like archive-only route", flush=True)
+    siemens_structural_result = run_structural_routing_fixture(
+        siemens_structural, client, args.repo_root, work
     )
     print("\nValidating Philips classic EPI", flush=True)
     philips_result = run_positive_fixture(
@@ -1153,11 +1472,15 @@ def execute(args: argparse.Namespace, work: Path) -> dict[str, Any]:
         },
         "derived_fixtures": {
             "siemens": siemens_tree,
+            "siemens-structural-t1like": siemens_structural_tree,
             "philips": philips_tree,
         },
         "positive": {
             "siemens": siemens_result,
             "philips": philips_result,
+        },
+        "archive_only": {
+            "siemens-structural-t1like": siemens_structural_result,
         },
         "intake": {
             "ge": ge_result,

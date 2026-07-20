@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://scalingneuro.com/schemas/local-manifest-v1.schema.json",
   "title": "Scaling Neuro local preparation manifest v1",
-  "description": "The owner-only checkpoint created after local conversion and before upload. It contains local paths and must never be uploaded, logged, or shared as a collaborator report.",
+  "description": "The owner-only checkpoint created during local DICOM preparation and upload. It contains local paths and must never be uploaded, logged, or shared as a collaborator report.",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -12,13 +12,15 @@
     "project_id",
     "consent_policy_version",
     "client_version",
+    "classifier_contract_version",
+    "archive_contract_version",
     "metadata_policy",
     "created_at",
     "source_summary",
     "bundles"
   ],
   "properties": {
-    "schema_version": { "const": "2.0.0" },
+    "schema_version": { "const": "3.0.0" },
     "run_id": {
       "$ref": "https://scalingneuro.com/schemas/common-v1.schema.json#/$defs/uuid"
     },
@@ -40,8 +42,16 @@
       "maxLength": 64,
       "pattern": "^(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)(?:-[A-Za-z0-9.-]+)?(?:\\+[A-Za-z0-9.-]+)?$"
     },
+    "classifier_contract_version": { "const": "2.0.0" },
+    "archive_contract_version": { "const": "2.0.0" },
     "metadata_policy": {
-      "$ref": "https://scalingneuro.com/schemas/scan-sidecar-v1.schema.json#/properties/metadata_policy"
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["policy_id", "policy_version"],
+      "properties": {
+        "policy_id": { "const": "scaling-neuro.dicom-deidentification" },
+        "policy_version": { "const": "2.0.0" }
+      }
     },
     "created_at": {
       "$ref": "https://scalingneuro.com/schemas/common-v1.schema.json#/$defs/timestamp"
@@ -51,7 +61,6 @@
     },
     "bundles": {
       "type": "array",
-      "maxItems": 10000,
       "items": { "$ref": "#/$defs/manifestBundle" }
     }
   },
@@ -167,7 +176,7 @@
         "deidentification_profile": {
           "const": "scaling-neuro.dicom-deidentification"
         },
-        "deidentification_profile_version": { "const": "1.0.0" }
+        "deidentification_profile_version": { "const": "2.0.0" }
       }
     },
     "manifestBundle": {
@@ -179,6 +188,9 @@
         "subject_id",
         "session_id",
         "protocol_group_id",
+        "series_kind",
+        "processing_route",
+        "pixel_data_policy",
         "source_dicom_count",
         "classification",
         "qc"
@@ -199,6 +211,26 @@
         "protocol_group_id": {
           "$ref": "https://scalingneuro.com/schemas/common-v1.schema.json#/$defs/pseudonymId"
         },
+        "series_kind": {
+          "enum": [
+            "functional_epi",
+            "structural_t1w",
+            "structural_t2w",
+            "structural_other",
+            "diffusion",
+            "asl_perfusion",
+            "perfusion",
+            "fieldmap",
+            "sbref",
+            "localizer",
+            "derived_mr",
+            "other_mr"
+          ]
+        },
+        "processing_route": {
+          "enum": ["functional-epi-v1", "archive-verify-v1"]
+        },
+        "pixel_data_policy": { "const": "scanner-native-not-defaced" },
         "nifti": {
           "allOf": [
             { "$ref": "#/$defs/localObject" },
@@ -254,6 +286,20 @@
         {
           "required": ["archive"],
           "properties": { "archive": {}, "nifti": false, "metadata": false }
+        }
+      ],
+      "allOf": [
+        {
+          "if": {
+            "properties": { "series_kind": { "const": "functional_epi" } },
+            "required": ["series_kind"]
+          },
+          "then": {
+            "properties": { "processing_route": { "const": "functional-epi-v1" } }
+          },
+          "else": {
+            "properties": { "processing_route": { "const": "archive-verify-v1" } }
+          }
         }
       ]
     }

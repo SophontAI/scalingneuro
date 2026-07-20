@@ -53,6 +53,7 @@ class Config:
     token: str
     work_root: Path
     processor_id: str
+    controller_source_sha256: str | None = None
     claim_input_format: Literal["dicom-series-v1", "nifti-v1"] | None = None
     dcm2niix_bin: str = "dcm2niix"
     native_tools_slurm_image: Path | None = None
@@ -94,6 +95,10 @@ class Config:
             r"[A-Za-z0-9][A-Za-z0-9._:-]{0,95}", self.processor_id
         ):
             raise ProcessorError("PROCESSOR_ID_INVALID", retryable=False)
+        if self.controller_source_sha256 is not None and not re.fullmatch(
+            r"[0-9a-f]{64}", self.controller_source_sha256
+        ):
+            raise ProcessorError("PROCESSOR_ATTESTATION_INVALID", retryable=False)
         if self.claim_input_format not in {
             None,
             "dicom-series-v1",
@@ -140,8 +145,10 @@ class Config:
         assert hostname is not None
         return hostname.lower()
 
-    def job_root(self, job_id: str) -> Path:
-        digest = hashlib.sha256(job_id.encode("utf-8")).hexdigest()[:32]
+    def job_root(self, job_id: str, attempt: int, lease_token: str) -> Path:
+        """Return a scratch workspace owned by one exact job lease."""
+        identity = f"{job_id}\0{attempt}\0{lease_token}".encode("utf-8")
+        digest = hashlib.sha256(identity).hexdigest()[:32]
         return self.work_root / "jobs" / digest
 
     def object_url_allowed(self, url: str) -> bool:

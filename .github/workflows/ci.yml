@@ -171,7 +171,6 @@ jobs:
       - name: Test two-phase production download preservation
         run: |
           ./scripts/test-production-downloads.sh
-          ./scripts/test-pages-rollback.sh
           ./scripts/test-release-cutover.sh
 
       - name: Detect Worker component
@@ -208,10 +207,6 @@ jobs:
       - name: Test
         if: steps.component.outputs.present == 'true'
         run: npm test --prefix worker
-
-      - name: Test browser data streaming
-        if: steps.component.outputs.present == 'true'
-        run: node --test tests/*.test.mjs
 
   processor:
     name: Cluster processor

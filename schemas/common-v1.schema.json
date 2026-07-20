@@ -84,11 +84,18 @@
         "kind": {
           "enum": [
             "functional_epi",
+            "structural_t1w",
+            "structural_t2w",
+            "structural_other",
             "diffusion",
+            "asl_perfusion",
+            "perfusion",
             "asl",
             "fieldmap",
             "sbref",
             "localizer",
+            "derived_mr",
+            "other_mr",
             "structural",
             "derived",
             "secondary_capture",
@@ -117,7 +124,7 @@
                 "enum": ["dicom_header", "converter_sidecar", "nifti_header", "derived"]
               },
               "effect": {
-                "enum": ["supports", "contradicts", "excludes"]
+                "enum": ["supports", "limits_processing", "contradicts", "excludes"]
               }
             }
           }
@@ -155,7 +162,7 @@
           "maxItems": 64,
           "items": {
             "type": "string",
-            "pattern": "^[a-z][a-z0-9_.-]{2,63}$"
+            "pattern": "^[a-z][a-z0-9_.-]{2,63}(?::[1-9][0-9]{0,5})?$"
           }
         }
       }

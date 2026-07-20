@@ -26,7 +26,7 @@ if [[ $# -gt 4 ]]; then
     exit 2
 fi
 
-release=${1:-/data/paul/scaling-neuro/native/releases/0.1.1}
+release=${1:-/data/paul/scaling-neuro/native/releases/0.2.0}
 api_url=${2:-https://scalingneuro.com}
 work_root=${3:-/data/paul/scaling-neuro/processor}
 token_file=${4:-/data/paul/scaling-neuro/secrets/processor-token}
@@ -37,7 +37,7 @@ srun_bin=/opt/slurm/bin/srun
 env_bin=/usr/bin/env
 app_root="$release/app"
 
-if [[ ! -x "$python_bin" || ! -r "$native_tools_image" || ! -r "$release_manifest" || ! -r "$app_root/scaling_neuro_processor/__init__.py" ]]; then
+if [[ ! -x "$python_bin" || ! -x "$release/bin/controller-source-sha256.py" || ! -r "$native_tools_image" || ! -r "$release_manifest" || ! -r "$app_root/scaling_neuro_processor/__init__.py" ]]; then
     echo "native processor release is incomplete or unreadable" >&2
     exit 2
 fi
@@ -52,36 +52,10 @@ if [[ ! "$expected_image_sha256" =~ ^[0-9a-f]{64}$ || "$actual_image_sha256" != 
     exit 2
 fi
 expected_controller_sha256=$(sed -n 's/^controller_source_sha256=//p' "$release_manifest")
-actual_controller_sha256=$("$python_bin" - \
+actual_controller_sha256=$("$python_bin" \
+    "$release/bin/controller-source-sha256.py" \
     "$release/requirements.lock" \
-    "$app_root/scaling_neuro_processor" <<'CONTROLLER_DIGEST_PY'
-from pathlib import Path
-import hashlib
-import sys
-
-requirements = Path(sys.argv[1])
-package = Path(sys.argv[2])
-files = sorted(path for path in package.rglob("*.py") if path.is_file())
-if not requirements.is_file() or requirements.is_symlink() or not files:
-    raise SystemExit(2)
-if any(path.is_symlink() for path in files):
-    raise SystemExit(2)
-entries = [("requirements.lock", requirements)]
-entries.extend(
-    (f"scaling_neuro_processor/{path.relative_to(package).as_posix()}", path)
-    for path in files
-)
-digest = hashlib.sha256()
-for logical_name, path in entries:
-    name = logical_name.encode("utf-8")
-    raw = path.read_bytes()
-    digest.update(len(name).to_bytes(4, "big"))
-    digest.update(name)
-    digest.update(len(raw).to_bytes(8, "big"))
-    digest.update(raw)
-print(digest.hexdigest())
-CONTROLLER_DIGEST_PY
-)
+    "$app_root/scaling_neuro_processor")
 if [[ ! "$expected_controller_sha256" =~ ^[0-9a-f]{64}$ || "$actual_controller_sha256" != "$expected_controller_sha256" ]]; then
     echo "controller source checksum does not match the installed release" >&2
     exit 2
@@ -108,7 +82,9 @@ trap stop_processor USR1 TERM INT
         --token-file "$token_file" \
         --work-root "$work_root" \
         --processor-id "slurm-native-${SLURM_JOB_ID}-${SLURM_PROCID:-0}" \
+        --controller-source-sha256 "$actual_controller_sha256" \
         --claim-input-format dicom-series-v1 \
+        --object-transfer-timeout-seconds 86400 \
         --native-tools-slurm-image "$native_tools_image" \
         --slurm-srun-bin "$srun_bin" \
         --slurm-job-id "$SLURM_JOB_ID" \

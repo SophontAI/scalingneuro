@@ -12,7 +12,7 @@ use crate::{
     pipeline::{ContributorDetails, Runtime},
 };
 
-const POLICY_SUMMARY: &str = "This beta accepts only confidently identified functional EPI. Structural, diffusion, ASL, field-map, reference, derived, or uncertain series stay local.\nThe original DICOMs remain unchanged. Uploads contain privacy-cleared DICOM copies with scanner-native pixel data, useful acquisition metadata, site-scoped pseudonyms, a recursive de-identification audit, and hashes. Direct identifiers, dates, source UIDs and paths, institution/station/operator fields, free text, overlays, graphics, and unsafe private data are removed or remapped before upload. Conversion and scientific validation run asynchronously on the Scaling Neuro research cluster.\nYou must be authorized by your institution to contribute the selected scans for research storage, validation, preservation, scientific analysis, and governed sharing. This confirmation does not replace participant consent, IRB review, a data-use agreement, or institutional review. Scaling Neuro may validate, deduplicate, quarantine, preserve, and analyze accepted bundles. A lab may request device revocation or upload withdrawal through admin@sophont.med using the pseudonymous upload ID in its local report.";
+const POLICY_SUMMARY: &str = "This beta uploads every privacy-clearable supported MR Image series in the selected folder, including functional, structural, diffusion, perfusion, field-map, reference, localizer, and derived MR images. Unsafe, malformed, unsupported, non-image, and non-MR DICOM objects stay local.\nThe original DICOMs remain unchanged. Uploads contain privacy-cleared DICOM copies with scanner-native pixel data, useful acquisition metadata, site-scoped pseudonyms, a recursive de-identification audit, and hashes. Direct identifiers, dates, source UIDs and paths, institution/station/operator fields, free text, overlays, graphics, and unsafe private data are removed or remapped before upload.\nScanner-native pixels are not defaced, cropped, masked, or altered. Structural and other head MR images may contain recognizable facial anatomy even after DICOM headers are de-identified. You must be specifically authorized by your institution to transfer and preserve those native pixels for research storage, validation, preservation, scientific analysis, and governed sharing. This confirmation does not replace participant consent, IRB review, a data-use agreement, or institutional review. A lab may request device revocation or upload withdrawal through admin@sophont.med using the pseudonymous upload ID in its local report.";
 
 pub async fn run(runtime: Runtime) -> Result<()> {
     run_for_optional_folder(runtime, None).await
@@ -47,10 +47,10 @@ async fn run_with_io(
     api_url: &str,
     selected_folder: Option<PathBuf>,
 ) -> Result<()> {
-    writeln!(output, "Scaling Neuro · functional EPI contribution")?;
+    writeln!(output, "Scaling Neuro · MR DICOM contribution")?;
     writeln!(output, "No browser is needed or opened.\n")?;
 
-    let config = if runtime.paths.config.is_file() {
+    let mut config = if runtime.paths.config.is_file() {
         ClientConfig::load(&runtime.paths)?
     } else {
         let Some(config) = register_interactively(&runtime, input, output, api_url).await? else {
@@ -59,6 +59,31 @@ async fn run_with_io(
         };
         config
     };
+
+    let contribution = runtime.contribution_info(&config.api_url).await?;
+    if config.consent_policy_version != contribution.consent_policy_version {
+        writeln!(
+            output,
+            "Scaling Neuro has updated its contribution policy from {} to {}.",
+            config.consent_policy_version, contribution.consent_policy_version
+        )?;
+        writeln!(output, "Policy: {}", contribution.policy_url)?;
+        writeln!(output, "{POLICY_SUMMARY}\n")?;
+        if !prompt_yes_no(
+            input,
+            output,
+            "Accept the current policy and confirm authorization for scanner-native, not-defaced MR pixels?",
+            false,
+        )? {
+            writeln!(output, "Policy update declined. Nothing was uploaded.")?;
+            return Ok(());
+        }
+        writeln!(output, "Updating this workstation's policy acceptance…")?;
+        output.flush()?;
+        config = runtime
+            .accept_contribution_policy(&config, &contribution.consent_policy_version)
+            .await?;
+    }
 
     writeln!(output, "Project: {}", config.project_name)?;
     writeln!(
@@ -119,7 +144,7 @@ async fn register_interactively(
     if !prompt_yes_no(
         input,
         output,
-        "Do you accept this policy and confirm you are authorized to contribute eligible scans?",
+        "Do you accept this policy and confirm authorization to contribute scanner-native, not-defaced MR pixels?",
         false,
     )? {
         return Ok(None);
@@ -152,7 +177,7 @@ async fn register_interactively(
 pub fn confirm_authorized_upload(folder: &Path, policy_version: &str) -> Result<bool> {
     if !io::stdin().is_terminal() || !io::stdout().is_terminal() {
         bail!(
-            "non-interactive upload requires --confirm-authorized; use it only after confirming the selected scans are approved under the contribution policy"
+            "non-interactive upload requires both --confirm-authorized and --confirm-native-pixels-authorized; use them only after confirming the selected scans and scanner-native, not-defaced pixels are approved under the contribution policy"
         );
     }
     let mut input = BufReader::new(io::stdin());
@@ -172,7 +197,7 @@ fn confirm_upload(
     prompt_yes_no(
         input,
         output,
-        "Confirm this folder is institutionally approved and begin upload?",
+        "Confirm this folder and its scanner-native, not-defaced MR pixels are institutionally approved and begin upload?",
         false,
     )
 }
@@ -188,6 +213,15 @@ pub fn print_run_summary(runtime: &Runtime, run_id: &str, output: &mut impl Writ
         "Series: {} accepted, {} held, {} excluded",
         run.summary.accepted, run.summary.held, run.summary.excluded
     )?;
+    if let Some(error_code) = run.error_code.as_deref() {
+        writeln!(output, "Error code: {error_code}")?;
+        if error_code == "unreadable_dicom_like_files" {
+            writeln!(
+                output,
+                "Nothing new was uploaded because one or more DICOM-like files could not be parsed and a series may be incomplete. Re-export or repair the folder, then rerun the same `neuro-sync <folder>` command."
+            )?;
+        }
+    }
     let report = runtime.report(Some(run_id)).ok();
     if run.summary.held > 0 {
         let mut reasons = BTreeMap::<&str, usize>::new();
@@ -211,10 +245,39 @@ pub fn print_run_summary(runtime: &Runtime, run_id: &str, output: &mut impl Writ
                 .filter(|bundle| bundle.archive.is_some())
                 .count();
             if received > 0 {
-                writeln!(output, "Receipt: {received} DICOM series safely stored")?;
+                let received_files = report
+                    .bundles
+                    .iter()
+                    .filter(|bundle| bundle.archive.is_some())
+                    .map(|bundle| bundle.source_dicom_count)
+                    .sum::<u64>();
+                let functional = report
+                    .bundles
+                    .iter()
+                    .filter(|bundle| {
+                        bundle.processing_route == crate::archive::FUNCTIONAL_EPI_PROCESSING_ROUTE
+                    })
+                    .count();
+                let archive_only = received.saturating_sub(functional);
                 writeln!(
                     output,
-                    "Processing: queued on the Scaling Neuro cluster (the upload is finished)"
+                    "Receipt: {received_files} DICOM files in {received} series safely stored"
+                )?;
+                if functional > 0 {
+                    writeln!(
+                        output,
+                        "Processing: {functional} functional series queued for NIfTI conversion"
+                    )?;
+                }
+                if archive_only > 0 {
+                    writeln!(
+                        output,
+                        "Archive verification: {archive_only} other MR series queued"
+                    )?;
+                }
+                writeln!(
+                    output,
+                    "The upload is finished; this workstation may disconnect."
                 )?;
                 writeln!(output, "Check later with: neuro-sync status {run_id}")?;
             }
@@ -475,6 +538,100 @@ mod tests {
         assert!(!output.contains("DICOM folder (type or paste"));
         assert!(output.contains("Cancelled. Nothing was uploaded."));
         assert!(ClientConfig::load(&runtime.paths).is_ok());
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn existing_workstation_accepts_updated_all_mr_policy_in_terminal() {
+        use axum::{
+            Json, Router,
+            http::{HeaderMap, StatusCode},
+            routing::{get, post},
+        };
+
+        let app = Router::new()
+            .route(
+                "/v1/contribution",
+                get(|| async {
+                    Json(serde_json::json!({
+                        "registration_open": true,
+                        "project_name": "Scaling Neuro public MRI contribution",
+                        "consent_policy_version": "open-mri-1.0.0",
+                        "policy_url": "https://scalingneuro.com/docs/contribution-policy",
+                        "self_service_quota_bytes": null,
+                        "minimum_client_version": "0.4.0"
+                    }))
+                }),
+            )
+            .route(
+                "/v1/device/policy",
+                post(
+                    |headers: HeaderMap, Json(body): Json<serde_json::Value>| async move {
+                        assert_eq!(
+                            headers
+                                .get("authorization")
+                                .and_then(|value| value.to_str().ok()),
+                            Some("Bearer sn_device_fixture")
+                        );
+                        assert_eq!(body["accepted_consent_policy_version"], "open-mri-1.0.0");
+                        (
+                            StatusCode::OK,
+                            Json(serde_json::json!({
+                                "status": "accepted",
+                                "device_id": "11111111-1111-4111-8111-111111111111",
+                                "site_id": "site",
+                                "project_id": "project",
+                                "project_name": "Scaling Neuro public MRI contribution",
+                                "consent_policy_version": "open-mri-1.0.0"
+                            })),
+                        )
+                    },
+                ),
+            );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+
+        let directory = tempdir().unwrap();
+        let source = directory.path().join("DICOM export");
+        std::fs::create_dir(&source).unwrap();
+        let runtime = Runtime::initialize(Some(&directory.path().join("state"))).unwrap();
+        ClientConfig {
+            api_url: format!("http://{address}"),
+            device_token: "sn_device_fixture".into(),
+            site_id: "site".into(),
+            project_id: "project".into(),
+            project_name: "Scaling Neuro public EPI contribution".into(),
+            consent_policy_version: "open-epi-1.0.0".into(),
+            pseudonym_key_b64: "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=".into(),
+        }
+        .save(&runtime.paths)
+        .unwrap();
+        let mut input = "yes\nno\n".as_bytes();
+        let mut output = Vec::new();
+
+        run_with_io(
+            runtime.clone(),
+            &mut input,
+            &mut output,
+            &format!("http://{address}"),
+            Some(source.canonicalize().unwrap()),
+        )
+        .await
+        .unwrap();
+
+        let output = String::from_utf8(output).unwrap();
+        assert!(output.contains("updated its contribution policy"));
+        assert!(output.contains("scanner-native, not-defaced MR pixels"));
+        assert!(output.contains("Contribution policy: open-mri-1.0.0"));
+        assert!(output.contains("Project: Scaling Neuro public MRI contribution"));
+        assert!(output.contains("Cancelled. Nothing was uploaded."));
+        let persisted = ClientConfig::load(&runtime.paths).unwrap();
+        assert_eq!(persisted.consent_policy_version, "open-mri-1.0.0");
+        assert_eq!(
+            persisted.project_name,
+            "Scaling Neuro public MRI contribution"
+        );
         server.abort();
     }
 }

@@ -45,10 +45,10 @@ describe("stored scan sidecars", () => {
         value.source.manufacturer = "John Doe";
       },
       (value: typeof example) => {
-        value.source.model = "JOHN_DOE";
+        value.source.model = "PATIENT_JOHN_DOE";
       },
       (value: typeof example) => {
-        value.source.software_versions = ["JOHN_DOE"];
+        value.source.software_versions = ["PATIENT_JOHN_DOE"];
       },
       (value: typeof example) => {
         value.source.sequence_name = "JOHN_DOE";

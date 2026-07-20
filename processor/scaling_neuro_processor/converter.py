@@ -3,11 +3,13 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 import subprocess
+from threading import Event
+from time import monotonic, sleep
 
 from . import DCM2NIIX_VERSION
 from . import sandbox
 from .config import Config
-from .errors import ConverterFailure
+from .errors import ConverterFailure, LeaseLost
 
 
 NORMALIZED_ARGUMENTS = [
@@ -35,6 +37,7 @@ NORMALIZED_ARGUMENTS = [
     "series",
 ]
 SANDBOX_DCM2NIIX = sandbox.NATIVE_DCM2NIIX
+CONVERSION_POLL_SECONDS = 0.25
 
 
 @dataclass(frozen=True)
@@ -79,7 +82,34 @@ def _subprocess_environment(config: Config, home: Path) -> dict[str, str]:
     return sandbox.subprocess_environment(config, home)
 
 
-def check_version(config: Config) -> str:
+def _require_active(lease_active: Event | None) -> None:
+    if lease_active is not None and not lease_active.is_set():
+        raise LeaseLost()
+
+
+def _terminate_process(process: subprocess.Popen[bytes]) -> None:
+    try:
+        if process.poll() is None:
+            process.terminate()
+    except OSError:
+        pass
+    try:
+        process.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        try:
+            process.kill()
+        except OSError:
+            pass
+        try:
+            process.wait(timeout=5)
+        except (OSError, subprocess.TimeoutExpired):
+            pass
+    except OSError:
+        pass
+
+
+def check_version(config: Config, lease_active: Event | None = None) -> str:
+    _require_active(lease_active)
     try:
         result = subprocess.run(
             version_command(config),
@@ -94,6 +124,7 @@ def check_version(config: Config) -> str:
         raise ConverterFailure("DCM2NIIX_UNAVAILABLE", retryable=True) from exc
     except (OSError, subprocess.TimeoutExpired) as exc:
         raise ConverterFailure("DCM2NIIX_VERSION_FAILED", retryable=True) from exc
+    _require_active(lease_active)
     output = result.stdout.decode("utf-8", errors="replace")[:4096]
     # The official Linux release reports a successful --version probe with
     # status 3. Builds used by the test harness and some distributions use 0.
@@ -102,27 +133,43 @@ def check_version(config: Config) -> str:
     return DCM2NIIX_VERSION
 
 
-def convert(config: Config, dicom_dir: Path, output_dir: Path) -> ConversionResult:
-    version = check_version(config)
+def convert(
+    config: Config,
+    dicom_dir: Path,
+    output_dir: Path,
+    lease_active: Event,
+) -> ConversionResult:
+    version = check_version(config, lease_active)
+    _require_active(lease_active)
     output_dir.mkdir(parents=True, exist_ok=False, mode=0o700)
     command = conversion_command(config, dicom_dir, output_dir)
     try:
-        result = subprocess.run(
+        process = subprocess.Popen(
             command,
             stdin=subprocess.DEVNULL,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
-            timeout=config.conversion_timeout_seconds,
-            check=False,
             env=_subprocess_environment(config, output_dir),
         )
     except FileNotFoundError as exc:
         raise ConverterFailure("DCM2NIIX_UNAVAILABLE", retryable=True) from exc
-    except subprocess.TimeoutExpired as exc:
-        raise ConverterFailure("DCM2NIIX_TIMEOUT", retryable=True) from exc
     except OSError as exc:
         raise ConverterFailure("DCM2NIIX_EXECUTION_FAILED", retryable=True) from exc
-    if result.returncode != 0:
+    deadline = monotonic() + config.conversion_timeout_seconds
+    try:
+        while True:
+            _require_active(lease_active)
+            returncode = process.poll()
+            if returncode is not None:
+                break
+            if monotonic() > deadline:
+                raise ConverterFailure("DCM2NIIX_TIMEOUT", retryable=True)
+            sleep(CONVERSION_POLL_SECONDS)
+        _require_active(lease_active)
+    except BaseException:
+        _terminate_process(process)
+        raise
+    if returncode != 0:
         raise ConverterFailure()
     regular = sorted(path for path in output_dir.iterdir() if path.is_file())
     nifti = [path for path in regular if path.suffix == ".nii"]

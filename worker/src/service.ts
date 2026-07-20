@@ -1,4 +1,8 @@
-import { authenticateAdmin, authenticateDevice } from "./auth";
+import {
+  authenticateAdmin,
+  authenticateDevice,
+  authenticateDeviceForPolicyAcceptance,
+} from "./auth";
 import {
   canonicalJson,
   constantTimeEqual,
@@ -22,6 +26,7 @@ import {
   type NiftiFacts,
 } from "./nifti";
 import {
+  credentialTtl,
   deleteObject,
   deletePrefix,
   presignUploadPart as signR2UploadPart,
@@ -40,17 +45,46 @@ import type {
   CreateUploadRequest,
   EnrollRequest,
   PublicRegistrationRequest,
+  PublicPolicyAcceptanceRequest,
   SignPartRequest,
 } from "./validation";
 import packageManifest from "../package.json";
+import {
+  PROCESSOR_READINESS_MAX_AGE_SECONDS,
+  REQUIRED_PROCESSOR_CONTROLLER_SHA256,
+  REQUIRED_PROCESSOR_PIPELINE_VERSION,
+  REQUIRED_PROCESSOR_VERSION,
+} from "./processor-contract";
 
 const MINIMUM_CLIENT_VERSION = "0.1.1";
 const MINIMUM_SELF_SERVICE_CLIENT_VERSION = "0.2.8";
+export const MINIMUM_ALL_MR_CLIENT_VERSION = "0.4.0";
 const LEGACY_UNCAPPED_QUOTA_SENTINEL = Number.MAX_SAFE_INTEGER;
 const SERVICE_VERSION = packageManifest.version;
-const PUBLIC_PROJECT_NAME = "Scaling Neuro public EPI contribution";
-const PUBLIC_PROJECT_SLUG = "public-epi";
-const PUBLIC_CONSENT_POLICY_VERSION = "open-epi-1.0.0";
+const LEGACY_PUBLIC_PROJECT_NAME =
+  "Scaling Neuro public EPI contribution";
+const LEGACY_PUBLIC_PROJECT_SLUG = "public-epi";
+const PUBLIC_PROJECT_NAME = "Scaling Neuro public MRI contribution";
+const PUBLIC_PROJECT_SLUG = "public-mri";
+export const LEGACY_PUBLIC_CONSENT_POLICY_VERSION = "open-epi-1.0.0";
+export const PUBLIC_CONSENT_POLICY_VERSION = "open-mri-1.0.0";
+// A withdrawn prefix is deleted immediately, then swept repeatedly. The final
+// purge receipt is intentionally delayed until every processor PUT capability
+// and the maximum supported in-flight object transfer have drained.
+const WITHDRAWAL_RECHECK_SECONDS = 15 * 60;
+const MAX_PROCESSOR_OBJECT_TRANSFER_SECONDS = 86_400;
+// Strictly exceed the processor's five-minute socket-operation cap so URL
+// issuance races, integer-second rounding, and the last blocked write all
+// drain before purged_at becomes final.
+const WITHDRAWAL_SETTLEMENT_MARGIN_SECONDS = 10 * 60;
+
+function withdrawalSettlementSeconds(env: Env): number {
+  return (
+    credentialTtl(env) +
+    MAX_PROCESSOR_OBJECT_TRANSFER_SECONDS +
+    WITHDRAWAL_SETTLEMENT_MARGIN_SECONDS
+  );
+}
 
 function semanticVersion(
   value: string,
@@ -85,6 +119,35 @@ export function clientVersionAtLeast(
       (firstDifference >= 0 &&
         current.core[firstDifference]! > minimum.core[firstDifference]!))
   );
+}
+
+interface PublicContributionContract {
+  projectName: string;
+  projectSlug: string;
+  consentPolicyVersion: string;
+}
+
+function publicContributionContract(
+  clientVersion: string,
+): PublicContributionContract {
+  return clientVersionAtLeast(clientVersion, MINIMUM_ALL_MR_CLIENT_VERSION)
+    ? {
+        projectName: PUBLIC_PROJECT_NAME,
+        projectSlug: PUBLIC_PROJECT_SLUG,
+        consentPolicyVersion: PUBLIC_CONSENT_POLICY_VERSION,
+      }
+    : {
+        projectName: LEGACY_PUBLIC_PROJECT_NAME,
+        projectSlug: LEGACY_PUBLIC_PROJECT_SLUG,
+        consentPolicyVersion: LEGACY_PUBLIC_CONSENT_POLICY_VERSION,
+      };
+}
+
+function neuroSyncClientVersion(userAgent: string | null): string | null {
+  if (userAgent === null) return null;
+  const match = /^neuro-sync\/([^\s/]+)$/u.exec(userAgent);
+  if (!match || semanticVersion(match[1]!) === null) return null;
+  return match[1]!;
 }
 
 export function clientVersionIsSupported(value: string): boolean {
@@ -187,6 +250,7 @@ interface UploadRow {
   created_at: number;
   updated_at: number;
   expires_at: number;
+  provisional_expires_at: number | null;
   committed_at: number | null;
   received_at: number | null;
   withdrawn_at: number | null;
@@ -1038,6 +1102,15 @@ async function retireUnsupportedActiveUpload(
 export function publicContributionInfo(
   userAgent: string | null,
 ): Record<string, unknown> {
+  const clientVersion = neuroSyncClientVersion(userAgent);
+  // Browsers and unrecognized callers receive the current public contract.
+  // Released neuro-sync binaries receive the exact contract they can show and
+  // enforce, so a preserved pre-0.4 binary can never silently accept the
+  // broader scanner-native MR policy introduced in 0.4.
+  const contract =
+    clientVersion === null
+      ? publicContributionContract(MINIMUM_ALL_MR_CLIENT_VERSION)
+      : publicContributionContract(clientVersion);
   // neuro-sync 0.2.x modeled this field as a required u64 and cannot decode
   // JSON null. Keep the backend project quota truly NULL/unlimited, but give
   // only that exact legacy client family a JSON-safe compatibility sentinel
@@ -1050,8 +1123,8 @@ export function publicContributionInfo(
     );
   return {
     registration_open: true,
-    project_name: PUBLIC_PROJECT_NAME,
-    consent_policy_version: PUBLIC_CONSENT_POLICY_VERSION,
+    project_name: contract.projectName,
+    consent_policy_version: contract.consentPolicyVersion,
     policy_url: "https://scalingneuro.com/docs/contribution-policy",
     self_service_quota_bytes: legacyQuotaCompatibility
       ? LEGACY_UNCAPPED_QUOTA_SENTINEL
@@ -1060,6 +1133,129 @@ export function publicContributionInfo(
   };
 }
 
+export async function acceptPublicContributionPolicy(
+  request: Request,
+  env: Env,
+  input: PublicPolicyAcceptanceRequest,
+): Promise<Record<string, unknown>> {
+  const device = await authenticateDeviceForPolicyAcceptance(request, env);
+  if (!device.self_service) {
+    throw new AppError(
+      "UNAUTHORIZED",
+      403,
+      "Managed projects must update contribution policy through their administrator",
+    );
+  }
+  const clientVersion = neuroSyncClientVersion(
+    request.headers.get("user-agent"),
+  );
+  if (
+    clientVersion === null ||
+    !clientVersionAtLeast(clientVersion, MINIMUM_ALL_MR_CLIENT_VERSION)
+  ) {
+    throw new AppError(
+      "CLIENT_UPDATE_REQUIRED",
+      426,
+      "Install neuro-sync 0.4 or newer to review and accept the scanner-native MR contribution policy",
+      { minimum_client_version: MINIMUM_ALL_MR_CLIENT_VERSION },
+    );
+  }
+  if (
+    input.accepted_consent_policy_version !== PUBLIC_CONSENT_POLICY_VERSION
+  ) {
+    throw new AppError(
+      "CONSENT_POLICY_UPDATE_REQUIRED",
+      409,
+      "Review and accept the current public contribution policy",
+      { consent_policy_version: PUBLIC_CONSENT_POLICY_VERSION },
+    );
+  }
+  const timestamp = nowSeconds();
+  const results = await env.DB.batch([
+    env.DB.prepare(
+      `UPDATE projects
+       SET slug = ?1, name = ?2, consent_policy_version = ?3
+       WHERE id = ?4 AND site_id = ?5
+         AND EXISTS (
+           SELECT 1 FROM contributor_registrations r
+           WHERE r.project_id = projects.id AND r.device_id = ?6
+         )`,
+    ).bind(
+      PUBLIC_PROJECT_SLUG,
+      PUBLIC_PROJECT_NAME,
+      PUBLIC_CONSENT_POLICY_VERSION,
+      device.project_id,
+      device.site_id,
+      device.id,
+    ),
+    env.DB.prepare(
+      `UPDATE devices
+       SET accepted_consent_policy_version = ?1, client_version = ?2,
+           last_seen_at = ?3
+       WHERE id = ?4 AND site_id = ?5 AND project_id = ?6
+         AND EXISTS (
+           SELECT 1 FROM contributor_registrations r
+           WHERE r.device_id = devices.id AND r.project_id = devices.project_id
+         )`,
+    ).bind(
+      PUBLIC_CONSENT_POLICY_VERSION,
+      clientVersion,
+      timestamp,
+      device.id,
+      device.site_id,
+      device.project_id,
+    ),
+    env.DB.prepare(
+      `INSERT INTO audit_events
+         (id, event_type, site_id, project_id, device_id, subject_type,
+          subject_id, detail_code, created_at)
+       SELECT ?1, 'device.consent_policy_accepted', ?2, ?3, ?4,
+              'device', ?4, ?5, ?6
+       WHERE EXISTS (
+         SELECT 1 FROM devices d JOIN projects p ON p.id = d.project_id
+         WHERE d.id = ?4 AND d.accepted_consent_policy_version = ?5
+           AND p.consent_policy_version = ?5
+       ) AND NOT EXISTS (
+         SELECT 1 FROM audit_events
+         WHERE event_type = 'device.consent_policy_accepted'
+           AND subject_type = 'device' AND subject_id = ?4
+           AND detail_code = ?5
+       )`,
+    ).bind(
+      crypto.randomUUID(),
+      device.site_id,
+      device.project_id,
+      device.id,
+      PUBLIC_CONSENT_POLICY_VERSION,
+      timestamp,
+    ),
+  ]);
+  if (
+    (results[0]?.meta.changes ?? 0) !== 1 ||
+    (results[1]?.meta.changes ?? 0) !== 1
+  ) {
+    throw new AppError(
+      "CONFLICT",
+      409,
+      "Public contribution policy acceptance could not be persisted",
+    );
+  }
+  return {
+    device_id: device.id,
+    site_id: device.site_id,
+    project_id: device.project_id,
+    project_name: PUBLIC_PROJECT_NAME,
+    consent_policy_version: PUBLIC_CONSENT_POLICY_VERSION,
+    status: "accepted",
+  };
+}
+
+/*
+ * Keep registration identity independent of the reporting platform and client
+ * patch version so an exact pending operation can be safely replayed after a
+ * binary update. The accepted policy remains part of the identity: crossing
+ * the 0.4 policy boundary requires the authenticated device-policy route.
+ */
 function publicRegistrationRequestHash(
   input: PublicRegistrationRequest,
 ): Promise<string> {
@@ -1112,12 +1308,32 @@ async function publicRegistrationResponse(
   input: PublicRegistrationRequest,
   requestHash: string,
   deviceTokenHash: string,
+  expectedPolicyVersion: string,
 ): Promise<Record<string, unknown> | null> {
   if (
     existing.revoked_at !== null ||
     existing.request_hash !== requestHash ||
     !(await constantTimeEqual(existing.token_hash, deviceTokenHash))
   ) {
+    return null;
+  }
+  if (existing.accepted_consent_policy_version !== expectedPolicyVersion) {
+    // An older binary may replay its original registration operation after the
+    // workstation has upgraded and accepted the broader policy. Never return
+    // that new policy to a binary that did not display its disclosure.
+    if (
+      !clientVersionAtLeast(
+        input.client_version,
+        MINIMUM_ALL_MR_CLIENT_VERSION,
+      )
+    ) {
+      throw new AppError(
+        "CLIENT_UPDATE_REQUIRED",
+        426,
+        "This workstation has accepted the scanner-native MR policy; install neuro-sync 0.4 or newer",
+        { minimum_client_version: MINIMUM_ALL_MR_CLIENT_VERSION },
+      );
+    }
     return null;
   }
   await env.DB.prepare(
@@ -1147,14 +1363,15 @@ export async function registerContributor(
   input: PublicRegistrationRequest,
 ): Promise<Record<string, unknown>> {
   requireSelfServiceClientVersion(input.client_version);
+  const contract = publicContributionContract(input.client_version);
   if (
-    input.accepted_consent_policy_version !== PUBLIC_CONSENT_POLICY_VERSION
+    input.accepted_consent_policy_version !== contract.consentPolicyVersion
   ) {
     throw new AppError(
       "CONSENT_POLICY_UPDATE_REQUIRED",
       409,
-      "Review and accept the current public contribution policy",
-      { consent_policy_version: PUBLIC_CONSENT_POLICY_VERSION },
+      "Review and accept the contribution policy shown by this client",
+      { consent_policy_version: contract.consentPolicyVersion },
     );
   }
   const requestHash = await publicRegistrationRequestHash(input);
@@ -1170,6 +1387,7 @@ export async function registerContributor(
       input,
       requestHash,
       deviceTokenHash,
+      contract.consentPolicyVersion,
     );
     if (response) return response;
     throw new AppError(
@@ -1213,9 +1431,9 @@ export async function registerContributor(
       ).bind(
         projectId,
         siteId,
-        PUBLIC_PROJECT_SLUG,
-        PUBLIC_PROJECT_NAME,
-        PUBLIC_CONSENT_POLICY_VERSION,
+        contract.projectSlug,
+        contract.projectName,
+        contract.consentPolicyVersion,
         null,
         timestamp,
       ),
@@ -1234,7 +1452,7 @@ export async function registerContributor(
         input.device_name,
         input.platform,
         input.client_version,
-        PUBLIC_CONSENT_POLICY_VERSION,
+        contract.consentPolicyVersion,
         timestamp,
       ),
       env.DB.prepare(
@@ -1279,6 +1497,7 @@ export async function registerContributor(
         input,
         requestHash,
         deviceTokenHash,
+        contract.consentPolicyVersion,
       );
       if (response) return response;
     }
@@ -1300,8 +1519,8 @@ export async function registerContributor(
     device_id: deviceId,
     site_id: siteId,
     project_id: projectId,
-    project_name: PUBLIC_PROJECT_NAME,
-    consent_policy_version: PUBLIC_CONSENT_POLICY_VERSION,
+    project_name: contract.projectName,
+    consent_policy_version: contract.consentPolicyVersion,
     pseudonym_key_b64: pseudonymKeyBase64(siteKey),
   };
 }
@@ -3505,24 +3724,70 @@ export async function withdrawUpload(
          AND (receipt_token IS NULL OR receipt_expires_at <= ?1)`,
     ).bind(timestamp, upload.id),
     env.DB.prepare(
+      `UPDATE released_series_reservations
+       SET withdrawn_at = COALESCE(withdrawn_at, (
+         SELECT withdrawn_at FROM uploads WHERE id = ?1
+       ))
+       WHERE upload_id = ?1
+         AND EXISTS (
+           SELECT 1 FROM uploads WHERE id = ?1 AND status = 'withdrawn'
+         )`,
+    ).bind(upload.id),
+    env.DB.prepare(
+      `UPDATE uploads
+       SET status = 'withdrawn', withdrawn_at = ?1, updated_at = ?1,
+           operation_token = NULL, operation_kind = NULL,
+           operation_expires_at = NULL, receipt_token = NULL,
+           receipt_expires_at = NULL
+       WHERE id != ?2 AND status != 'withdrawn'
+         AND EXISTS (
+           SELECT 1
+           FROM released_series_reservations released
+           JOIN received_series_reservations received
+             ON received.site_id = released.site_id
+            AND received.project_id = released.project_id
+            AND received.bundle_id = released.series_archive_id
+           WHERE released.upload_id = ?2 AND received.upload_id = uploads.id
+             AND released.withdrawn_at IS NOT NULL
+         )`,
+    ).bind(timestamp, upload.id),
+    env.DB.prepare(
       `UPDATE catalog_series
        SET withdrawn_at = (
          SELECT withdrawn_at FROM uploads WHERE id = ?1
        )
-       WHERE upload_id = ?1 AND withdrawn_at IS NULL
-         AND EXISTS (
-           SELECT 1 FROM uploads WHERE id = ?1 AND status = 'withdrawn'
-         )`,
+       WHERE withdrawn_at IS NULL AND upload_id IN (
+         SELECT id FROM uploads
+         WHERE status = 'withdrawn' AND (
+           id = ?1 OR EXISTS (
+             SELECT 1
+             FROM released_series_reservations released
+             JOIN received_series_reservations received
+               ON received.site_id = released.site_id
+              AND received.project_id = released.project_id
+              AND received.bundle_id = released.series_archive_id
+             WHERE released.upload_id = ?1
+               AND received.upload_id = uploads.id
+               AND released.withdrawn_at IS NOT NULL
+           )
+         )
+       )`,
     ).bind(upload.id),
     env.DB.prepare(
       `UPDATE received_series_reservations
        SET withdrawn_at = (
          SELECT withdrawn_at FROM uploads WHERE id = ?1
        )
-       WHERE upload_id = ?1 AND withdrawn_at IS NULL
-         AND EXISTS (
-           SELECT 1 FROM uploads WHERE id = ?1 AND status = 'withdrawn'
-         )`,
+       WHERE withdrawn_at IS NULL AND (
+         upload_id = ?1 OR EXISTS (
+           SELECT 1 FROM released_series_reservations released
+           WHERE released.upload_id = ?1
+             AND released.site_id = received_series_reservations.site_id
+             AND released.project_id = received_series_reservations.project_id
+             AND released.series_archive_id = received_series_reservations.bundle_id
+             AND released.withdrawn_at IS NOT NULL
+         )
+       )`,
     ).bind(upload.id),
     env.DB.prepare(
       `UPDATE processing_jobs
@@ -3530,9 +3795,22 @@ export async function withdrawUpload(
            error_code = 'UPLOAD_WITHDRAWN',
            error_message = 'The source upload was withdrawn',
            processor_id = NULL, lease_token = NULL, lease_expires_at = NULL
-       WHERE upload_id = ?2 AND status IN ('queued', 'processing')
-         AND EXISTS (
-           SELECT 1 FROM uploads WHERE id = ?2 AND status = 'withdrawn'
+       WHERE status IN ('queued', 'processing')
+         AND upload_id IN (
+           SELECT id FROM uploads
+           WHERE status = 'withdrawn' AND (
+             id = ?2 OR EXISTS (
+               SELECT 1
+               FROM released_series_reservations released
+               JOIN received_series_reservations received
+                 ON received.site_id = released.site_id
+                AND received.project_id = released.project_id
+                AND received.bundle_id = released.series_archive_id
+               WHERE released.upload_id = ?2
+                 AND received.upload_id = uploads.id
+                 AND released.withdrawn_at IS NOT NULL
+             )
+           )
          )`,
     ).bind(timestamp, upload.id),
     env.DB.prepare(
@@ -3560,16 +3838,42 @@ export async function withdrawUpload(
     );
   }
 
+  const lineageUploads = await env.DB.prepare(
+    `SELECT DISTINCT u.* FROM uploads u
+     WHERE u.status = 'withdrawn' AND (
+       u.id = ?1 OR EXISTS (
+         SELECT 1
+         FROM released_series_reservations released
+         JOIN received_series_reservations received
+           ON received.site_id = released.site_id
+          AND received.project_id = released.project_id
+          AND received.bundle_id = released.series_archive_id
+         WHERE released.upload_id = ?1 AND received.upload_id = u.id
+           AND released.withdrawn_at IS NOT NULL
+       )
+     )`,
+  )
+    .bind(upload.id)
+    .all<UploadRow>();
   if (upload.purged_at === null) {
     try {
-      await abortAllMultipartUploads(env, upload.id);
-      await deletePrefix(env, upload.archive_prefix);
-      await deleteObject(env, archiveManifestKey(upload));
-      await env.DB.prepare(
-        "UPDATE uploads SET purged_at = ?1, updated_at = ?1 WHERE id = ?2",
-      )
-        .bind(nowSeconds(), upload.id)
-        .run();
+      for (const lineageUpload of lineageUploads.results) {
+        await abortAllMultipartUploads(env, lineageUpload.id);
+        await deletePrefix(env, lineageUpload.archive_prefix);
+        await deleteObject(env, archiveManifestKey(lineageUpload));
+      }
+      // Do not issue a final purge receipt yet. A processor may already hold a
+      // direct output PUT URL, and an upload begun before that URL expires can
+      // finish after this first sweep. Scheduled cleanup performs mandatory
+      // recurring sweeps and only finalizes after the capability drain window.
+      const sweptAt = nowSeconds();
+      for (const lineageUpload of lineageUploads.results) {
+        await env.DB.prepare(
+          "UPDATE uploads SET updated_at = ?1 WHERE id = ?2 AND status = 'withdrawn'",
+        )
+          .bind(sweptAt, lineageUpload.id)
+          .run();
+      }
     } catch {
       throw new AppError(
         "STORAGE_UNAVAILABLE",
@@ -3591,10 +3895,10 @@ export async function cleanupAbandoned(env: Env): Promise<void> {
   const activeCandidates = await env.DB.prepare(
     `SELECT id FROM uploads
      WHERE status IN ('created', 'uploading')
-       AND expires_at <= ?1
+       AND COALESCE(provisional_expires_at, expires_at) <= ?1
        AND (operation_token IS NULL OR operation_expires_at <= ?1)
        AND (receipt_token IS NULL OR receipt_expires_at <= ?1)
-     ORDER BY expires_at
+     ORDER BY COALESCE(provisional_expires_at, expires_at)
      LIMIT 50`,
   )
     .bind(timestamp)
@@ -3607,7 +3911,7 @@ export async function cleanupAbandoned(env: Env): Promise<void> {
            operation_token = ?2, operation_kind = 'purge',
            operation_expires_at = ?3
        WHERE id = ?4 AND status IN ('created', 'uploading')
-         AND expires_at <= ?1
+         AND COALESCE(provisional_expires_at, expires_at) <= ?1
          AND (operation_token IS NULL OR operation_expires_at <= ?1)
          AND (receipt_token IS NULL OR receipt_expires_at <= ?1)
        RETURNING *`,
@@ -3624,13 +3928,14 @@ export async function cleanupAbandoned(env: Env): Promise<void> {
 
   const terminalCandidates = await env.DB.prepare(
     `SELECT id FROM uploads
-     WHERE status IN ('expired', 'withdrawn') AND purged_at IS NULL
+     WHERE ((status = 'expired' AND purged_at IS NULL)
+         OR (status = 'withdrawn' AND purged_at IS NULL AND updated_at <= ?2))
        AND (operation_token IS NULL OR operation_expires_at <= ?1)
        AND (receipt_token IS NULL OR receipt_expires_at <= ?1)
      ORDER BY updated_at
      LIMIT 50`,
   )
-    .bind(timestamp)
+    .bind(timestamp, timestamp - WITHDRAWAL_RECHECK_SECONDS)
     .all<{ id: string }>();
   for (const candidate of terminalCandidates.results) {
     const token = crypto.randomUUID();
@@ -3638,8 +3943,9 @@ export async function cleanupAbandoned(env: Env): Promise<void> {
       `UPDATE uploads
        SET operation_token = ?1, operation_kind = 'purge',
            operation_expires_at = ?2, updated_at = ?3
-       WHERE id = ?4 AND status IN ('expired', 'withdrawn')
-         AND purged_at IS NULL
+       WHERE id = ?4
+         AND ((status = 'expired' AND purged_at IS NULL)
+           OR (status = 'withdrawn' AND purged_at IS NULL AND updated_at <= ?5))
          AND (operation_token IS NULL OR operation_expires_at <= ?3)
          AND (receipt_token IS NULL OR receipt_expires_at <= ?3)
        RETURNING *`,
@@ -3649,6 +3955,7 @@ export async function cleanupAbandoned(env: Env): Promise<void> {
         timestamp + INITIALIZE_LEASE_SECONDS,
         timestamp,
         candidate.id,
+        timestamp - WITHDRAWAL_RECHECK_SECONDS,
       )
       .first<UploadRow>();
     if (claimed) purgeClaims.push({ upload: claimed, token });
@@ -3661,13 +3968,23 @@ export async function cleanupAbandoned(env: Env): Promise<void> {
       await deleteObject(env, archiveManifestKey(upload));
       const purged = await env.DB.prepare(
         `UPDATE uploads
-         SET purged_at = ?1, updated_at = ?1,
+         SET purged_at = CASE
+               WHEN status = 'expired' OR withdrawn_at <= ?4
+               THEN COALESCE(purged_at, ?1)
+               ELSE purged_at
+             END,
+             updated_at = ?1,
              operation_token = NULL, operation_kind = NULL,
              operation_expires_at = NULL
          WHERE id = ?2 AND operation_token = ?3
            AND status IN ('expired', 'withdrawn')`,
       )
-        .bind(timestamp, upload.id, token)
+        .bind(
+          timestamp,
+          upload.id,
+          token,
+          timestamp - withdrawalSettlementSeconds(env),
+        )
         .run();
       if ((purged.meta.changes ?? 0) === 1 && upload.status === "expired") {
         await auditStatement(env, "upload.expired", {
@@ -3702,12 +4019,39 @@ export async function adminCleanup(
 }
 
 export async function health(env: Env): Promise<Record<string, unknown>> {
+  const timestamp = nowSeconds();
+  let processors: Array<{
+    controller_source_sha256: string;
+    last_seen_at: number;
+  }> = [];
   try {
     const result = await env.DB.prepare("SELECT 1 AS ok").first<{
       ok: number;
     }>();
     if (result?.ok !== 1 || !env.ARCHIVE)
       throw new Error("binding unavailable");
+    processors = (
+      await env.DB.prepare(
+        `SELECT controller_source_sha256, last_seen_at
+         FROM processor_instances
+         WHERE processor_version = ?1 AND pipeline_version = ?2
+           AND controller_source_sha256 = ?3
+           AND claim_input_format = 'dicom-series-v1'
+           AND last_seen_at >= ?4
+         ORDER BY last_seen_at DESC, processor_id
+         LIMIT 32`,
+      )
+        .bind(
+          REQUIRED_PROCESSOR_VERSION,
+          REQUIRED_PROCESSOR_PIPELINE_VERSION,
+          REQUIRED_PROCESSOR_CONTROLLER_SHA256,
+          timestamp - PROCESSOR_READINESS_MAX_AGE_SECONDS,
+        )
+        .all<{
+          controller_source_sha256: string;
+          last_seen_at: number;
+        }>()
+    ).results;
   } catch {
     throw new AppError(
       "STORAGE_UNAVAILABLE",
@@ -3719,5 +4063,20 @@ export async function health(env: Env): Promise<Record<string, unknown>> {
     status: "ok",
     service: "scaling-neuro-ingest",
     version: SERVICE_VERSION,
+    processor: {
+      ready: processors.length > 0,
+      required_version: REQUIRED_PROCESSOR_VERSION,
+      required_pipeline_version: REQUIRED_PROCESSOR_PIPELINE_VERSION,
+      required_controller_source_sha256:
+        REQUIRED_PROCESSOR_CONTROLLER_SHA256,
+      readiness_max_age_seconds: PROCESSOR_READINESS_MAX_AGE_SECONDS,
+      active_compatible_consumers: processors.length,
+      active_controller_source_sha256: [
+        ...new Set(processors.map((item) => item.controller_source_sha256)),
+      ].sort(),
+      ...(processors[0]
+        ? { last_seen_at: iso(processors[0].last_seen_at) }
+        : {}),
+    },
   };
 }

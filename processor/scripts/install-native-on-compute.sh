@@ -6,7 +6,7 @@ export PYTHONNOUSERSITE=1
 export PYTHONDONTWRITEBYTECODE=1
 export PYTHONSAFEPATH=1
 
-PROCESSOR_VERSION=0.1.1
+PROCESSOR_VERSION=0.2.0
 DCM2NIIX_VERSION=1.0.20260416
 DCM2NIIX_SHA256=e88b40f6ebbcf9f47ebfdd7bb5f0127297cb7e8b06266a91a4642b5814031bd0
 DCM2NIIX_URL=https://github.com/rordenlab/dcm2niix/releases/download/v1.0.20260416/dcm2niix_lnx.zip
@@ -28,10 +28,12 @@ if [ "$(uname -s)" != Linux ] || [ "$(uname -m)" != x86_64 ]; then
 fi
 
 processor_source=$1
-install_root=${2:-/data/paul/scaling-neuro/native/releases/0.1.1}
+install_root=${2:-/data/paul/scaling-neuro/native/releases/0.2.0}
 python_bin=${3:-python3.12}
 
-if [ ! -r "$processor_source/requirements.lock" ] || [ ! -d "$processor_source/scaling_neuro_processor" ]; then
+if [ ! -r "$processor_source/requirements.lock" ] || \
+    [ ! -d "$processor_source/scaling_neuro_processor" ] || \
+    [ ! -r "$processor_source/scripts/controller-source-sha256.py" ]; then
     echo "processor source directory is incomplete" >&2
     exit 2
 fi
@@ -80,33 +82,8 @@ fi
 controller_source_sha256() {
     requirements_path=$1
     package_path=$2
-    "$python_bin" - "$requirements_path" "$package_path" <<'CONTROLLER_DIGEST_PY'
-from pathlib import Path
-import hashlib
-import sys
-
-requirements = Path(sys.argv[1])
-package = Path(sys.argv[2])
-files = sorted(path for path in package.rglob("*.py") if path.is_file())
-if not requirements.is_file() or requirements.is_symlink() or not files:
-    raise SystemExit(2)
-if any(path.is_symlink() for path in files):
-    raise SystemExit(2)
-entries = [("requirements.lock", requirements)]
-entries.extend(
-    (f"scaling_neuro_processor/{path.relative_to(package).as_posix()}", path)
-    for path in files
-)
-digest = hashlib.sha256()
-for logical_name, path in entries:
-    name = logical_name.encode("utf-8")
-    raw = path.read_bytes()
-    digest.update(len(name).to_bytes(4, "big"))
-    digest.update(name)
-    digest.update(len(raw).to_bytes(8, "big"))
-    digest.update(raw)
-print(digest.hexdigest())
-CONTROLLER_DIGEST_PY
+    "$python_bin" "$processor_source/scripts/controller-source-sha256.py" \
+        "$requirements_path" "$package_path"
 }
 
 source_controller_sha256=$(controller_source_sha256 \
@@ -117,6 +94,7 @@ validate_release() {
     release=$1
     test -x "$release/venv/bin/python" || return 1
     test -x "$release/bin/dcm2niix" || return 1
+    test -x "$release/bin/controller-source-sha256.py" || return 1
     test -r "$release/native-tools.sqsh" || return 1
     test -r "$release/RELEASE" || return 1
     test -r "$release/app/scaling_neuro_processor/__init__.py" || return 1
@@ -127,7 +105,7 @@ validate_release() {
     grep -Fx "zstd_binary_sha256=$ZSTD_SHA256" "$release/RELEASE" >/dev/null || return 1
     grep -Fx "controller_source_sha256=$source_controller_sha256" "$release/RELEASE" >/dev/null || return 1
     PYTHONNOUSERSITE=1 PYTHONPATH="$release/app" "$release/venv/bin/python" -c \
-        'import numpy, pydicom, scaling_neuro_processor as p; assert numpy.__version__ == "2.2.6"; assert pydicom.__version__ == "3.0.1"; assert p.__version__ == "0.1.1"' || return 1
+        'import numpy, pydicom, scaling_neuro_processor as p; assert numpy.__version__ == "2.2.6"; assert pydicom.__version__ == "3.0.1"; assert p.__version__ == "0.2.0"' || return 1
     installed_controller_sha256=$(controller_source_sha256 \
         "$release/requirements.lock" \
         "$release/app/scaling_neuro_processor") || return 1
@@ -252,6 +230,9 @@ for path in files:
     target.chmod(0o444)
 PY
 install -m 0444 "$processor_source/requirements.lock" "$staging/requirements.lock"
+install -m 0555 \
+    "$processor_source/scripts/controller-source-sha256.py" \
+    "$staging/bin/controller-source-sha256.py"
 installed_controller_sha256=$(controller_source_sha256 \
     "$staging/requirements.lock" \
     "$staging/app/scaling_neuro_processor")

@@ -7,22 +7,22 @@
   "required": [
     "upload_id",
     "status",
-    "format",
-    "object_prefix",
-    "series_count",
-    "total_bytes",
-    "consent_policy_version",
-    "deidentification",
-    "receipt",
-    "created_at",
-    "updated_at"
+    "format"
   ],
   "properties": {
     "upload_id": {
       "$ref": "https://scalingneuro.com/schemas/common-v1.schema.json#/$defs/uuid"
     },
     "status": {
-      "enum": ["created", "uploading", "committed", "expired", "withdrawn"]
+      "enum": [
+        "created",
+        "uploading",
+        "checkpointed",
+        "committed",
+        "expired",
+        "withdrawn",
+        "already_received"
+      ]
     },
     "format": { "const": "dicom-series-v1" },
     "object_prefix": {
@@ -42,7 +42,7 @@
       "required": ["policy_id", "policy_version"],
       "properties": {
         "policy_id": { "const": "scaling-neuro.dicom-deidentification" },
-        "policy_version": { "const": "1.0.0" }
+        "policy_version": { "enum": ["1.0.0", "2.0.0"] }
       }
     },
     "receipt": {
@@ -79,6 +79,10 @@
         "processed_series",
         "failed_series",
         "purged_series",
+        "repairable_series",
+        "functional_epi_series",
+        "archive_only_series",
+        "archive_verified_series",
         "total_series",
         "updated_at"
       ],
@@ -93,6 +97,14 @@
         "processed_series": { "type": "integer", "minimum": 0, "maximum": 8 },
         "failed_series": { "type": "integer", "minimum": 0, "maximum": 8 },
         "purged_series": { "type": "integer", "minimum": 0, "maximum": 8 },
+        "repairable_series": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 8
+        },
+        "functional_epi_series": { "type": "integer", "minimum": 0, "maximum": 8 },
+        "archive_only_series": { "type": "integer", "minimum": 0, "maximum": 8 },
+        "archive_verified_series": { "type": "integer", "minimum": 0, "maximum": 8 },
         "total_series": { "type": "integer", "minimum": 1, "maximum": 8 },
         "updated_at": {
           "$ref": "https://scalingneuro.com/schemas/common-v1.schema.json#/$defs/timestamp"
@@ -116,6 +128,55 @@
     }
   },
   "allOf": [
+    {
+      "if": {
+        "properties": { "status": { "const": "already_received" } },
+        "required": ["status"]
+      },
+      "then": {
+        "required": [
+          "series_count",
+          "total_bytes",
+          "already_received_series"
+        ],
+        "properties": {
+          "series_count": {},
+          "total_bytes": {},
+          "already_received_series": {},
+          "object_prefix": false,
+          "consent_policy_version": false,
+          "deidentification": false,
+          "receipt": false,
+          "processing": false,
+          "received_at": false,
+          "withdrawn_at": false,
+          "created_at": false,
+          "updated_at": false
+        }
+      },
+      "else": {
+        "required": [
+          "object_prefix",
+          "series_count",
+          "total_bytes",
+          "consent_policy_version",
+          "deidentification",
+          "receipt",
+          "created_at",
+          "updated_at"
+        ],
+        "properties": {
+          "object_prefix": {},
+          "series_count": {},
+          "total_bytes": {},
+          "consent_policy_version": {},
+          "deidentification": {},
+          "receipt": {},
+          "created_at": {},
+          "updated_at": {}
+        }
+      }
+    },
     {
       "if": {
         "properties": { "status": { "const": "committed" } },

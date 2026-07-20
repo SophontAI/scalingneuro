@@ -160,6 +160,7 @@ jobs:
           path: |
             ${{ runner.temp }}/vendor-dicom-qa/vendor-dicom-qa-result.json
             ${{ runner.temp }}/vendor-dicom-qa/derived-fixtures/siemens/
+            ${{ runner.temp }}/vendor-dicom-qa/derived-fixtures/siemens-structural-t1like/
           if-no-files-found: error
 
       - name: Verify terminal installer on Linux
@@ -168,7 +169,6 @@ jobs:
       - name: Verify two-phase production download preservation
         run: |
           ./scripts/test-production-downloads.sh
-          ./scripts/test-pages-rollback.sh
           ./scripts/test-release-cutover.sh
 
   linux:
@@ -659,14 +659,19 @@ jobs:
           fail_on_unmatched_files: true
           files: release-assets/*
           body: |
-            Scaling Neuro EPI ingestion client open beta.
+            Scaling Neuro MR DICOM ingestion client open beta.
 
             The published terminal installers select the correct package, verify its pinned
             SHA-256, install without administrator access, and return control to the shell.
             Researchers start `neuro-sync` when their completed DICOM export path is ready.
             Registration, policy confirmation, folder entry, upload, and recovery require no
             browser or graphical Linux runtime. Non-interactive uploads must explicitly pass
-            `--confirm-authorized` after the lab has confirmed institutional authorization.
+            `--confirm-authorized --confirm-native-pixels-authorized` after the lab has
+            confirmed institutional authorization for the selected scans and for transfer
+            of scanner-native, not-defaced pixels. If the advertised policy changed, the
+            same command must also name it exactly with `--accept-policy-version VERSION`.
+            Structural head images can retain
+            recognizable facial anatomy and are governed raw data, not automatically public.
             Platform packages are checksum-bound implementation assets selected by the
             terminal installers. Files labeled UNSIGNED-PILOT or CODESIGNED-PILOT may trigger
             operating-system trust warnings; institutional controls may still require signed builds.
@@ -763,46 +768,43 @@ jobs:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
         run: npm exec --prefix worker -- wrangler d1 migrations apply scaling-neuro-control --remote --config worker/wrangler.jsonc
 
-      - name: Download backend and site phase-one bundle
+      - name: Download candidate backend bundle for phase one
         uses: actions/download-artifact@v4
         with:
           name: neuro-sync-v${{ needs.metadata.outputs.version }}-pages-phase-one
-          path: dist-phase-one
+          path: candidate-phase-one
 
-      - name: Preserve the exact currently published release
-        shell: bash
-        run: ./scripts/production-downloads.sh capture dist-phase-one
-
-      - name: Remember the current production deployment
-        id: previous_production
-        env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      - name: Preserve the exact currently published site and release
+        id: preserve_current_release
         shell: bash
         run: |
           set -euo pipefail
-          project=$(curl --fail --silent --show-error \
-            --header "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
-            "https://api.cloudflare.com/client/v4/accounts/${CLOUDFLARE_ACCOUNT_ID}/pages/projects/scalingneuro")
-          deployment_id=$(jq -er '
-            select(.success == true) |
-            .result.canonical_deployment.id |
-            select(
-              type == "string" and
-              test("^([0-9a-f]{32}|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$")
-            )
-          ' <<<"$project")
-          commit_hash=$(jq -r '
-            .result.canonical_deployment.deployment_trigger.metadata.commit_hash // ""
-          ' <<<"$project")
-          if [[ -n "$commit_hash" && ! "$commit_hash" =~ ^[0-9a-f]{40}$ ]]; then
-            echo "Current Pages deployment returned an unsafe commit hash" >&2
+          production_version=$(mktemp)
+          curl --fail --location --silent --show-error --max-time 30 \
+            --header 'cache-control: no-cache' \
+            --output "$production_version" \
+            "https://scalingneuro.com/version.json?phase=one-capture&run=$GITHUB_RUN_ID"
+          production_commit=$(jq -er \
+            '(.static_commit // .commit) |
+             select(type == "string" and test("^[0-9a-f]{40}$"))' \
+            "$production_version")
+          if [[ $(git rev-parse --is-shallow-repository) == true ]]; then
+            git fetch --no-tags --unshallow origin main
+          else
+            git fetch --no-tags origin main
+          fi
+          git cat-file -e "${production_commit}^{commit}"
+          if ! git merge-base --is-ancestor "$production_commit" "$GITHUB_SHA"; then
+            echo "Published site commit is not an ancestor of this release: $production_commit" >&2
             exit 1
           fi
-          echo "deployment_id=$deployment_id" >> "$GITHUB_OUTPUT"
-          echo "commit_hash=$commit_hash" >> "$GITHUB_OUTPUT"
+          ./scripts/production-site.sh capture \
+            candidate-phase-one dist-phase-one "$production_commit"
+          ./scripts/production-downloads.sh capture dist-phase-one
+          echo "production_commit=$production_commit" >> "$GITHUB_OUTPUT"
+          echo "captured=true" >> "$GITHUB_OUTPUT"
 
-      - name: Deploy backend and site while retaining current downloads
+      - name: Deploy backend while retaining current site and downloads
         id: phase_one_deploy
         uses: cloudflare/wrangler-action@v3
         with:
@@ -811,7 +813,7 @@ jobs:
           command: pages deploy dist-phase-one --project-name=scalingneuro --branch=main --commit-hash=${{ github.sha }}
           gitHubToken: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Verify phase one and unchanged public release bytes
+      - name: Verify phase one and unchanged public site and release bytes
         shell: bash
         run: |
           set -euo pipefail
@@ -822,7 +824,12 @@ jobs:
             source_version=$(curl --fail --silent --show-error --max-time 15 \
               "https://scalingneuro.com/version.json?phase=one&commit=$GITHUB_SHA&attempt=$attempt" || true)
             if jq --exit-status '.status == "ok"' <<<"$health" >/dev/null 2>&1 &&
-               jq --exit-status --arg sha "$GITHUB_SHA" '.commit == $sha' <<<"$source_version" >/dev/null 2>&1; then
+               jq --exit-status \
+                 --arg sha "$GITHUB_SHA" \
+                 --arg static "${{ steps.preserve_current_release.outputs.production_commit }}" '
+                   .commit == $sha and .static_commit == $static and
+                   .deployment_phase == "backend-validation"
+                 ' <<<"$source_version" >/dev/null 2>&1; then
               source_converged=true
               break
             fi
@@ -830,6 +837,19 @@ jobs:
           done
           if [[ "$source_converged" != true ]]; then
             echo "Phase-one production API did not converge" >&2
+            exit 1
+          fi
+
+          site_unchanged=false
+          for attempt in $(seq 1 20); do
+            if ./scripts/production-site.sh verify dist-phase-one; then
+              site_unchanged=true
+              break
+            fi
+            sleep 5
+          done
+          if [[ "$site_unchanged" != true ]]; then
+            echo "Phase one changed the previously published static site" >&2
             exit 1
           fi
 
@@ -845,6 +865,11 @@ jobs:
             echo "Phase one changed the previously published release bytes" >&2
             exit 1
           fi
+
+      - name: Require exact Sophont processor readiness
+        shell: bash
+        timeout-minutes: 12
+        run: ./scripts/verify-processor-readiness.sh https://scalingneuro.com 60 10
 
       - name: Prove the preserved public client can register through phase one
         shell: bash
@@ -865,14 +890,39 @@ jobs:
           test -n "$public_client"
           [[ "$($public_client --version)" == "neuro-sync ${public_version}" ]]
 
-          export NEURO_SYNC_STATE_DIR="$transition_root/state"
-          "$public_client" register \
+          if [[ ! "$public_version" =~ ^([0-9]+)\.([0-9]+)\.([0-9]+) ]]; then
+            echo "Published client version is not semantic: $public_version" >&2
+            exit 1
+          fi
+          if (( 10#${BASH_REMATCH[1]} > 0 || 10#${BASH_REMATCH[2]} >= 4 )); then
+            expected_public_policy=open-mri-1.0.0
+            public_policy_acceptance=(
+              --accept-policy-version "$expected_public_policy"
+            )
+          else
+            expected_public_policy=open-epi-1.0.0
+            public_policy_acceptance=(--accept-policy)
+          fi
+          advertised_public_policy=$(curl -fsS https://scalingneuro.com/v1/contribution \
+            -H "User-Agent: neuro-sync/${public_version}" | \
+            jq -er '.consent_policy_version | select(type == "string")')
+          [[ "$advertised_public_policy" == "$expected_public_policy" ]]
+
+          transition_state="$RUNNER_TEMP/neuro-sync-transition-state"
+          rm -rf "$transition_state"
+          export NEURO_SYNC_STATE_DIR="$transition_state"
+          public_registration_output=$("$public_client" register \
             --email "release-transition+${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}@scalingneuro.com" \
             --name "Scaling Neuro Transition QA" \
             --institution "Scaling Neuro" \
             --lab "Preserved public client compatibility QA" \
             --device-name "transition-${public_version}-linux" \
-            --accept-policy
+            "${public_policy_acceptance[@]}")
+          printf '%s\n' "$public_registration_output"
+          grep -Fq "contribution policy: ${expected_public_policy}" \
+            <<<"$public_registration_output"
+          printf '%s\n' "$expected_public_policy" \
+            > "$RUNNER_TEMP/neuro-sync-transition-policy"
 
       - name: Download candidate client and non-PHI scanner fixture
         uses: actions/download-artifact@v4
@@ -892,8 +942,11 @@ jobs:
 
           linux_archive=$(find release-smoke -type f \
             -name "neuro-sync-v${EXPECTED_VERSION}-linux-x86_64-musl-static.tar.gz" -print -quit)
-          fixture=$(find release-smoke -type d -path '*/derived-fixtures/siemens' -print -quit)
-          if [[ -z "$linux_archive" || -z "$fixture" ]]; then
+          functional_fixture=$(find release-smoke -type d \
+            -path '*/derived-fixtures/siemens' -print -quit)
+          structural_fixture=$(find release-smoke -type d \
+            -path '*/derived-fixtures/siemens-structural-t1like' -print -quit)
+          if [[ -z "$linux_archive" || -z "$functional_fixture" || -z "$structural_fixture" ]]; then
             echo "Release smoke assets are incomplete" >&2
             exit 1
           fi
@@ -901,26 +954,66 @@ jobs:
           client=$(find "$smoke_root" -type f -name neuro-sync -perm -u+x -print -quit)
           test -n "$client"
           [[ "$($client --version)" == "neuro-sync ${EXPECTED_VERSION}" ]]
+          candidate_policy=$(curl -fsS https://scalingneuro.com/v1/contribution \
+            -H "User-Agent: neuro-sync/${EXPECTED_VERSION}" | \
+            jq -er '.consent_policy_version | select(type == "string")')
+          [[ "$candidate_policy" == "open-mri-1.0.0" ]]
+
+          transition_state="$RUNNER_TEMP/neuro-sync-transition-state"
+          transition_policy=$(<"$RUNNER_TEMP/neuro-sync-transition-policy")
+          jq --exit-status --arg policy "$transition_policy" \
+            '.consent_policy_version == $policy' \
+            "$transition_state/config.json" >/dev/null
+          if [[ "$transition_policy" == "open-epi-1.0.0" ]]; then
+            transition_empty="$smoke_root/transition-empty-folder"
+            mkdir -p "$transition_empty"
+            export NEURO_SYNC_STATE_DIR="$transition_state"
+            transition_upgrade_output=$("$client" upload "$transition_empty" \
+              --confirm-authorized \
+              --confirm-native-pixels-authorized \
+              --accept-policy-version open-mri-1.0.0)
+            printf '%s\n' "$transition_upgrade_output"
+            grep -Fq 'Contribution policy updated to open-mri-1.0.0.' \
+              <<<"$transition_upgrade_output"
+            jq --exit-status '
+              .consent_policy_version == "open-mri-1.0.0" and
+              .project_name == "Scaling Neuro public MRI contribution"
+            ' "$transition_state/config.json" >/dev/null
+          fi
+
+          mixed_fixture="$smoke_root/mixed-mr-fixture"
+          mkdir -p "$mixed_fixture/functional" "$mixed_fixture/structural"
+          cp -a "$functional_fixture/." "$mixed_fixture/functional/"
+          cp -a "$structural_fixture/." "$mixed_fixture/structural/"
+          [[ "$(find "$mixed_fixture" -type f -name '*.dcm' | wc -l | tr -d ' ')" == 11 ]]
 
           export NEURO_SYNC_STATE_DIR="$smoke_root/state"
-          "$client" register \
+          candidate_registration_output=$("$client" register \
             --email "release-qa+${EXPECTED_VERSION}@scalingneuro.com" \
             --name "Scaling Neuro Release QA" \
             --institution "Scaling Neuro" \
             --lab "Public non-PHI scanner compatibility QA" \
             --device-name "release-${EXPECTED_VERSION}-linux" \
-            --accept-policy
-          "$client" upload "$fixture" --confirm-authorized
+            --accept-policy-version open-mri-1.0.0)
+          printf '%s\n' "$candidate_registration_output"
+          grep -Fq 'contribution policy: open-mri-1.0.0' \
+            <<<"$candidate_registration_output"
+          "$client" upload "$mixed_fixture" \
+            --confirm-authorized \
+            --confirm-native-pixels-authorized
 
           first_status="$smoke_root/first-status.json"
           "$client" status --json > "$first_status"
           run_id=$(jq -r '.id' "$first_status")
           jq --exit-status '
             .status == "complete" and
-            .summary.accepted == 1 and
+            .summary.accepted == 2 and
             .summary.held == 0 and
             .summary.excluded == 0 and
-            .dicom.receipt_received_series == 1 and
+            .dicom.receipt_received_series == 2 and
+            .dicom.processing_total_series == 2 and
+            .dicom.functional_epi_series == 1 and
+            .dicom.archive_only_series == 1 and
             .dicom.failed_series == 0 and
             .dicom.purged_series == 0
           ' "$first_status" >/dev/null
@@ -930,8 +1023,13 @@ jobs:
             "$client" status --json > "$smoke_root/status.json"
             if jq --exit-status '
               .dicom.status == "processed" and
-              .dicom.processed_series == 1 and
-              .dicom.processing_total_series == 1 and
+              .dicom.processed_series == 2 and
+              .dicom.processing_total_series == 2 and
+              .dicom.queued_series == 0 and
+              .dicom.processing_series == 0 and
+              .dicom.functional_epi_series == 1 and
+              .dicom.archive_only_series == 1 and
+              .dicom.archive_verified_series == 1 and
               .dicom.failed_series == 0 and
               .dicom.purged_series == 0
             ' "$smoke_root/status.json" >/dev/null; then
@@ -946,11 +1044,26 @@ jobs:
             exit 1
           fi
 
-          "$client" upload "$fixture" --confirm-authorized
+          "$client" upload "$mixed_fixture" \
+            --confirm-authorized \
+            --confirm-native-pixels-authorized
           "$client" status --json > "$smoke_root/replay-status.json"
           jq --exit-status --arg run_id "$run_id" '
             .id == $run_id and .status == "complete" and
-            .dicom.status == "processed" and .dicom.processed_series == 1
+            .summary.accepted == 2 and
+            .summary.held == 0 and
+            .summary.excluded == 0 and
+            .dicom.status == "processed" and
+            .dicom.receipt_received_series == 2 and
+            .dicom.processed_series == 2 and
+            .dicom.processing_total_series == 2 and
+            .dicom.queued_series == 0 and
+            .dicom.processing_series == 0 and
+            .dicom.functional_epi_series == 1 and
+            .dicom.archive_only_series == 1 and
+            .dicom.archive_verified_series == 1 and
+            .dicom.failed_series == 0 and
+            .dicom.purged_series == 0
           ' "$smoke_root/replay-status.json" >/dev/null
 
       - name: Download new public Pages release bundle
@@ -1141,8 +1254,13 @@ jobs:
              any(.assets[]; .name == "SHA256SUMS")' <<<"$release" >/dev/null
           [[ "$(gh api "repos/${GITHUB_REPOSITORY}/commits/${tag}" --jq '.sha')" == "$GITHUB_SHA" ]]
 
-      - name: Roll back the production deployment after any cutover failure
-        if: ${{ failure() && steps.previous_production.outputs.deployment_id != '' }}
+      - name: Restore the forward-compatible bridge after any cutover failure
+        # D1 migrations and accepted v2/all-MR jobs are forward-only. Once the
+        # phase-one backend can be canonical, recovery must keep that backend
+        # and restore only the previously published download bytes.
+        # A failed capture leaves the candidate bundle untrusted and occurs
+        # before any production deployment, so recovery must not deploy it.
+        if: ${{ failure() && steps.preserve_current_release.outputs.captured == 'true' }}
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
@@ -1182,10 +1300,40 @@ jobs:
             fi
           fi
 
-          if ! ./scripts/rollback-pages-production.sh \
-            '${{ steps.previous_production.outputs.deployment_id }}' \
-            '${{ steps.previous_production.outputs.commit_hash }}'; then
+          if [[ ! -d dist-phase-one ]]; then
+            echo "The forward-compatible phase-one recovery bundle is unavailable" >&2
             recovery_failed=true
+          elif ! npm exec --prefix worker -- wrangler pages deploy dist-phase-one \
+            --project-name=scalingneuro \
+            --branch=main \
+            --commit-hash="$GITHUB_SHA"; then
+            echo "Failed to restore the forward-compatible bridge deployment" >&2
+            recovery_failed=true
+          else
+            bridge_recovered=false
+            for attempt in $(seq 1 20); do
+              health=$(curl --fail --silent --show-error --max-time 15 \
+                "https://scalingneuro.com/health?recovery=bridge&attempt=$attempt" || true)
+              source_version=$(curl --fail --silent --show-error --max-time 15 \
+                "https://scalingneuro.com/version.json?recovery=bridge&attempt=$attempt" || true)
+              if jq --exit-status '.status == "ok"' <<<"$health" >/dev/null 2>&1 &&
+                 jq --exit-status \
+                   --arg sha "$GITHUB_SHA" \
+                   --arg static "${{ steps.preserve_current_release.outputs.production_commit }}" '
+                     .commit == $sha and .static_commit == $static and
+                     .deployment_phase == "backend-validation"
+                   ' <<<"$source_version" >/dev/null 2>&1 &&
+                 ./scripts/production-site.sh verify dist-phase-one &&
+                 ./scripts/production-downloads.sh verify dist-phase-one; then
+                bridge_recovered=true
+                break
+              fi
+              sleep 5
+            done
+            if [[ "$bridge_recovered" != true ]]; then
+              echo "Forward-compatible bridge recovery did not converge" >&2
+              recovery_failed=true
+            fi
           fi
 
           [[ "$recovery_failed" == false ]]

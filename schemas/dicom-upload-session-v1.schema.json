@@ -7,7 +7,9 @@
   "required": ["upload_id", "status", "format"],
   "properties": {
     "upload_id": { "$ref": "https://scalingneuro.com/schemas/common-v1.schema.json#/$defs/uuid" },
-    "status": { "enum": ["uploading", "committed", "already_received"] },
+    "status": {
+      "enum": ["uploading", "checkpointed", "committed", "already_received"]
+    },
     "format": { "const": "dicom-series-v1" },
     "object_prefix": {
       "type": "string",
@@ -48,7 +50,12 @@
   },
   "allOf": [
     {
-      "if": { "properties": { "status": { "const": "uploading" } }, "required": ["status"] },
+      "if": {
+        "properties": {
+          "status": { "enum": ["uploading", "checkpointed"] }
+        },
+        "required": ["status"]
+      },
       "then": {
         "required": ["object_prefix", "multipart_objects"],
         "properties": { "object_prefix": {}, "multipart_objects": {} }

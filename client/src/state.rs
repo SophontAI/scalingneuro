@@ -217,6 +217,14 @@ impl StateStore {
         Ok(())
     }
 
+    pub fn update_run_summary(&self, id: &str, summary: &SourceSummary) -> Result<()> {
+        self.connection()?.execute(
+            "UPDATE runs SET summary_json=?2,updated_at=?3 WHERE id=?1",
+            params![id, serde_json::to_string(summary)?, Utc::now().to_rfc3339()],
+        )?;
+        Ok(())
+    }
+
     pub fn restart_interrupted_preparation(&self, id: &str) -> Result<()> {
         let mut connection = self.connection()?;
         let transaction = connection.transaction()?;
@@ -368,6 +376,50 @@ impl StateStore {
         Ok(())
     }
 
+    /// Create the durable upload ledger entry for exactly one DICOM series.
+    ///
+    /// Streaming preparation appends one bundle to the manifest at a time, so
+    /// its manifest index is also its stable chunk index.  Verifying an
+    /// existing row is important: silently accepting an older multi-series
+    /// layout could associate a receipt with the wrong local archive.
+    pub fn ensure_single_series_upload(
+        &self,
+        run_id: &str,
+        bundle_index: usize,
+    ) -> Result<RunUploadRecord> {
+        let chunk_index = u32::try_from(bundle_index)
+            .context("DICOM series count exceeds the local upload ledger limit")?;
+        let now = Utc::now().to_rfc3339();
+        let connection = self.connection()?;
+        connection.execute(
+            "INSERT OR IGNORE INTO run_uploads (run_id,chunk_index,bundle_start,bundle_count,status,updated_at) VALUES (?1,?2,?3,1,'pending',?4)",
+            params![run_id, chunk_index, bundle_index as i64, now],
+        )?;
+        let row = connection
+            .query_row(
+                "SELECT run_id,chunk_index,bundle_start,bundle_count,worker_upload_id,status FROM run_uploads WHERE run_id=?1 AND chunk_index=?2",
+                params![run_id, chunk_index],
+                |row| {
+                    Ok(RunUploadRecord {
+                        run_id: row.get(0)?,
+                        chunk_index: row.get::<_, i64>(1)? as u32,
+                        bundle_start: row.get::<_, i64>(2)? as usize,
+                        bundle_count: row.get::<_, i64>(3)? as usize,
+                        worker_upload_id: row.get(4)?,
+                        status: row.get(5)?,
+                    })
+                },
+            )
+            .optional()?
+            .context("could not create the local DICOM series upload checkpoint")?;
+        if row.bundle_start != bundle_index || row.bundle_count != 1 {
+            anyhow::bail!(
+                "existing DICOM upload checkpoint uses an incompatible multi-series layout"
+            );
+        }
+        Ok(row)
+    }
+
     pub fn run_uploads(&self, run_id: &str) -> Result<Vec<RunUploadRecord>> {
         let connection = self.connection()?;
         let mut statement = connection.prepare(
@@ -423,6 +475,115 @@ impl StateStore {
         transaction.execute(
             "UPDATE runs SET worker_upload_id=(SELECT worker_upload_id FROM run_uploads WHERE run_id=?1 AND worker_upload_id IS NOT NULL ORDER BY chunk_index LIMIT 1),updated_at=?2 WHERE id=?1",
             params![run_id, now],
+        )?;
+        transaction.commit()?;
+        Ok(())
+    }
+
+    /// Re-open one previously committed DICOM series after the server has
+    /// proven its stored archive corrupt and released that exact identity for
+    /// one integrity replacement. Healthy receipt rows are left untouched.
+    pub fn reset_single_series_chunk_for_repair(
+        &self,
+        run_id: &str,
+        chunk_index: u32,
+        expected_upload_id: &str,
+    ) -> Result<()> {
+        let mut connection = self.connection()?;
+        let transaction = connection.transaction()?;
+        let row = transaction
+            .query_row(
+                "SELECT bundle_count,worker_upload_id,status FROM run_uploads WHERE run_id=?1 AND chunk_index=?2",
+                params![run_id, chunk_index],
+                |row| {
+                    Ok((
+                        row.get::<_, i64>(0)? as usize,
+                        row.get::<_, Option<String>>(1)?,
+                        row.get::<_, String>(2)?,
+                    ))
+                },
+            )
+            .optional()?
+            .context("integrity repair references a missing local upload receipt")?;
+        if row.0 != 1 || row.1.as_deref() != Some(expected_upload_id) || row.2 != "committed" {
+            anyhow::bail!(
+                "integrity repair no longer matches the committed one-series receipt checkpoint"
+            );
+        }
+        transaction.execute(
+            "DELETE FROM uploaded_parts WHERE worker_upload_id=?1",
+            [expected_upload_id],
+        )?;
+        transaction.execute(
+            "DELETE FROM upload_objects WHERE worker_upload_id=?1",
+            [expected_upload_id],
+        )?;
+        let updated = transaction.execute(
+            "UPDATE run_uploads SET worker_upload_id=NULL,status='pending',updated_at=?3 WHERE run_id=?1 AND chunk_index=?2 AND worker_upload_id=?4 AND status='committed'",
+            params![run_id, chunk_index, Utc::now().to_rfc3339(), expected_upload_id],
+        )?;
+        if updated != 1 {
+            anyhow::bail!("committed DICOM receipt changed during integrity repair reset");
+        }
+        transaction.execute(
+            "UPDATE runs SET worker_upload_id=(SELECT worker_upload_id FROM run_uploads WHERE run_id=?1 AND worker_upload_id IS NOT NULL ORDER BY chunk_index LIMIT 1),status='upload_failed',error_code='server_integrity_repair_required',updated_at=?2 WHERE id=?1",
+            params![run_id, Utc::now().to_rfc3339()],
+        )?;
+        transaction.commit()?;
+        Ok(())
+    }
+
+    /// Adopt a replacement session allocated after a receipt created by a
+    /// different workstation was released for proven storage corruption.
+    /// Reconciled rows intentionally had no queryable upload ID; this guarded
+    /// transition binds only the exact one-series row to the new local device's
+    /// replacement session.
+    pub fn adopt_reconciled_repair_upload(
+        &self,
+        run_id: &str,
+        chunk_index: u32,
+        replacement_upload_id: &str,
+    ) -> Result<()> {
+        if replacement_upload_id.is_empty()
+            || replacement_upload_id.len() > 128
+            || replacement_upload_id
+                .chars()
+                .any(|character| character.is_control() || character.is_whitespace())
+        {
+            anyhow::bail!("integrity replacement returned an invalid server upload identity");
+        }
+        let mut connection = self.connection()?;
+        let transaction = connection.transaction()?;
+        let row = transaction
+            .query_row(
+                "SELECT bundle_count,worker_upload_id,status FROM run_uploads WHERE run_id=?1 AND chunk_index=?2",
+                params![run_id, chunk_index],
+                |row| {
+                    Ok((
+                        row.get::<_, i64>(0)? as usize,
+                        row.get::<_, Option<String>>(1)?,
+                        row.get::<_, String>(2)?,
+                    ))
+                },
+            )
+            .optional()?
+            .context("integrity repair references a missing reconciled receipt")?;
+        if row.0 != 1 || row.1.is_some() || row.2 != "reconciled" {
+            anyhow::bail!(
+                "integrity repair no longer matches the reconciled one-series receipt checkpoint"
+            );
+        }
+        let now = Utc::now().to_rfc3339();
+        let updated = transaction.execute(
+            "UPDATE run_uploads SET worker_upload_id=?3,status='uploading',updated_at=?4 WHERE run_id=?1 AND chunk_index=?2 AND worker_upload_id IS NULL AND status='reconciled'",
+            params![run_id, chunk_index, replacement_upload_id, now],
+        )?;
+        if updated != 1 {
+            anyhow::bail!("reconciled DICOM receipt changed during integrity repair adoption");
+        }
+        transaction.execute(
+            "UPDATE runs SET worker_upload_id=?2,status='upload_failed',error_code='server_integrity_repair_required',updated_at=?3 WHERE id=?1",
+            params![run_id, replacement_upload_id, now],
         )?;
         transaction.commit()?;
         Ok(())
@@ -1009,6 +1170,125 @@ mod tests {
         let restarted = store.run("interrupted").unwrap().unwrap();
         assert_eq!(restarted.status, "discovering");
         assert!(restarted.error_code.is_none());
+    }
+
+    #[test]
+    fn single_series_upload_checkpoint_is_idempotent_and_rejects_old_layout_collision() {
+        let directory = tempdir().unwrap();
+        let store = StateStore::open(&directory.path().join("state.sqlite3")).unwrap();
+        let source = Path::new("/private/dicoms");
+        store.create_run("stream", source, false).unwrap();
+        let first = store.ensure_single_series_upload("stream", 0).unwrap();
+        let replay = store.ensure_single_series_upload("stream", 0).unwrap();
+        assert_eq!(first.bundle_start, 0);
+        assert_eq!(first.bundle_count, 1);
+        assert_eq!(replay.chunk_index, first.chunk_index);
+        assert_eq!(store.run_uploads("stream").unwrap().len(), 1);
+
+        store.create_run("legacy", source, false).unwrap();
+        store
+            .ensure_run_uploads(
+                "legacy",
+                &["subject".into(), "subject".into()],
+                &[1, 1],
+                8,
+                1024,
+            )
+            .unwrap();
+        let error = store.ensure_single_series_upload("legacy", 0).unwrap_err();
+        assert!(error.to_string().contains("multi-series layout"));
+    }
+
+    #[test]
+    fn integrity_repair_reopens_only_the_exact_committed_single_series_receipt() {
+        let directory = tempdir().unwrap();
+        let store = StateStore::open(&directory.path().join("state.sqlite3")).unwrap();
+        store
+            .create_run("repair", Path::new("/private/dicoms"), false)
+            .unwrap();
+        store.ensure_single_series_upload("repair", 0).unwrap();
+        let upload_id = "11111111-1111-4111-8111-111111111111";
+        store.set_chunk_worker("repair", 0, upload_id).unwrap();
+        store.set_chunk_status("repair", 0, "committed").unwrap();
+        store
+            .add_upload_object(&UploadObjectRecord {
+                run_id: "repair".into(),
+                worker_upload_id: upload_id.into(),
+                key: "prefix/dicom.tar.zst".into(),
+                local_path: "/private/dicom.tar.zst".into(),
+                size: 10,
+                sha256: "a".repeat(64),
+                multipart_id: Some("multipart".into()),
+                status: "complete".into(),
+                etag: Some("etag".into()),
+            })
+            .unwrap();
+        store
+            .save_part(
+                upload_id,
+                "prefix/dicom.tar.zst",
+                &UploadedPart {
+                    part_number: 1,
+                    etag: "etag".into(),
+                    size: 10,
+                },
+            )
+            .unwrap();
+
+        store
+            .reset_single_series_chunk_for_repair("repair", 0, upload_id)
+            .unwrap();
+        let chunk = store.run_uploads("repair").unwrap().remove(0);
+        assert_eq!(chunk.status, "pending");
+        assert!(chunk.worker_upload_id.is_none());
+        assert!(store.upload_objects(upload_id).unwrap().is_empty());
+        assert!(
+            store
+                .uploaded_parts(upload_id, "prefix/dicom.tar.zst")
+                .unwrap()
+                .is_empty()
+        );
+        let run = store.run("repair").unwrap().unwrap();
+        assert_eq!(run.status, "upload_failed");
+        assert_eq!(
+            run.error_code.as_deref(),
+            Some("server_integrity_repair_required")
+        );
+        assert!(
+            store
+                .reset_single_series_chunk_for_repair("repair", 0, upload_id)
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn reconciled_integrity_repair_adopts_only_a_new_exact_server_session() {
+        let directory = tempdir().unwrap();
+        let store = StateStore::open(&directory.path().join("state.sqlite3")).unwrap();
+        store
+            .create_run("repair", Path::new("/private/dicoms"), false)
+            .unwrap();
+        store.ensure_single_series_upload("repair", 0).unwrap();
+        store.set_chunk_reconciled("repair", 0).unwrap();
+        let replacement = "33333333-3333-4333-8333-333333333333";
+
+        store
+            .adopt_reconciled_repair_upload("repair", 0, replacement)
+            .unwrap();
+        let chunk = store.run_uploads("repair").unwrap().remove(0);
+        assert_eq!(chunk.status, "uploading");
+        assert_eq!(chunk.worker_upload_id.as_deref(), Some(replacement));
+        let run = store.run("repair").unwrap().unwrap();
+        assert_eq!(run.status, "upload_failed");
+        assert_eq!(
+            run.error_code.as_deref(),
+            Some("server_integrity_repair_required")
+        );
+        assert!(
+            store
+                .adopt_reconciled_repair_upload("repair", 0, replacement)
+                .is_err()
+        );
     }
 
     #[cfg(unix)]

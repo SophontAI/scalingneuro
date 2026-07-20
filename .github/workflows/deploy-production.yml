@@ -83,8 +83,13 @@ jobs:
           python schemas/validate.py
           node schemas/validate-ajv.mjs
           npm run check --prefix worker
-          node --test tests/*.test.mjs
           PYTHONPATH=processor python -m unittest discover -v -s processor/tests
+
+      - name: Require exact Sophont processor readiness
+        if: steps.release_alignment.outputs.deploy == 'true'
+        shell: bash
+        timeout-minutes: 3
+        run: ./scripts/verify-processor-readiness.sh https://scalingneuro.com 20 5
 
       - name: Enforce fail-closed production and isolated previews
         if: steps.release_alignment.outputs.deploy == 'true'

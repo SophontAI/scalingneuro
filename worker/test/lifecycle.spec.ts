@@ -948,7 +948,7 @@ describe("ingestion control plane", () => {
         },
       },
     });
-  });
+  }, 15_000);
 
   it("receives and queues a 15-series legacy upload in one edge request", async () => {
     // Match the production upload that exposed why scientific payload

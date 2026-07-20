@@ -14,8 +14,6 @@ install -m 0644 \
   "$ROOT_DIR/favicon.svg" \
   "$ROOT_DIR/styles.css" \
   "$ROOT_DIR/app.js" \
-  "$ROOT_DIR/nifti-preview.mjs" \
-  "$ROOT_DIR/openneuro-client.mjs" \
   "$DIST_DIR/"
 install -m 0644 "$ROOT_DIR/downloads/index.html" "$DIST_DIR/downloads/"
 install -m 0644 \
@@ -37,6 +35,8 @@ for schema in \
   enrollment-request-v1.schema.json \
   enrollment-response-v1.schema.json \
   local-manifest-v1.schema.json \
+  device-policy-v1.schema.json \
+  dicom-archive-manifest-v2.schema.json \
   dicom-upload-init-v1.schema.json \
   dicom-upload-session-v1.schema.json \
   dicom-upload-status-v1.schema.json \
@@ -53,6 +53,7 @@ done
 install -m 0644 "$ROOT_DIR"/schemas/examples/*.json "$DIST_DIR/schemas/examples/"
 
 install -m 0644 \
+  "$ROOT_DIR/docs/mr-ingestion-contract.md" \
   "$ROOT_DIR/docs/epi-ingestion-contract.md" \
   "$ROOT_DIR/docs/artifact-and-api-contracts.md" \
   "$ROOT_DIR/docs/collaborator-onboarding.md" \

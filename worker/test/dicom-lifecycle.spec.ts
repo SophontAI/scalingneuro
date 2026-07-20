@@ -3,12 +3,43 @@ import {
   createExecutionContext,
   waitOnExecutionContext,
 } from "cloudflare:test";
+import Ajv2020 from "ajv/dist/2020";
 import { describe, expect, it, vi } from "vitest";
+import commonSchema from "../../schemas/common-v1.schema.json";
+import dicomUploadSessionSchema from "../../schemas/dicom-upload-session-v1.schema.json";
+import dicomUploadStatusSchema from "../../schemas/dicom-upload-status-v1.schema.json";
 import { sha256Hex } from "../src/crypto";
 import { fetchHandler } from "../src/index";
+import { cleanupAbandoned } from "../src/service";
+import {
+  REQUIRED_PROCESSOR_CONTROLLER_SHA256,
+  REQUIRED_PROCESSOR_PIPELINE_VERSION,
+  REQUIRED_PROCESSOR_VERSION,
+} from "../src/processor-contract";
 
 const ADMIN_TOKEN = "test-admin-token-with-sufficient-entropy";
 const PROCESSOR_TOKEN = "test-processor-token-with-sufficient-entropy";
+const responseAjv = new Ajv2020({ strict: true, validateFormats: false });
+responseAjv.addSchema(commonSchema);
+responseAjv.addSchema(dicomUploadSessionSchema);
+const validateDicomUploadSession = responseAjv.getSchema(
+  dicomUploadSessionSchema.$id,
+)!;
+const validateDicomUploadStatus = responseAjv.compile(dicomUploadStatusSchema);
+
+function processorClaim(
+  processorId: string,
+  extra: Record<string, unknown> = {},
+): Record<string, unknown> {
+  return {
+    processor_id: processorId,
+    lease_seconds: 900,
+    processor_version: REQUIRED_PROCESSOR_VERSION,
+    pipeline_version: REQUIRED_PROCESSOR_PIPELINE_VERSION,
+    controller_source_sha256: REQUIRED_PROCESSOR_CONTROLLER_SHA256,
+    ...extra,
+  };
+}
 
 async function call(
   method: string,
@@ -67,12 +98,18 @@ async function enrolledDevice(): Promise<{ token: string }> {
   return { token };
 }
 
-async function receiveSmallDicomUpload(
+async function stageSmallDicomUpload(
   token: string,
   seriesArchiveIds: string[],
 ): Promise<{
   uploadId: string;
   objectKeys: Map<string, string>;
+  objects: Array<{
+    key: string;
+    size: number;
+    sha256: string;
+    parts: Array<{ part_number: number; etag: string }>;
+  }>;
 }> {
   const payloads = new Map<string, Uint8Array<ArrayBuffer>>();
   const series = await Promise.all(
@@ -141,17 +178,166 @@ async function receiveSmallDicomUpload(
     });
     objectKeys.set(descriptor.series_archive_id, multipart.key);
   }
+  return { uploadId: allocation.upload_id, objectKeys, objects };
+}
+
+async function receiveSmallDicomUpload(
+  token: string,
+  seriesArchiveIds: string[],
+): Promise<{
+  uploadId: string;
+  objectKeys: Map<string, string>;
+}> {
+  const staged = await stageSmallDicomUpload(token, seriesArchiveIds);
   const completed = await call(
     "POST",
-    `/v1/dicom-uploads/${allocation.upload_id}/complete`,
-    { objects },
+    `/v1/dicom-uploads/${staged.uploadId}/complete`,
+    { objects: staged.objects },
     token,
   );
   expect(completed.status, await completed.clone().text()).toBe(200);
-  return { uploadId: allocation.upload_id, objectKeys };
+  return { uploadId: staged.uploadId, objectKeys: staged.objectKeys };
 }
 
 describe("DICOM receipt and processing queue", () => {
+  it("reports only a fresh, source-attested all-MR processor as ready", async () => {
+    const initial = await call("GET", "/health");
+    expect(await initial.json()).toMatchObject({
+      processor: {
+        ready: false,
+        required_version: "0.2.0",
+        required_pipeline_version: "dicom-mr-v2",
+        active_compatible_consumers: 0,
+        active_controller_source_sha256: [],
+      },
+    });
+    const digest = REQUIRED_PROCESSOR_CONTROLLER_SHA256;
+    const claim = await call(
+      "POST",
+      "/v1/processor/jobs/claim",
+      {
+        processor_id: "release-attested-consumer",
+        lease_seconds: 900,
+        claim_input_format: "dicom-series-v1",
+        processor_version: "0.2.0",
+        pipeline_version: "dicom-mr-v2",
+        controller_source_sha256: digest,
+      },
+      PROCESSOR_TOKEN,
+    );
+    expect(claim.status).toBe(204);
+    const ready = await call("GET", "/health");
+    expect(await ready.json()).toMatchObject({
+      processor: {
+        ready: true,
+        required_version: "0.2.0",
+        required_pipeline_version: "dicom-mr-v2",
+        required_controller_source_sha256: digest,
+        active_compatible_consumers: 1,
+        active_controller_source_sha256: [digest],
+      },
+    });
+
+    await env.DB.prepare(
+      "UPDATE processor_instances SET last_seen_at = ?1 WHERE processor_id = ?2",
+    )
+      .bind(Math.floor(Date.now() / 1000) - 181, "release-attested-consumer")
+      .run();
+    const stale = await call("GET", "/health");
+    expect(await stale.json()).toMatchObject({
+      processor: { ready: false, active_compatible_consumers: 0 },
+    });
+  });
+
+  it("keeps readiness fresh only while the exact processing lease is active", async () => {
+    const { token } = await enrolledDevice();
+    await receiveSmallDicomUpload(token, ["1".repeat(24)]);
+    const processorId = "long-running-ready-consumer";
+    const claimResponse = await call(
+      "POST",
+      "/v1/processor/jobs/claim",
+      processorClaim(processorId, { claim_input_format: "dicom-series-v1" }),
+      PROCESSOR_TOKEN,
+    );
+    expect(claimResponse.status).toBe(200);
+    const claim = await claimResponse.json<{
+      job_id: string;
+      lease_token: string;
+    }>();
+    const staleAt = Math.floor(Date.now() / 1000) - 181;
+    await env.DB.prepare(
+      "UPDATE processor_instances SET last_seen_at = ?1 WHERE processor_id = ?2",
+    )
+      .bind(staleAt, processorId)
+      .run();
+    expect(await (await call("GET", "/health")).json()).toMatchObject({
+      processor: { ready: false, active_compatible_consumers: 0 },
+    });
+
+    const heartbeat = await call(
+      "POST",
+      `/v1/processor/jobs/${claim.job_id}/heartbeat`,
+      { lease_token: claim.lease_token, lease_seconds: 900 },
+      PROCESSOR_TOKEN,
+    );
+    expect(heartbeat.status).toBe(200);
+    expect(await (await call("GET", "/health")).json()).toMatchObject({
+      processor: { ready: true, active_compatible_consumers: 1 },
+    });
+
+    // Expire the job after requireActiveJobLease's read but before the heartbeat
+    // batch. Neither the lease nor processor readiness may be refreshed.
+    await env.DB.prepare(
+      "UPDATE processor_instances SET last_seen_at = ?1 WHERE processor_id = ?2",
+    )
+      .bind(staleAt, processorId)
+      .run();
+    const originalBatch = env.DB.batch.bind(env.DB);
+    const batchSpy = vi
+      .spyOn(env.DB, "batch")
+      .mockImplementationOnce(async (statements) => {
+        await env.DB.prepare(
+          "UPDATE processing_jobs SET lease_expires_at = ?1 WHERE id = ?2",
+        )
+          .bind(Math.floor(Date.now() / 1000) - 1, claim.job_id)
+          .run();
+        return originalBatch(statements);
+      });
+    const staleHeartbeat = await call(
+      "POST",
+      `/v1/processor/jobs/${claim.job_id}/heartbeat`,
+      { lease_token: claim.lease_token, lease_seconds: 900 },
+      PROCESSOR_TOKEN,
+    );
+    batchSpy.mockRestore();
+    expect(staleHeartbeat.status).toBe(409);
+    expect(await staleHeartbeat.json()).toMatchObject({
+      error: { code: "LEASE_LOST" },
+    });
+    expect(
+      await env.DB.prepare(
+        "SELECT last_seen_at FROM processor_instances WHERE processor_id = ?1",
+      )
+        .bind(processorId)
+        .first<number>("last_seen_at"),
+    ).toBe(staleAt);
+    expect(await (await call("GET", "/health")).json()).toMatchObject({
+      processor: { ready: false, active_compatible_consumers: 0 },
+    });
+    // This suite intentionally shares one Miniflare database. Leave the
+    // synthetic expired lease terminal so later claim tests see only their own
+    // queued jobs.
+    await env.DB.prepare(
+      `UPDATE processing_jobs
+       SET status = 'failed', failed_at = ?1, updated_at = ?1,
+           error_code = 'TEST_LEASE_EXPIRED', error_message = 'TEST_LEASE_EXPIRED',
+           processor_id = NULL, lease_token = NULL, lease_expires_at = NULL
+       WHERE id = ?2`,
+    )
+      .bind(Math.floor(Date.now() / 1000), claim.job_id)
+      .run();
+  });
+
   it("allows one workstation to checkpoint independent folders concurrently", async () => {
     const { token } = await enrolledDevice();
     const makeBody = async (digit: string) => {
@@ -214,6 +400,536 @@ describe("DICOM receipt and processing queue", () => {
     });
   });
 
+  it("accepts generic non-ASL perfusion as archive-only MR", async () => {
+    const { token } = await enrolledDevice();
+    const payload = new TextEncoder().encode(
+      "generic-dsc-perfusion-archive".padEnd(64, "."),
+    );
+    const seriesArchiveId = "e".repeat(24);
+    const allocationResponse = await call(
+      "POST",
+      "/v1/dicom-uploads",
+      {
+        format: "dicom-series-v1",
+        client_version: "0.4.0",
+        deidentification: {
+          policy_id: "scaling-neuro.dicom-deidentification",
+          policy_version: "2.0.0",
+        },
+        series: [
+          {
+            series_archive_id: seriesArchiveId,
+            series_id: "d".repeat(24),
+            subject_id: "c".repeat(24),
+            session_id: "b".repeat(24),
+            protocol_group_id: "a".repeat(24),
+            dicom_count: 12,
+            series_kind: "perfusion",
+            processing_route: "archive-verify-v1",
+            pixel_data_policy: "scanner-native-not-defaced",
+            archive: {
+              format: "dicom-tar-zstd",
+              relative_key: `${seriesArchiveId}/dicom.tar.zst`,
+              size: payload.byteLength,
+              sha256: await sha256Hex(payload),
+            },
+          },
+        ],
+      },
+      token,
+    );
+    expect(
+      allocationResponse.status,
+      await allocationResponse.clone().text(),
+    ).toBe(201);
+    const allocation = await allocationResponse.json<{ upload_id: string }>();
+    expect(
+      await env.DB.prepare(
+        `SELECT series_kind, processing_route
+         FROM dicom_upload_series WHERE upload_id = ?1`,
+      )
+        .bind(allocation.upload_id)
+        .first(),
+    ).toEqual({
+      series_kind: "perfusion",
+      processing_route: "archive-verify-v1",
+    });
+  });
+
+  it("routes all-MR receipts through functional conversion or archive verification", async () => {
+    const { token } = await enrolledDevice();
+    const payloads = new Map<string, Uint8Array<ArrayBuffer>>();
+    const descriptor = async (
+      digit: string,
+      seriesKind: string,
+      processingRoute: "functional-epi-v1" | "archive-verify-v1",
+    ) => {
+      const seriesArchiveId = digit.repeat(24);
+      const relativeKey = `${seriesArchiveId}/dicom.tar.zst`;
+      const payload = new TextEncoder().encode(
+        `all-mr-${seriesKind}-${digit}`.padEnd(128, "."),
+      );
+      payloads.set(relativeKey, payload);
+      return {
+        series_archive_id: seriesArchiveId,
+        series_id: String(Number(digit) + 2).repeat(24),
+        subject_id: "a".repeat(24),
+        session_id: "b".repeat(24),
+        protocol_group_id: String(Number(digit) + 4).repeat(24),
+        dicom_count: 20,
+        series_kind: seriesKind,
+        processing_route: processingRoute,
+        pixel_data_policy: "scanner-native-not-defaced",
+        archive: {
+          format: "dicom-tar-zstd",
+          relative_key: relativeKey,
+          size: payload.byteLength,
+          sha256: await sha256Hex(payload),
+        },
+      };
+    };
+    const series = [
+      await descriptor("1", "functional_epi", "functional-epi-v1"),
+      await descriptor("2", "structural_t1w", "archive-verify-v1"),
+    ];
+    const requestBody = {
+      format: "dicom-series-v1",
+      client_version: "0.4.0",
+      deidentification: {
+        policy_id: "scaling-neuro.dicom-deidentification",
+        policy_version: "2.0.0",
+      },
+      series,
+    };
+
+    const stale = await call(
+      "POST",
+      "/v1/dicom-uploads",
+      { ...requestBody, client_version: "0.3.1" },
+      token,
+    );
+    expect(stale.status).toBe(426);
+    expect(await stale.json()).toMatchObject({
+      error: {
+        code: "CLIENT_UPDATE_REQUIRED",
+        details: { minimum_client_version: "0.4.0" },
+      },
+    });
+    const missingRouting = await call(
+      "POST",
+      "/v1/dicom-uploads",
+      {
+        ...requestBody,
+        series: series.map(
+          ({ series_kind: _kind, processing_route: _route,
+             pixel_data_policy: _pixels, ...item }) => item,
+        ),
+      },
+      token,
+    );
+    expect(missingRouting.status).toBe(400);
+    const legacyWithRouting = await call(
+      "POST",
+      "/v1/dicom-uploads",
+      {
+        ...requestBody,
+        client_version: "0.3.1",
+        deidentification: {
+          ...requestBody.deidentification,
+          policy_version: "1.0.0",
+        },
+      },
+      token,
+    );
+    expect(legacyWithRouting.status).toBe(400);
+
+    const allocatedResponse = await call(
+      "POST",
+      "/v1/dicom-uploads",
+      requestBody,
+      token,
+    );
+    expect(
+      allocatedResponse.status,
+      await allocatedResponse.clone().text(),
+    ).toBe(201);
+    const allocated = await allocatedResponse.json<{
+      upload_id: string;
+      object_prefix: string;
+      multipart_objects: Array<{ key: string; upload_id: string }>;
+    }>();
+    const storedRoutes = await env.DB.prepare(
+      `SELECT series_kind, processing_route, pixel_data_policy
+       FROM dicom_upload_series WHERE upload_id = ?1 ORDER BY series_kind`,
+    )
+      .bind(allocated.upload_id)
+      .all();
+    expect(storedRoutes.results).toEqual([
+      {
+        series_kind: "functional_epi",
+        processing_route: "functional-epi-v1",
+        pixel_data_policy: "scanner-native-not-defaced",
+      },
+      {
+        series_kind: "structural_t1w",
+        processing_route: "archive-verify-v1",
+        pixel_data_policy: "scanner-native-not-defaced",
+      },
+    ]);
+
+    const objects = [];
+    for (const multipart of allocated.multipart_objects) {
+      const relativeKey = multipart.key.slice(allocated.object_prefix.length);
+      const payload = payloads.get(relativeKey)!;
+      const seriesDescriptor = series.find(
+        (item) => item.archive.relative_key === relativeKey,
+      )!;
+      const part = await env.ARCHIVE.resumeMultipartUpload(
+        multipart.key,
+        multipart.upload_id,
+      ).uploadPart(1, payload);
+      objects.push({
+        key: multipart.key,
+        size: seriesDescriptor.archive.size,
+        sha256: seriesDescriptor.archive.sha256,
+        parts: [{ part_number: 1, etag: part.etag }],
+      });
+    }
+    const checkpointed = await call(
+      "POST",
+      `/v1/dicom-uploads/${allocated.upload_id}/checkpoint`,
+      { objects },
+      token,
+    );
+    expect(
+      checkpointed.status,
+      await checkpointed.clone().text(),
+    ).toBe(200);
+    const checkpointedBody = await checkpointed.json();
+    expect(
+      validateDicomUploadStatus(checkpointedBody),
+      responseAjv.errorsText(validateDicomUploadStatus.errors),
+    ).toBe(true);
+    expect(checkpointedBody).toMatchObject({
+      status: "checkpointed",
+      receipt: { received_series: 2, total_series: 2 },
+    });
+    const checkpointedCredentials = await call(
+      "POST",
+      `/v1/dicom-uploads/${allocated.upload_id}/credentials`,
+      undefined,
+      token,
+    );
+    expect(
+      checkpointedCredentials.status,
+      await checkpointedCredentials.clone().text(),
+    ).toBe(200);
+    const checkpointedCredentialsBody = await checkpointedCredentials.json();
+    expect(
+      validateDicomUploadSession(checkpointedCredentialsBody),
+      responseAjv.errorsText(validateDicomUploadSession.errors),
+    ).toBe(true);
+    expect(checkpointedCredentialsBody).toMatchObject({
+      upload_id: allocated.upload_id,
+      status: "checkpointed",
+      object_prefix: allocated.object_prefix,
+      multipart_objects: [],
+    });
+    expect(
+      await env.DB.prepare(
+        "SELECT COUNT(*) AS count FROM received_series_reservations WHERE upload_id = ?1",
+      )
+        .bind(allocated.upload_id)
+        .first<number>("count"),
+    ).toBe(0);
+    expect(
+      await env.DB.prepare(
+        "SELECT COUNT(*) AS count FROM processing_jobs WHERE upload_id = ?1",
+      )
+        .bind(allocated.upload_id)
+        .first<number>("count"),
+    ).toBe(0);
+    for (const multipart of allocated.multipart_objects) {
+      expect(await env.ARCHIVE.head(multipart.key)).not.toBeNull();
+    }
+
+    // A lost checkpoint response is replay-safe. The normal seven-day upload
+    // session may then expire while the durable provisional object remains
+    // eligible for the final whole-folder receipt gate.
+    const checkpointReplay = await call(
+      "POST",
+      `/v1/dicom-uploads/${allocated.upload_id}/checkpoint`,
+      { objects },
+      token,
+    );
+    expect(checkpointReplay.status).toBe(200);
+    expect(await checkpointReplay.json()).toMatchObject({
+      status: "checkpointed",
+    });
+    await env.DB.prepare("UPDATE uploads SET expires_at = ?1 WHERE id = ?2")
+      .bind(Math.floor(Date.now() / 1000) - 1, allocated.upload_id)
+      .run();
+    const stagedStatus = await call(
+      "GET",
+      `/v1/dicom-uploads/${allocated.upload_id}`,
+      undefined,
+      token,
+    );
+    const stagedStatusBody = await stagedStatus.json();
+    expect(
+      validateDicomUploadStatus(stagedStatusBody),
+      responseAjv.errorsText(validateDicomUploadStatus.errors),
+    ).toBe(true);
+    expect(stagedStatusBody).toMatchObject({ status: "checkpointed" });
+
+    const received = await call(
+      "POST",
+      `/v1/dicom-uploads/${allocated.upload_id}/complete`,
+      { objects },
+      token,
+    );
+    expect(received.status, await received.clone().text()).toBe(200);
+    expect(await received.json()).toMatchObject({
+      status: "committed",
+      receipt: { received_series: 2, total_series: 2 },
+      processing: {
+        status: "queued",
+        queued_series: 2,
+        total_series: 2,
+        functional_epi_series: 1,
+        archive_only_series: 1,
+        archive_verified_series: 0,
+      },
+    });
+    expect(
+      await env.DB.prepare(
+        `SELECT COUNT(*) AS count FROM received_series_reservations
+         WHERE upload_id = ?1 AND processing_route = 'archive-verify-v1'`,
+      )
+        .bind(allocated.upload_id)
+        .first<number>("count"),
+    ).toBe(1);
+
+    const oldProcessor = await call(
+      "POST",
+      "/v1/processor/jobs/claim",
+      {
+        processor_id: "pre-all-mr-processor",
+        lease_seconds: 900,
+        claim_input_format: "dicom-series-v1",
+      },
+      PROCESSOR_TOKEN,
+    );
+    expect(oldProcessor.status).toBe(204);
+    const wrongSourceProcessor = await call(
+      "POST",
+      "/v1/processor/jobs/claim",
+      {
+        ...processorClaim("wrong-source-processor", {
+          claim_input_format: "dicom-series-v1",
+        }),
+        controller_source_sha256: "0".repeat(64),
+      },
+      PROCESSOR_TOKEN,
+    );
+    expect(wrongSourceProcessor.status).toBe(204);
+    expect(
+      await env.DB.prepare(
+        "SELECT COUNT(*) AS count FROM processing_jobs WHERE upload_id = ?1 AND status = 'queued'",
+      )
+        .bind(allocated.upload_id)
+        .first<number>("count"),
+    ).toBe(2);
+
+    const claims = [];
+    for (const processorId of ["all-mr-a", "all-mr-b"]) {
+      const response = await call(
+        "POST",
+        "/v1/processor/jobs/claim",
+        processorClaim(processorId),
+        PROCESSOR_TOKEN,
+      );
+      expect(response.status).toBe(200);
+      claims.push(
+        await response.json<{
+          job_id: string;
+          lease_token: string;
+          client_version: string;
+          series_archive_id: string;
+          series_kind: string;
+          processing_route: "functional-epi-v1" | "archive-verify-v1";
+          pixel_data_policy: string;
+          input: { dicom_count: number };
+        }>(),
+      );
+    }
+    const archiveClaim = claims.find(
+      (claim) => claim.processing_route === "archive-verify-v1",
+    )!;
+    expect(claims.every((claim) => claim.client_version === "0.4.0")).toBe(true);
+    expect(archiveClaim).toMatchObject({
+      series_kind: "structural_t1w",
+      pixel_data_policy: "scanner-native-not-defaced",
+    });
+    const outputRejected = await call(
+      "POST",
+      `/v1/processor/jobs/${archiveClaim.job_id}/outputs`,
+      {
+        lease_token: archiveClaim.lease_token,
+        outputs: [
+          {
+            kind: "nifti",
+            size_bytes: 32,
+            sha256: "a".repeat(64),
+            content_type: "application/gzip",
+            uncompressed_sha256: "b".repeat(64),
+          },
+          {
+            kind: "sidecar",
+            size_bytes: 2,
+            sha256: "c".repeat(64),
+            content_type: "application/json",
+          },
+          {
+            kind: "processing_manifest",
+            size_bytes: 2,
+            sha256: "d".repeat(64),
+            content_type: "application/json",
+          },
+        ],
+      },
+      PROCESSOR_TOKEN,
+    );
+    expect(outputRejected.status).toBe(400);
+
+    const archiveCompletion = {
+      lease_token: archiveClaim.lease_token,
+      processor_version: "1.1.0",
+      outputs: [],
+      validation: {
+        archive_sha256_verified: true,
+        dicom_count: archiveClaim.input.dicom_count,
+        dicom_parse_succeeded: true,
+        dicom_privacy_audit_succeeded: true,
+        functional_epi_confirmed: false,
+      },
+    };
+    const falselyFunctional = await call(
+      "POST",
+      `/v1/processor/jobs/${archiveClaim.job_id}/complete`,
+      {
+        ...archiveCompletion,
+        validation: {
+          ...archiveCompletion.validation,
+          functional_epi_confirmed: true,
+        },
+      },
+      PROCESSOR_TOKEN,
+    );
+    expect(falselyFunctional.status).toBe(409);
+    const archiveProcessed = await call(
+      "POST",
+      `/v1/processor/jobs/${archiveClaim.job_id}/complete`,
+      archiveCompletion,
+      PROCESSOR_TOKEN,
+    );
+    expect(archiveProcessed.status).toBe(200);
+    expect(
+      await env.DB.prepare(
+        "SELECT COUNT(*) AS count FROM catalog_series WHERE upload_id = ?1",
+      )
+        .bind(allocated.upload_id)
+        .first<number>("count"),
+    ).toBe(0);
+    const status = await call(
+      "GET",
+      `/v1/dicom-uploads/${allocated.upload_id}`,
+      undefined,
+      token,
+    );
+    expect(await status.json()).toMatchObject({
+      processing: {
+        queued_series: 0,
+        processing_series: 1,
+        processed_series: 1,
+        functional_epi_series: 1,
+        archive_only_series: 1,
+        archive_verified_series: 1,
+      },
+    });
+    const functionalClaim = claims.find(
+      (claim) => claim.processing_route === "functional-epi-v1",
+    )!;
+    const purposeDowngrade = {
+      lease_token: functionalClaim.lease_token,
+      processor_version: "1.1.0",
+      outputs: [],
+      validation: {
+        archive_sha256_verified: true,
+        dicom_count: functionalClaim.input.dicom_count,
+        dicom_parse_succeeded: true,
+        dicom_privacy_audit_succeeded: true,
+        functional_epi_confirmed: false,
+      },
+    };
+    const downgradedFunctional = await call(
+      "POST",
+      `/v1/processor/jobs/${functionalClaim.job_id}/complete`,
+      purposeDowngrade,
+      PROCESSOR_TOKEN,
+    );
+    expect(
+      downgradedFunctional.status,
+      await downgradedFunctional.clone().text(),
+    ).toBe(200);
+    const downgradedReplay = await call(
+      "POST",
+      `/v1/processor/jobs/${functionalClaim.job_id}/complete`,
+      purposeDowngrade,
+      PROCESSOR_TOKEN,
+    );
+    expect(downgradedReplay.status).toBe(200);
+    expect(
+      await env.DB.prepare(
+        `SELECT series_kind, processing_route, effective_series_kind,
+                effective_processing_route
+         FROM dicom_upload_series
+         WHERE upload_id = ?1 AND series_archive_id = ?2`,
+      )
+        .bind(allocated.upload_id, functionalClaim.series_archive_id)
+        .first(),
+    ).toEqual({
+      series_kind: "functional_epi",
+      processing_route: "functional-epi-v1",
+      effective_series_kind: "other_mr",
+      effective_processing_route: "archive-verify-v1",
+    });
+    const finalStatus = await call(
+      "GET",
+      `/v1/dicom-uploads/${allocated.upload_id}`,
+      undefined,
+      token,
+    );
+    expect(await finalStatus.json()).toMatchObject({
+      processing: {
+        status: "processed",
+        queued_series: 0,
+        processing_series: 0,
+        processed_series: 2,
+        functional_epi_series: 0,
+        archive_only_series: 2,
+        archive_verified_series: 2,
+      },
+    });
+    expect(
+      await env.DB.prepare(
+        "SELECT COUNT(*) AS count FROM catalog_series WHERE upload_id = ?1",
+      )
+        .bind(allocated.upload_id)
+        .first<number>("count"),
+    ).toBe(0);
+  });
+
   it("immediately replaces an expired folder session on the same command", async () => {
     const { token } = await enrolledDevice();
     const seriesArchiveId = "e".repeat(24);
@@ -269,6 +985,51 @@ describe("DICOM receipt and processing queue", () => {
     expect(next.upload_id).not.toBe(first.upload_id);
   });
 
+  it("retains provisional DICOM objects past multipart expiry and purges them at their own deadline", async () => {
+    const { token } = await enrolledDevice();
+    const staged = await stageSmallDicomUpload(token, ["3".repeat(24)]);
+    const checkpoint = await call(
+      "POST",
+      `/v1/dicom-uploads/${staged.uploadId}/checkpoint`,
+      { objects: staged.objects },
+      token,
+    );
+    expect(checkpoint.status, await checkpoint.clone().text()).toBe(200);
+    expect(await checkpoint.json()).toMatchObject({ status: "checkpointed" });
+    const key = [...staged.objectKeys.values()][0]!;
+    expect(await env.ARCHIVE.head(key)).not.toBeNull();
+
+    const now = Math.floor(Date.now() / 1000);
+    await env.DB.prepare(
+      `UPDATE uploads SET expires_at = ?1, provisional_expires_at = ?2
+       WHERE id = ?3`,
+    )
+      .bind(now - 8 * 24 * 60 * 60, now + 60, staged.uploadId)
+      .run();
+    await cleanupAbandoned(env);
+    expect(
+      await env.DB.prepare("SELECT status FROM uploads WHERE id = ?1")
+        .bind(staged.uploadId)
+        .first<string>("status"),
+    ).toBe("uploading");
+    expect(await env.ARCHIVE.head(key)).not.toBeNull();
+
+    await env.DB.prepare(
+      "UPDATE uploads SET provisional_expires_at = ?1 WHERE id = ?2",
+    )
+      .bind(now - 1, staged.uploadId)
+      .run();
+    await cleanupAbandoned(env);
+    expect(
+      await env.DB.prepare(
+        "SELECT status, purged_at FROM uploads WHERE id = ?1",
+      )
+        .bind(staged.uploadId)
+        .first(),
+    ).toMatchObject({ status: "expired" });
+    expect(await env.ARCHIVE.head(key)).toBeNull();
+  });
+
   it("replays a lost claim response without consuming another job or attempt", async () => {
     const { token } = await enrolledDevice();
     await receiveSmallDicomUpload(token, ["5".repeat(24), "6".repeat(24)]);
@@ -276,11 +1037,9 @@ describe("DICOM receipt and processing queue", () => {
     const firstResponse = await call(
       "POST",
       "/v1/processor/jobs/claim",
-      {
-        processor_id: "claim-replay-consumer",
-        lease_seconds: 900,
+      processorClaim("claim-replay-consumer", {
         claim_input_format: "dicom-series-v1",
-      },
+      }),
       PROCESSOR_TOKEN,
     );
     expect(firstResponse.status).toBe(200);
@@ -300,11 +1059,9 @@ describe("DICOM receipt and processing queue", () => {
     const mismatchedReplay = await call(
       "POST",
       "/v1/processor/jobs/claim",
-      {
-        processor_id: "claim-replay-consumer",
-        lease_seconds: 900,
+      processorClaim("claim-replay-consumer", {
         claim_input_format: "nifti-v1",
-      },
+      }),
       PROCESSOR_TOKEN,
     );
     expect(mismatchedReplay.status).toBe(204);
@@ -324,11 +1081,9 @@ describe("DICOM receipt and processing queue", () => {
     const replayResponse = await call(
       "POST",
       "/v1/processor/jobs/claim",
-      {
-        processor_id: "claim-replay-consumer",
-        lease_seconds: 900,
+      processorClaim("claim-replay-consumer", {
         claim_input_format: "dicom-series-v1",
-      },
+      }),
       PROCESSOR_TOKEN,
     );
     expect(replayResponse.status).toBe(200);
@@ -361,7 +1116,7 @@ describe("DICOM receipt and processing queue", () => {
     const otherResponse = await call(
       "POST",
       "/v1/processor/jobs/claim",
-      { processor_id: "independent-consumer", lease_seconds: 900 },
+      processorClaim("independent-consumer"),
       PROCESSOR_TOKEN,
     );
     expect(otherResponse.status).toBe(200);
@@ -381,11 +1136,9 @@ describe("DICOM receipt and processing queue", () => {
         call(
           "POST",
           "/v1/processor/jobs/claim",
-          {
-            processor_id: "concurrent-same-consumer",
-            lease_seconds: 900,
+          processorClaim("concurrent-same-consumer", {
             claim_input_format: "dicom-series-v1",
-          },
+          }),
           PROCESSOR_TOKEN,
         ),
       ),
@@ -439,7 +1192,11 @@ describe("DICOM receipt and processing queue", () => {
     const claimResponse = await call(
       "POST",
       "/v1/processor/jobs/claim",
-      { processor_id: "raw-priority-consumer", lease_seconds: 900 },
+      {
+        processor_id: "legacy-raw-priority-consumer",
+        lease_seconds: 900,
+        claim_input_format: "dicom-series-v1",
+      },
       PROCESSOR_TOKEN,
     );
     expect(claimResponse.status, await claimResponse.clone().text()).toBe(200);
@@ -475,11 +1232,9 @@ describe("DICOM receipt and processing queue", () => {
     const claimResponse = await call(
       "POST",
       "/v1/processor/jobs/claim",
-      {
-        processor_id: "raw-only-consumer",
-        lease_seconds: 900,
+      processorClaim("raw-only-consumer", {
         claim_input_format: "dicom-series-v1",
-      },
+      }),
       PROCESSOR_TOKEN,
     );
     expect(claimResponse.status).toBe(204);
@@ -495,13 +1250,13 @@ describe("DICOM receipt and processing queue", () => {
       .run();
   });
 
-  it("purges a source whose downloaded archive fails whole-object integrity", async () => {
+  it("retains a source when processor transfer integrity disagrees", async () => {
     const { token } = await enrolledDevice();
     const received = await receiveSmallDicomUpload(token, ["0".repeat(24)]);
     const claimResponse = await call(
       "POST",
       "/v1/processor/jobs/claim",
-      { processor_id: "archive-integrity-auditor", lease_seconds: 900 },
+      processorClaim("archive-integrity-auditor"),
       PROCESSOR_TOKEN,
     );
     expect(claimResponse.status).toBe(200);
@@ -525,11 +1280,454 @@ describe("DICOM receipt and processing queue", () => {
       PROCESSOR_TOKEN,
     );
     expect(failed.status, await failed.clone().text()).toBe(200);
-    expect(await failed.json()).toMatchObject({
+    expect(await failed.json()).toEqual({
+      job_id: claim.job_id,
+      status: "failed",
+    });
+    expect(await env.ARCHIVE.head(sourceKey)).not.toBeNull();
+    expect(
+      await env.DB.prepare(
+        `SELECT withdrawn_at FROM received_series_reservations
+         WHERE upload_id = ?1 AND bundle_id = ?2`,
+      )
+        .bind(received.uploadId, claim.bundle_id)
+        .first<number | null>("withdrawn_at"),
+    ).toBeNull();
+  });
+
+  it("purges only after repeated full-object integrity mismatches", async () => {
+    const { token } = await enrolledDevice();
+    const received = await receiveSmallDicomUpload(token, ["e".repeat(24)]);
+    const sourceKey = received.objectKeys.get("e".repeat(24))!;
+    expect(await env.ARCHIVE.head(sourceKey)).not.toBeNull();
+
+    let jobId = "";
+    for (let attempt = 1; attempt <= 5; attempt += 1) {
+      const claimResponse = await call(
+        "POST",
+        "/v1/processor/jobs/claim",
+        processorClaim(`integrity-redownload-${attempt}`),
+        PROCESSOR_TOKEN,
+      );
+      expect(claimResponse.status).toBe(200);
+      const claim = await claimResponse.json<{
+        job_id: string;
+        attempt: number;
+        lease_token: string;
+      }>();
+      jobId = claim.job_id;
+      expect(claim.attempt).toBe(attempt);
+
+      if (attempt === 1) {
+        for (const retryable of [false, true]) {
+          const forgedStoredMismatch = await call(
+            "POST",
+            `/v1/processor/jobs/${claim.job_id}/fail`,
+            {
+              lease_token: claim.lease_token,
+              retryable,
+              error_code: "STORED_OBJECT_SHA256_MISMATCH",
+              error_message: "STORED_OBJECT_SHA256_MISMATCH",
+            },
+            PROCESSOR_TOKEN,
+          );
+          expect(forgedStoredMismatch.status).toBe(400);
+          expect(await forgedStoredMismatch.json()).toMatchObject({
+            error: { code: "INVALID_REQUEST" },
+          });
+          expect(await env.ARCHIVE.head(sourceKey)).not.toBeNull();
+        }
+      }
+
+      const failed = await call(
+        "POST",
+        `/v1/processor/jobs/${claim.job_id}/fail`,
+        {
+          lease_token: claim.lease_token,
+          retryable: true,
+          error_code: "OBJECT_DOWNLOAD_INTEGRITY_MISMATCH",
+          error_message: "OBJECT_DOWNLOAD_INTEGRITY_MISMATCH",
+        },
+        PROCESSOR_TOKEN,
+      );
+      expect(failed.status, await failed.clone().text()).toBe(200);
+      if (attempt < 5) {
+        expect(await failed.json()).toMatchObject({ status: "queued" });
+        expect(await env.ARCHIVE.head(sourceKey)).not.toBeNull();
+        await env.DB.prepare(
+          "UPDATE processing_jobs SET next_attempt_at = ?1 WHERE id = ?2",
+        )
+          .bind(Math.floor(Date.now() / 1000), claim.job_id)
+          .run();
+      } else {
+        expect(await failed.json()).toEqual({
+          job_id: claim.job_id,
+          status: "failed",
+          input_status: "purged",
+        });
+      }
+    }
+
+    expect(await env.ARCHIVE.head(sourceKey)).toBeNull();
+    expect(
+      await env.DB.prepare(
+        "SELECT status, error_code, input_purged_at FROM processing_jobs WHERE id = ?1",
+      )
+        .bind(jobId)
+        .first<{
+          status: string;
+          error_code: string;
+          input_purged_at: number | null;
+        }>(),
+    ).toMatchObject({
+      status: "failed",
+      error_code: "STORED_OBJECT_SHA256_MISMATCH",
+    });
+    expect(
+      await env.DB.prepare(
+        `SELECT COUNT(*) AS count FROM received_series_reservations
+         WHERE upload_id = ?1 AND bundle_id = ?2`,
+      )
+        .bind(received.uploadId, "e".repeat(24))
+        .first<number>("count"),
+    ).toBe(0);
+    expect(
+      await env.DB.prepare(
+        `SELECT COUNT(*) AS count FROM released_series_reservations
+         WHERE processing_job_id = ?1`,
+      )
+        .bind(jobId)
+        .first<number>("count"),
+    ).toBe(1);
+    const repairableStatus = await call(
+      "GET",
+      `/v1/dicom-uploads/${received.uploadId}`,
+      undefined,
+      token,
+    );
+    expect(repairableStatus.status).toBe(200);
+    expect(await repairableStatus.json()).toMatchObject({
+      processing: { repairable_series: 1 },
+    });
+
+    const substitutedPayload = new TextEncoder().encode(
+      "substituted-payload".padEnd(96, "."),
+    );
+    const substituted = await call(
+      "POST",
+      "/v1/dicom-uploads",
+      {
+        format: "dicom-series-v1",
+        client_version: "0.3.0",
+        deidentification: {
+          policy_id: "scaling-neuro.dicom-deidentification",
+          policy_version: "1.0.0",
+        },
+        series: [
+          {
+            series_archive_id: "e".repeat(24),
+            series_id: "700".padStart(24, "0"),
+            subject_id: "8".repeat(24),
+            session_id: "9".repeat(24),
+            protocol_group_id: "a00".padStart(24, "0"),
+            dicom_count: 10,
+            archive: {
+              format: "dicom-tar-zstd",
+              relative_key: `${"e".repeat(24)}/dicom.tar.zst`,
+              size: substitutedPayload.byteLength,
+              sha256: await sha256Hex(substitutedPayload),
+            },
+          },
+        ],
+      },
+      token,
+    );
+    expect(substituted.status).toBe(409);
+    expect(await substituted.json()).toMatchObject({
+      error: {
+        code: "DUPLICATE_BUNDLE",
+        details: {
+          reason: "identity_conflict",
+          series_archive_id: "e".repeat(24),
+        },
+      },
+    });
+
+    // The same deterministic folder receipt can replace one independently
+    // proven-corrupt stored object without changing its scientific identity.
+    const replacement = await receiveSmallDicomUpload(token, ["e".repeat(24)]);
+    expect(replacement.uploadId).not.toBe(received.uploadId);
+    const replacementKey = replacement.objectKeys.get("e".repeat(24))!;
+    expect(await env.ARCHIVE.head(replacementKey)).not.toBeNull();
+
+    // A second independently established integrity failure is terminal. This
+    // bounds replacement abuse and preserves a withdrawn identity tombstone.
+    await env.DB.prepare(
+      "UPDATE processing_jobs SET attempt = 4 WHERE upload_id = ?1",
+    )
+      .bind(replacement.uploadId)
+      .run();
+    const replacementClaimResponse = await call(
+      "POST",
+      "/v1/processor/jobs/claim",
+      processorClaim("integrity-replacement-redownload"),
+      PROCESSOR_TOKEN,
+    );
+    expect(replacementClaimResponse.status).toBe(200);
+    const replacementClaim = await replacementClaimResponse.json<{
+      job_id: string;
+      attempt: number;
+      lease_token: string;
+    }>();
+    expect(replacementClaim.attempt).toBe(5);
+    const replacementFailed = await call(
+      "POST",
+      `/v1/processor/jobs/${replacementClaim.job_id}/fail`,
+      {
+        lease_token: replacementClaim.lease_token,
+        retryable: true,
+        error_code: "OBJECT_DOWNLOAD_INTEGRITY_MISMATCH",
+        error_message: "OBJECT_DOWNLOAD_INTEGRITY_MISMATCH",
+      },
+      PROCESSOR_TOKEN,
+    );
+    expect(replacementFailed.status).toBe(200);
+    expect(await replacementFailed.json()).toEqual({
+      job_id: replacementClaim.job_id,
       status: "failed",
       input_status: "purged",
     });
-    expect(await env.ARCHIVE.head(sourceKey)).toBeNull();
+    expect(await env.ARCHIVE.head(replacementKey)).toBeNull();
+    expect(
+      await env.DB.prepare(
+        `SELECT withdrawn_at FROM received_series_reservations
+         WHERE upload_id = ?1 AND bundle_id = ?2`,
+      )
+        .bind(replacement.uploadId, "e".repeat(24))
+        .first<number | null>("withdrawn_at"),
+    ).not.toBeNull();
+    expect(
+      await env.DB.prepare(
+        `SELECT COUNT(*) AS count FROM released_series_reservations
+         WHERE site_id = (SELECT site_id FROM uploads WHERE id = ?1)
+           AND project_id = (SELECT project_id FROM uploads WHERE id = ?1)
+           AND series_archive_id = ?2`,
+      )
+        .bind(replacement.uploadId, "e".repeat(24))
+        .first<number>("count"),
+    ).toBe(1);
+    const terminalStatus = await call(
+      "GET",
+      `/v1/dicom-uploads/${replacement.uploadId}`,
+      undefined,
+      token,
+    );
+    expect(terminalStatus.status).toBe(200);
+    expect(await terminalStatus.json()).toMatchObject({
+      processing: { repairable_series: 0 },
+    });
+  });
+
+  it("turns a released integrity replacement into a permanent withdrawal tombstone", async () => {
+    const { token } = await enrolledDevice();
+    const seriesArchiveId = "d".repeat(24);
+    const received = await receiveSmallDicomUpload(token, [seriesArchiveId]);
+    await env.DB.prepare(
+      "UPDATE processing_jobs SET attempt = 4 WHERE upload_id = ?1",
+    )
+      .bind(received.uploadId)
+      .run();
+    const claimResponse = await call(
+      "POST",
+      "/v1/processor/jobs/claim",
+      processorClaim("integrity-release-before-withdrawal"),
+      PROCESSOR_TOKEN,
+    );
+    expect(claimResponse.status).toBe(200);
+    const claim = await claimResponse.json<{
+      job_id: string;
+      attempt: number;
+      lease_token: string;
+    }>();
+    expect(claim.attempt).toBe(5);
+    const failed = await call(
+      "POST",
+      `/v1/processor/jobs/${claim.job_id}/fail`,
+      {
+        lease_token: claim.lease_token,
+        retryable: true,
+        error_code: "OBJECT_DOWNLOAD_INTEGRITY_MISMATCH",
+        error_message: "OBJECT_DOWNLOAD_INTEGRITY_MISMATCH",
+      },
+      PROCESSOR_TOKEN,
+    );
+    expect(failed.status).toBe(200);
+
+    const withdrawal = await call(
+      "POST",
+      `/v1/admin/uploads/${received.uploadId}/withdraw`,
+      {},
+      ADMIN_TOKEN,
+    );
+    expect(withdrawal.status).toBe(200);
+    expect(
+      await env.DB.prepare(
+        `SELECT withdrawn_at FROM released_series_reservations
+         WHERE upload_id = ?1 AND series_archive_id = ?2`,
+      )
+        .bind(received.uploadId, seriesArchiveId)
+        .first<number | null>("withdrawn_at"),
+    ).not.toBeNull();
+
+    const payload = new TextEncoder().encode(
+      `privacy-cleared-dicom-${seriesArchiveId}`.padEnd(96, "."),
+    );
+    const replacement = await call(
+      "POST",
+      "/v1/dicom-uploads",
+      {
+        format: "dicom-series-v1",
+        client_version: "0.3.0",
+        deidentification: {
+          policy_id: "scaling-neuro.dicom-deidentification",
+          policy_version: "1.0.0",
+        },
+        series: [
+          {
+            series_archive_id: seriesArchiveId,
+            series_id: "700".padStart(24, "0"),
+            subject_id: "8".repeat(24),
+            session_id: "9".repeat(24),
+            protocol_group_id: "a00".padStart(24, "0"),
+            dicom_count: 10,
+            archive: {
+              format: "dicom-tar-zstd",
+              relative_key: `${seriesArchiveId}/dicom.tar.zst`,
+              size: payload.byteLength,
+              sha256: await sha256Hex(payload),
+            },
+          },
+        ],
+      },
+      token,
+    );
+    expect(replacement.status).toBe(409);
+    expect(await replacement.json()).toMatchObject({
+      error: {
+        code: "DUPLICATE_BUNDLE",
+        details: {
+          reason: "withdrawn_tombstone",
+          series_archive_id: seriesArchiveId,
+        },
+      },
+    });
+  });
+
+  it("re-sweeps withdrawn prefixes after outstanding output grants", async () => {
+    const { token } = await enrolledDevice();
+    const seriesArchiveId = "f".repeat(24);
+    const received = await receiveSmallDicomUpload(token, [seriesArchiveId]);
+    const claimResponse = await call(
+      "POST",
+      "/v1/processor/jobs/claim",
+      processorClaim("withdrawal-race"),
+      PROCESSOR_TOKEN,
+    );
+    const claim = await claimResponse.json<{
+      job_id: string;
+      lease_token: string;
+    }>();
+    const outputSha = await sha256Hex(new Uint8Array(32));
+    const grants = await call(
+      "POST",
+      `/v1/processor/jobs/${claim.job_id}/outputs`,
+      {
+        lease_token: claim.lease_token,
+        outputs: [
+          {
+            kind: "nifti",
+            size_bytes: 32,
+            sha256: outputSha,
+            uncompressed_sha256: outputSha,
+            content_type: "application/gzip",
+          },
+          {
+            kind: "sidecar",
+            size_bytes: 2,
+            sha256: await sha256Hex(new TextEncoder().encode("{}")),
+            content_type: "application/json",
+          },
+          {
+            kind: "processing_manifest",
+            size_bytes: 2,
+            sha256: await sha256Hex(new TextEncoder().encode("{}")),
+            content_type: "application/json",
+          },
+        ],
+      },
+      PROCESSOR_TOKEN,
+    );
+    expect(grants.status, await grants.clone().text()).toBe(200);
+
+    const prefix = await env.DB.prepare(
+      "SELECT archive_prefix FROM uploads WHERE id = ?1",
+    )
+      .bind(received.uploadId)
+      .first<string>("archive_prefix");
+    const lateKey = `${prefix}processed/${seriesArchiveId}/bold.nii.gz`;
+    const withdrawal = await call(
+      "POST",
+      `/v1/admin/uploads/${received.uploadId}/withdraw`,
+      undefined,
+      ADMIN_TOKEN,
+    );
+    expect(withdrawal.status).toBe(200);
+    expect(
+      await env.DB.prepare("SELECT purged_at FROM uploads WHERE id = ?1")
+        .bind(received.uploadId)
+        .first<number | null>("purged_at"),
+    ).toBeNull();
+
+    // Model a PUT that began with a capability minted before withdrawal and
+    // completed after the immediate prefix deletion.
+    await env.ARCHIVE.put(lateKey, new Uint8Array(32));
+    await env.DB.prepare(
+      "UPDATE uploads SET updated_at = ?1 WHERE id = ?2",
+    )
+      .bind(Math.floor(Date.now() / 1000) - 901, received.uploadId)
+      .run();
+    const firstSweep = await call(
+      "POST",
+      "/v1/admin/cleanup",
+      undefined,
+      ADMIN_TOKEN,
+    );
+    expect(firstSweep.status).toBe(200);
+    expect(await env.ARCHIVE.head(lateKey)).toBeNull();
+    expect(
+      await env.DB.prepare("SELECT purged_at FROM uploads WHERE id = ?1")
+        .bind(received.uploadId)
+        .first<number | null>("purged_at"),
+    ).toBeNull();
+
+    // Finalization waits for the maximum supported in-flight transfer window.
+    const settledAt = Math.floor(Date.now() / 1000) - 90_000;
+    await env.ARCHIVE.put(lateKey, new Uint8Array(32));
+    await env.DB.prepare(
+      "UPDATE uploads SET withdrawn_at = ?1, updated_at = ?1 WHERE id = ?2",
+    )
+      .bind(settledAt, received.uploadId)
+      .run();
+    await call("POST", "/v1/admin/cleanup", undefined, ADMIN_TOKEN);
+    expect(await env.ARCHIVE.head(lateKey)).toBeNull();
+    expect(
+      Number(
+        await env.DB.prepare("SELECT purged_at FROM uploads WHERE id = ?1")
+          .bind(received.uploadId)
+          .first<number | null>("purged_at"),
+      ),
+    ).toBeGreaterThan(0);
+
   });
 
   it("purges terminal privacy rejects but retains converter failures", async () => {
@@ -540,7 +1738,7 @@ describe("DICOM receipt and processing queue", () => {
     const privacyClaimResponse = await call(
       "POST",
       "/v1/processor/jobs/claim",
-      { processor_id: "privacy-auditor", lease_seconds: 900 },
+      processorClaim("privacy-auditor"),
       PROCESSOR_TOKEN,
     );
     expect(privacyClaimResponse.status).toBe(200);
@@ -574,7 +1772,7 @@ describe("DICOM receipt and processing queue", () => {
     const compatibilityClaimResponse = await call(
       "POST",
       "/v1/processor/jobs/claim",
-      { processor_id: "converter", lease_seconds: 900 },
+      processorClaim("converter"),
       PROCESSOR_TOKEN,
     );
     expect(compatibilityClaimResponse.status).toBe(200);
@@ -644,7 +1842,7 @@ describe("DICOM receipt and processing queue", () => {
     const claimResponse = await call(
       "POST",
       "/v1/processor/jobs/claim",
-      { processor_id: "privacy-auditor", lease_seconds: 900 },
+      processorClaim("privacy-auditor"),
       PROCESSOR_TOKEN,
     );
     expect(claimResponse.status).toBe(200);
@@ -689,7 +1887,7 @@ describe("DICOM receipt and processing queue", () => {
     const nextClaim = await call(
       "POST",
       "/v1/processor/jobs/claim",
-      { processor_id: "cleanup-pass", lease_seconds: 900 },
+      processorClaim("cleanup-pass"),
       PROCESSOR_TOKEN,
     );
     expect(nextClaim.status).toBe(204);
@@ -720,7 +1918,7 @@ describe("DICOM receipt and processing queue", () => {
     const claimResponse = await call(
       "POST",
       "/v1/processor/jobs/claim",
-      { processor_id: "failing-purge", lease_seconds: 900 },
+      processorClaim("failing-purge"),
       PROCESSOR_TOKEN,
     );
     const claim = await claimResponse.json<{
@@ -748,7 +1946,7 @@ describe("DICOM receipt and processing queue", () => {
     const unrelated = await call(
       "POST",
       "/v1/processor/jobs/claim",
-      { processor_id: "unrelated-converter", lease_seconds: 900 },
+      processorClaim("unrelated-converter"),
       PROCESSOR_TOKEN,
     );
     expect(unrelated.status, await unrelated.clone().text()).toBe(200);
@@ -919,14 +2117,14 @@ describe("DICOM receipt and processing queue", () => {
     const unauthorized = await call(
       "POST",
       "/v1/processor/jobs/claim",
-      { processor_id: "cluster-a", lease_seconds: 900 },
+      processorClaim("cluster-a"),
       "not-the-processor-token-but-long-enough",
     );
     expect(unauthorized.status).toBe(401);
     const claimResponse = await call(
       "POST",
       "/v1/processor/jobs/claim",
-      { processor_id: "cluster-a", lease_seconds: 900 },
+      processorClaim("cluster-a"),
       PROCESSOR_TOKEN,
     );
     expect(claimResponse.status).toBe(200);
@@ -1084,7 +2282,7 @@ describe("DICOM receipt and processing queue", () => {
     const reclaimResponse = await call(
       "POST",
       "/v1/processor/jobs/claim",
-      { processor_id: "cluster-b", lease_seconds: 900 },
+      processorClaim("cluster-b"),
       PROCESSOR_TOKEN,
     );
     expect(reclaimResponse.status).toBe(200);
@@ -1251,7 +2449,12 @@ describe("DICOM receipt and processing queue", () => {
       tokens[1],
     );
     expect(loser.status, await loser.clone().text()).toBe(200);
-    expect(await loser.json()).toMatchObject({
+    const loserBody = await loser.json();
+    expect(
+      validateDicomUploadStatus(loserBody),
+      responseAjv.errorsText(validateDicomUploadStatus.errors),
+    ).toBe(true);
+    expect(loserBody).toMatchObject({
       upload_id: allocations[1]!.upload_id,
       status: "already_received",
       already_received_series: [
@@ -1327,7 +2530,12 @@ describe("DICOM receipt and processing queue", () => {
     // an immediate success and never allocates or retransmits another object.
     const replay = await call("POST", "/v1/dicom-uploads", body, tokens[1]);
     expect(replay.status).toBe(200);
-    expect(await replay.json()).toMatchObject({
+    const replayBody = await replay.json();
+    expect(
+      validateDicomUploadSession(replayBody),
+      responseAjv.errorsText(validateDicomUploadSession.errors),
+    ).toBe(true);
+    expect(replayBody).toMatchObject({
       status: "already_received",
       upload_id: allocations[1]!.upload_id,
       already_received_series: [

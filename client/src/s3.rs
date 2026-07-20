@@ -82,7 +82,7 @@ impl MultipartUploader {
         }
         let label = match self.route {
             UploadRoute::Legacy => "Uploading",
-            UploadRoute::Dicom => "Uploading privacy-cleared EPI archives",
+            UploadRoute::Dicom => "Uploading privacy-cleared MR DICOM archives",
         };
         let mut progress = Progress::bounded(label, total_bytes, ProgressUnit::Bytes);
         let descriptor_map: HashMap<_, _> = descriptors

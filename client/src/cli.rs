@@ -13,13 +13,13 @@ use crate::{
 #[command(
     name = "neuro-sync",
     version,
-    about = "Share approved functional EPI scans with Scaling Neuro",
+    about = "Share approved MR DICOM scans with Scaling Neuro",
     long_about = None,
     subcommand_precedence_over_arg = true
 )]
 pub struct Cli {
-    /// Override the private local state directory (primarily for managed deployments and tests).
-    #[arg(long, global = true, env = "NEURO_SYNC_STATE_DIR", hide = true)]
+    /// Store private checkpoints and the current one-series staging archive in this directory.
+    #[arg(long, global = true, env = "NEURO_SYNC_STATE_DIR")]
     pub state_dir: Option<PathBuf>,
     /// DICOM export folder to sync.
     #[arg(value_name = "DICOM_FOLDER")]
@@ -32,7 +32,7 @@ pub struct Cli {
 pub enum Command {
     /// Run the guided terminal setup and folder-sync flow.
     Setup,
-    /// Register this machine for the open public EPI contribution.
+    /// Register this machine for open public MR DICOM contribution.
     Register {
         #[arg(long)]
         email: String,
@@ -46,9 +46,9 @@ pub enum Command {
         ror: Option<String>,
         #[arg(long)]
         contact_opt_in: bool,
-        /// Confirm acceptance of the contribution policy reported by the server.
-        #[arg(long)]
-        accept_policy: bool,
+        /// Exact contribution-policy version reviewed and accepted by this automation.
+        #[arg(long, value_name = "VERSION")]
+        accept_policy_version: Option<String>,
         #[arg(long, default_value = DEFAULT_API_URL)]
         server: String,
         #[arg(long)]
@@ -73,6 +73,12 @@ pub enum Command {
         /// Confirm the selected scans are institutionally authorized for contribution.
         #[arg(long)]
         confirm_authorized: bool,
+        /// Confirm authorization to transfer scanner-native pixels without defacing.
+        #[arg(long)]
+        confirm_native_pixels_authorized: bool,
+        /// Exact new policy version accepted when this workstation's policy is out of date.
+        #[arg(long, value_name = "VERSION")]
+        accept_policy_version: Option<String>,
     },
     /// Show local progress for the latest run or a specific run ID.
     Status {
@@ -105,7 +111,7 @@ pub async fn execute(cli: Cli) -> Result<()> {
             lab,
             ror,
             contact_opt_in,
-            accept_policy,
+            accept_policy_version,
             server,
             device_name,
         }) => {
@@ -113,13 +119,17 @@ pub async fn execute(cli: Cli) -> Result<()> {
             if !contribution.registration_open {
                 bail!("public contribution registration is temporarily paused");
             }
-            if !accept_policy {
-                bail!(
-                    "review the {} contribution policy at {} and rerun with --accept-policy to confirm acceptance",
-                    contribution.consent_policy_version,
+            validate_explicit_policy_version(
+                accept_policy_version.as_deref(),
+                &contribution.consent_policy_version,
+                true,
+            )
+            .with_context(|| {
+                format!(
+                    "review the contribution policy at {} before registering",
                     contribution.policy_url
-                );
-            }
+                )
+            })?;
             let config = runtime
                 .register(
                     ContributorDetails {
@@ -157,6 +167,8 @@ pub async fn execute(cli: Cli) -> Result<()> {
             folder,
             dry_run,
             confirm_authorized,
+            confirm_native_pixels_authorized,
+            accept_policy_version,
         }) => {
             let folder = folder
                 .canonicalize()
@@ -164,14 +176,37 @@ pub async fn execute(cli: Cli) -> Result<()> {
             if !folder.is_dir() {
                 bail!("selected source is not a folder");
             }
-            if !dry_run && !confirm_authorized {
-                let config = crate::config::ClientConfig::load(&runtime.paths)?;
-                if !crate::terminal::confirm_authorized_upload(
-                    &folder,
-                    &config.consent_policy_version,
-                )? {
+            if !dry_run {
+                let mut config = crate::config::ClientConfig::load(&runtime.paths)?;
+                let contribution = runtime.contribution_info(&config.api_url).await?;
+                let automated_authorization =
+                    confirm_authorized && confirm_native_pixels_authorized;
+                validate_explicit_policy_version(
+                    accept_policy_version.as_deref(),
+                    &contribution.consent_policy_version,
+                    automated_authorization
+                        && config.consent_policy_version != contribution.consent_policy_version,
+                )?;
+                let authorized = if automated_authorization {
+                    true
+                } else {
+                    crate::terminal::confirm_authorized_upload(
+                        &folder,
+                        &contribution.consent_policy_version,
+                    )?
+                };
+                if !authorized {
                     println!("cancelled; nothing was uploaded");
                     return Ok(());
+                }
+                if config.consent_policy_version != contribution.consent_policy_version {
+                    config = runtime
+                        .accept_contribution_policy(&config, &contribution.consent_policy_version)
+                        .await?;
+                    println!(
+                        "Contribution policy updated to {}.",
+                        config.consent_policy_version
+                    );
                 }
             }
             println!("\nSyncing {}…", folder.display());
@@ -238,6 +273,22 @@ pub async fn execute(cli: Cli) -> Result<()> {
                             dicom.failed_series,
                             dicom.purged_series
                         );
+                        println!(
+                            "routes: {} functional EPI, {} archive-only",
+                            dicom.functional_epi_series, dicom.archive_only_series
+                        );
+                        if dicom.repairable_series > 0 {
+                            println!(
+                                "repair: {} exact stored series can be repaired; rerun the same folder command",
+                                dicom.repairable_series
+                            );
+                        }
+                        if dicom.archive_only_series > 0 {
+                            println!(
+                                "archive verification: {}/{} complete",
+                                dicom.archive_verified_series, dicom.archive_only_series
+                            );
+                        }
                     }
                 }
             }
@@ -248,6 +299,23 @@ pub async fn execute(cli: Cli) -> Result<()> {
             println!("{}", serde_json::to_string_pretty(&report)?);
             Ok(())
         }
+    }
+}
+
+fn validate_explicit_policy_version(
+    accepted: Option<&str>,
+    advertised: &str,
+    required: bool,
+) -> Result<()> {
+    match accepted {
+        Some(value) if value == advertised => Ok(()),
+        Some(value) => bail!(
+            "--accept-policy-version names {value}, but the server requires {advertised}; review the current policy and pass that exact version"
+        ),
+        None if required => bail!(
+            "explicit policy acceptance is required; review the current policy and pass --accept-policy-version {advertised}"
+        ),
+        None => Ok(()),
     }
 }
 
@@ -293,5 +361,16 @@ mod tests {
         let cli = Cli::try_parse_from(["neuro-sync", "resume"]).unwrap();
         assert_eq!(cli.folder, Some(PathBuf::from("resume")));
         assert!(cli.command.is_none());
+    }
+
+    #[test]
+    fn policy_acceptance_must_name_the_exact_advertised_version() {
+        assert!(validate_explicit_policy_version(None, "open-mri-1.0.0", true).is_err());
+        assert!(
+            validate_explicit_policy_version(Some("open-epi-1.0.0"), "open-mri-1.0.0", true)
+                .is_err()
+        );
+        validate_explicit_policy_version(Some("open-mri-1.0.0"), "open-mri-1.0.0", true).unwrap();
+        validate_explicit_policy_version(None, "open-mri-1.0.0", false).unwrap();
     }
 }

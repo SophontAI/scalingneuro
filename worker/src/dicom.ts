@@ -10,7 +10,11 @@ import {
   deletePrefix,
   uploadTtl,
 } from "./r2";
-import { clientVersionAtLeast } from "./service";
+import {
+  clientVersionAtLeast,
+  MINIMUM_ALL_MR_CLIENT_VERSION,
+  PUBLIC_CONSENT_POLICY_VERSION,
+} from "./service";
 import {
   ACTIVE_METADATA_POLICY_ID,
   ACTIVE_METADATA_POLICY_VERSION,
@@ -28,16 +32,68 @@ import type {
   SignPartRequest,
 } from "./validation";
 import packageManifest from "../package.json";
+import {
+  REQUIRED_PROCESSOR_CONTROLLER_SHA256,
+  REQUIRED_PROCESSOR_PIPELINE_VERSION,
+  REQUIRED_PROCESSOR_VERSION,
+} from "./processor-contract";
 
 export const DICOM_DEIDENTIFICATION_POLICY_ID =
   "scaling-neuro.dicom-deidentification";
-export const DICOM_DEIDENTIFICATION_POLICY_VERSION = "1.0.0";
+export const DICOM_DEIDENTIFICATION_POLICY_VERSION = "2.0.0";
+const LEGACY_DICOM_DEIDENTIFICATION_POLICY_VERSION = "1.0.0";
 
 const BASE_PART_SIZE = 64 * 1024 * 1024;
 const PART_SIZE_GRANULARITY = 1024 * 1024;
 const RECEIPT_LEASE_SECONDS = 10 * 60;
+// A source folder can contain many terabytes even though each independently
+// checkpointed series is capped at 64 GiB.  Once its multipart object has been
+// completed and HEAD-verified, retain it for 90 days while the client finishes
+// and rechecks the whole-folder identity.  It is still provisional: no receipt,
+// reservation, processing job, or scientific catalog entry exists yet.
+const PROVISIONAL_DICOM_RETENTION_SECONDS = 90 * 24 * 60 * 60;
 const MAX_PROCESSING_ATTEMPTS = 5;
 const MINIMUM_DICOM_CLIENT_VERSION = "0.3.0";
+const PURGE_ELIGIBLE_DICOM_ERROR_CODES = [
+  "DICOM_PRIVACY_AUDIT_FAILED",
+  // The processor only reports this terminal code after five independently
+  // downloaded copies of the immutable R2 object disagree with the intake
+  // digest. A single transport disagreement is deliberately not purge proof.
+  "STORED_OBJECT_SHA256_MISMATCH",
+  "INVALID_DICOM_ARCHIVE",
+  "ARCHIVE_DEIDENTIFICATION_POLICY_MISMATCH",
+  "ARCHIVE_DEIDENTIFICATION_UNVERIFIED",
+  "ARCHIVE_DICOM_COUNT_MISMATCH",
+  "ARCHIVE_DICOM_SIZE_INVALID",
+  "ARCHIVE_INSTANCE_MISMATCH",
+  "ARCHIVE_INSTANCE_ORDER",
+  "ARCHIVE_MANIFEST_DUPLICATE_KEY",
+  "ARCHIVE_MANIFEST_JSON",
+  "ARCHIVE_MANIFEST_MISSING",
+  "ARCHIVE_MANIFEST_NOT_LAST",
+  "ARCHIVE_MANIFEST_SCHEMA",
+  "ARCHIVE_MANIFEST_TOO_LARGE",
+  "ARCHIVE_MANUFACTURER_MISMATCH",
+  "ARCHIVE_PROCESSING_ROUTE_MISMATCH",
+  "ARCHIVE_SCANNER_METADATA_MISMATCH",
+  "ARCHIVE_SERIES_MISMATCH",
+  "ARCHIVE_SIEMENS_CSA_REQUIRED",
+  "ARCHIVE_SIZE_INVALID",
+  "ARCHIVE_SOP_UID_MISMATCH",
+  "ARCHIVE_TAR_HEADER_INVALID",
+  "ARCHIVE_TAR_PADDING_INVALID",
+  "ARCHIVE_TRAILING_DATA",
+  "ARCHIVE_TRUNCATED",
+  "ARCHIVE_UNCOMPRESSED_LIMIT",
+  "ARCHIVE_UNSUPPORTED_DICOM_FORM",
+  "ARCHIVE_VENDOR_METADATA_MISMATCH",
+  "ARCHIVE_ZSTD_INVALID",
+] as const;
+const PURGE_ELIGIBLE_DICOM_ERROR_CODE_SET = new Set<string>(
+  PURGE_ELIGIBLE_DICOM_ERROR_CODES,
+);
+
+type DicomProcessingRoute = "functional-epi-v1" | "archive-verify-v1";
 
 interface UploadRow {
   id: string;
@@ -57,6 +113,7 @@ interface UploadRow {
   created_at: number;
   updated_at: number;
   expires_at: number;
+  provisional_expires_at: number | null;
   received_at: number | null;
   committed_at: number | null;
   withdrawn_at: number | null;
@@ -77,6 +134,11 @@ interface DicomSeriesRow {
   protocol_group_id: string;
   bundle_hash: string;
   dicom_count: number;
+  series_kind: string;
+  processing_route: DicomProcessingRoute;
+  effective_series_kind: string | null;
+  effective_processing_route: DicomProcessingRoute | null;
+  pixel_data_policy: "scanner-native-not-defaced";
   archive_relative_key: string;
   expected_size: number;
   expected_sha256: string;
@@ -121,6 +183,16 @@ interface ReceiptReservationRow {
   bundle_id: string;
   series_id: string;
   bundle_hash: string;
+  series_kind: string;
+  processing_route: DicomProcessingRoute;
+  pixel_data_policy: "scanner-native-not-defaced";
+  withdrawn_at: number | null;
+}
+
+interface ReleasedReservationRow {
+  series_archive_id: string;
+  bundle_hash: string;
+  release_reason: string;
   withdrawn_at: number | null;
 }
 
@@ -135,6 +207,10 @@ function nowSeconds(): number {
 
 function iso(seconds: number | null): string | null {
   return seconds === null ? null : new Date(seconds * 1000).toISOString();
+}
+
+function dicomUploadExpiresAt(upload: UploadRow): number {
+  return upload.provisional_expires_at ?? upload.expires_at;
 }
 
 function stripEtag(value: string): string {
@@ -155,6 +231,99 @@ function requireSupportedClient(value: string): void {
       426,
       "This client is older than the active privacy contract; install the current release",
       { minimum_client_version: MINIMUM_DICOM_CLIENT_VERSION },
+    );
+  }
+}
+
+function processingRoute(
+  item: CreateDicomUploadRequest["series"][number],
+): DicomProcessingRoute {
+  return item.processing_route ?? "functional-epi-v1";
+}
+
+function requireSupportedDicomContract(
+  input: CreateDicomUploadRequest,
+  device: DeviceContext,
+): void {
+  if (input.deidentification.policy_id !== DICOM_DEIDENTIFICATION_POLICY_ID) {
+    throw new AppError(
+      "CLIENT_UPDATE_REQUIRED",
+      426,
+      "The DICOM deidentification policy is not supported",
+      {
+        policy_id: DICOM_DEIDENTIFICATION_POLICY_ID,
+        policy_version: DICOM_DEIDENTIFICATION_POLICY_VERSION,
+      },
+    );
+  }
+  if (
+    input.deidentification.policy_version ===
+    LEGACY_DICOM_DEIDENTIFICATION_POLICY_VERSION
+  ) {
+    requireSupportedClient(input.client_version);
+    if (
+      input.series.some(
+        (item) =>
+          item.series_kind !== undefined ||
+          item.processing_route !== undefined ||
+          item.pixel_data_policy !== undefined,
+      )
+    ) {
+      throw new AppError(
+        "INVALID_REQUEST",
+        400,
+        "Legacy DICOM uploads cannot declare all-MR routing fields",
+      );
+    }
+    return;
+  }
+  if (
+    input.deidentification.policy_version !==
+    DICOM_DEIDENTIFICATION_POLICY_VERSION
+  ) {
+    throw new AppError(
+      "CLIENT_UPDATE_REQUIRED",
+      426,
+      "The DICOM deidentification policy is not current",
+      {
+        policy_id: DICOM_DEIDENTIFICATION_POLICY_ID,
+        policy_version: DICOM_DEIDENTIFICATION_POLICY_VERSION,
+      },
+    );
+  }
+  if (!clientVersionAtLeast(input.client_version, MINIMUM_ALL_MR_CLIENT_VERSION)) {
+    throw new AppError(
+      "CLIENT_UPDATE_REQUIRED",
+      426,
+      "This client is older than the all-MR privacy contract; install the current release",
+      { minimum_client_version: MINIMUM_ALL_MR_CLIENT_VERSION },
+    );
+  }
+  if (
+    input.series.some(
+      (item) =>
+        item.series_kind === undefined ||
+        item.processing_route === undefined ||
+        item.pixel_data_policy === undefined ||
+        ((item.series_kind === "functional_epi") !==
+          (item.processing_route === "functional-epi-v1")),
+    )
+  ) {
+    throw new AppError(
+      "INVALID_REQUEST",
+      400,
+      "All-MR DICOM uploads require explicit series routing and pixel-data policy",
+    );
+  }
+  if (
+    device.self_service &&
+    device.current_consent_policy_version !== PUBLIC_CONSENT_POLICY_VERSION
+  ) {
+    throw new AppError(
+      "CONSENT_POLICY_UPDATE_REQUIRED",
+      409,
+      "Review and accept the current public contribution policy",
+      { consent_policy_version: PUBLIC_CONSENT_POLICY_VERSION },
     );
   }
 }
@@ -182,7 +351,7 @@ async function expireStaleDicomUpload(
   const timestamp = nowSeconds();
   if (
     !["created", "uploading"].includes(upload.status) ||
-    upload.expires_at > timestamp
+    dicomUploadExpiresAt(upload) > timestamp
   ) {
     return upload;
   }
@@ -190,7 +359,7 @@ async function expireStaleDicomUpload(
     `UPDATE uploads SET status = 'expired', updated_at = ?1,
                         receipt_token = NULL, receipt_expires_at = NULL
      WHERE id = ?2 AND status IN ('created', 'uploading')
-       AND expires_at <= ?1
+       AND COALESCE(provisional_expires_at, expires_at) <= ?1
        AND (receipt_token IS NULL OR receipt_expires_at <= ?1)
      RETURNING *`,
   )
@@ -298,13 +467,31 @@ async function processingSummary(
 ): Promise<Record<string, unknown>> {
   const result = await env.DB.prepare(
     `SELECT
-       SUM(CASE WHEN status = 'queued' THEN 1 ELSE 0 END) AS queued_series,
-       SUM(CASE WHEN status = 'processing' THEN 1 ELSE 0 END) AS processing_series,
-       SUM(CASE WHEN status = 'processed' THEN 1 ELSE 0 END) AS processed_series,
-       SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) AS failed_series,
-       SUM(CASE WHEN input_purged_at IS NOT NULL THEN 1 ELSE 0 END) AS purged_series,
-       MAX(updated_at) AS updated_at
-     FROM processing_jobs WHERE upload_id = ?1`,
+       SUM(CASE WHEN j.status = 'queued' THEN 1 ELSE 0 END) AS queued_series,
+       SUM(CASE WHEN j.status = 'processing' THEN 1 ELSE 0 END) AS processing_series,
+       SUM(CASE WHEN j.status = 'processed' THEN 1 ELSE 0 END) AS processed_series,
+       SUM(CASE WHEN j.status = 'failed' THEN 1 ELSE 0 END) AS failed_series,
+       SUM(CASE WHEN j.input_purged_at IS NOT NULL THEN 1 ELSE 0 END) AS purged_series,
+       SUM(CASE WHEN EXISTS (
+                      SELECT 1 FROM released_series_reservations released
+                      WHERE released.processing_job_id = j.id
+                    )
+                THEN 1 ELSE 0 END) AS repairable_series,
+       SUM(CASE WHEN COALESCE(d.effective_processing_route, d.processing_route)
+                     = 'functional-epi-v1'
+                THEN 1 ELSE 0 END) AS functional_epi_series,
+       SUM(CASE WHEN COALESCE(d.effective_processing_route, d.processing_route)
+                     = 'archive-verify-v1'
+                THEN 1 ELSE 0 END) AS archive_only_series,
+       SUM(CASE WHEN COALESCE(d.effective_processing_route, d.processing_route)
+                     = 'archive-verify-v1'
+                     AND j.status = 'processed'
+                THEN 1 ELSE 0 END) AS archive_verified_series,
+       MAX(j.updated_at) AS updated_at
+     FROM dicom_upload_series d
+     LEFT JOIN processing_jobs j
+       ON j.upload_id = d.upload_id AND j.bundle_id = d.series_archive_id
+     WHERE d.upload_id = ?1`,
   )
     .bind(upload.id)
     .first<{
@@ -313,6 +500,10 @@ async function processingSummary(
       processed_series: number | null;
       failed_series: number | null;
       purged_series: number | null;
+      repairable_series: number | null;
+      functional_epi_series: number | null;
+      archive_only_series: number | null;
+      archive_verified_series: number | null;
       updated_at: number | null;
     }>();
   const queued = Number(result?.queued_series ?? 0);
@@ -321,15 +512,15 @@ async function processingSummary(
   const failed = Number(result?.failed_series ?? 0);
   const purged = Number(result?.purged_series ?? 0);
   const status =
-    processed === upload.series_count
+    failed > 0
+      ? "failed"
+      : processed === upload.series_count
       ? "processed"
       : processing > 0
         ? "processing"
         : queued > 0
           ? "queued"
-          : failed > 0
-            ? "failed"
-            : "queued";
+          : "queued";
   return {
     status,
     queued_series: queued,
@@ -337,6 +528,10 @@ async function processingSummary(
     processed_series: processed,
     failed_series: failed,
     purged_series: purged,
+    repairable_series: Number(result?.repairable_series ?? 0),
+    functional_epi_series: Number(result?.functional_epi_series ?? 0),
+    archive_only_series: Number(result?.archive_only_series ?? 0),
+    archive_verified_series: Number(result?.archive_verified_series ?? 0),
     total_series: upload.series_count,
     updated_at: iso(result?.updated_at ?? upload.updated_at),
   };
@@ -355,9 +550,16 @@ async function dicomStatusResponse(
   )
     .bind(upload.id)
     .first<{ received_series: number; received_bytes: number }>();
+  const receivedSeries = Number(received?.received_series ?? 0);
+  const responseStatus =
+    upload.status === "uploading" &&
+    receivedSeries === upload.series_count &&
+    clientVersionAtLeast(upload.client_version, MINIMUM_ALL_MR_CLIENT_VERSION)
+      ? "checkpointed"
+      : upload.status;
   const response: Record<string, unknown> = {
     upload_id: upload.id,
-    status: upload.status,
+    status: responseStatus,
     format: upload.ingest_format,
     object_prefix: upload.archive_prefix,
     series_count: upload.series_count,
@@ -368,7 +570,7 @@ async function dicomStatusResponse(
       policy_version: upload.deidentification_policy_version,
     },
     receipt: {
-      received_series: Number(received?.received_series ?? 0),
+      received_series: receivedSeries,
       received_bytes: Number(received?.received_bytes ?? 0),
       total_series: upload.series_count,
       total_bytes: upload.total_bytes,
@@ -494,7 +696,7 @@ async function dicomCredentialsResponse(
   if (
     upload.status === "expired" ||
     upload.status === "withdrawn" ||
-    upload.expires_at <= nowSeconds()
+    dicomUploadExpiresAt(upload) <= nowSeconds()
   ) {
     throw new AppError(
       "UPLOAD_NOT_WRITABLE",
@@ -510,6 +712,7 @@ async function dicomCredentialsResponse(
     throw new AppError("CONFLICT", 409, "Upload receipt is in progress");
   }
   const rows = await ensureDicomMultipartUploads(env, upload);
+  const pendingRows = rows.filter((row) => row.completed_at === null);
   const timestamp = nowSeconds();
   await env.DB.prepare(
     `UPDATE uploads SET status = 'uploading', updated_at = ?1,
@@ -520,10 +723,14 @@ async function dicomCredentialsResponse(
     .run();
   return {
     upload_id: upload.id,
-    status: "uploading",
+    status:
+      pendingRows.length === 0 &&
+      clientVersionAtLeast(upload.client_version, MINIMUM_ALL_MR_CLIENT_VERSION)
+        ? "checkpointed"
+        : "uploading",
     format: upload.ingest_format,
     object_prefix: upload.archive_prefix,
-    multipart_objects: rows.map((row) => ({
+    multipart_objects: pendingRows.map((row) => ({
       kind: "dicom_archive",
       series_archive_id: row.series_archive_id,
       key: `${upload.archive_prefix}${row.archive_relative_key}`,
@@ -551,22 +758,7 @@ export async function createDicomUpload(
   input: CreateDicomUploadRequest,
 ): Promise<{ body: Record<string, unknown>; created: boolean }> {
   const device = await authenticateDevice(request, env);
-  requireSupportedClient(input.client_version);
-  if (
-    input.deidentification.policy_id !== DICOM_DEIDENTIFICATION_POLICY_ID ||
-    input.deidentification.policy_version !==
-      DICOM_DEIDENTIFICATION_POLICY_VERSION
-  ) {
-    throw new AppError(
-      "CLIENT_UPDATE_REQUIRED",
-      426,
-      "The DICOM deidentification policy is not current",
-      {
-        policy_id: DICOM_DEIDENTIFICATION_POLICY_ID,
-        policy_version: DICOM_DEIDENTIFICATION_POLICY_VERSION,
-      },
-    );
-  }
+  requireSupportedDicomContract(input, device);
   const hashes = await Promise.all(input.series.map(rawBundleHash));
   const requestHash = await sha256Hex(canonicalJson(input));
   let existing = await env.DB.prepare(
@@ -611,7 +803,8 @@ export async function createDicomUpload(
     const chunk = input.series.slice(offset, offset + 40);
     const placeholders = chunk.map((_, index) => `?${index + 3}`).join(", ");
     const result = await env.DB.prepare(
-      `SELECT upload_id, bundle_id, series_id, bundle_hash, withdrawn_at
+      `SELECT upload_id, bundle_id, series_id, bundle_hash, series_kind,
+              processing_route, pixel_data_policy, withdrawn_at
        FROM received_series_reservations
        WHERE site_id = ?1 AND project_id = ?2
          AND bundle_id IN (${placeholders})`,
@@ -627,6 +820,27 @@ export async function createDicomUpload(
   const reservationById = new Map(
     reservations.map((row) => [row.bundle_id, row]),
   );
+  const releasedReservations: ReleasedReservationRow[] = [];
+  for (let offset = 0; offset < input.series.length; offset += 40) {
+    const chunk = input.series.slice(offset, offset + 40);
+    const placeholders = chunk.map((_, index) => `?${index + 3}`).join(", ");
+    const result = await env.DB.prepare(
+      `SELECT series_archive_id, bundle_hash, release_reason, withdrawn_at
+       FROM released_series_reservations
+       WHERE site_id = ?1 AND project_id = ?2
+         AND series_archive_id IN (${placeholders})`,
+    )
+      .bind(
+        device.site_id,
+        device.project_id,
+        ...chunk.map((item) => item.series_archive_id),
+      )
+      .all<ReleasedReservationRow>();
+    releasedReservations.push(...result.results);
+  }
+  const releasedReservationById = new Map(
+    releasedReservations.map((row) => [row.series_archive_id, row]),
+  );
   const alreadyReceived: Array<{
     series_archive_id: string;
     receipt_upload_id: string;
@@ -636,6 +850,33 @@ export async function createDicomUpload(
   input.series.forEach((item, index) => {
     const reservation = reservationById.get(item.series_archive_id);
     if (!reservation) {
+      const released = releasedReservationById.get(item.series_archive_id);
+      if (released?.withdrawn_at !== null && released?.withdrawn_at !== undefined) {
+        throw new AppError(
+          "DUPLICATE_BUNDLE",
+          409,
+          "DICOM series was withdrawn and remains tombstoned",
+          {
+            reason: "withdrawn_tombstone",
+            series_archive_id: item.series_archive_id,
+          },
+        );
+      }
+      if (
+        released &&
+        (released.release_reason !== "STORED_OBJECT_SHA256_MISMATCH" ||
+          released.bundle_hash !== hashes[index])
+      ) {
+        throw new AppError(
+          "DUPLICATE_BUNDLE",
+          409,
+          "DICOM integrity replacement conflicts with the released receipt",
+          {
+            reason: "identity_conflict",
+            series_archive_id: item.series_archive_id,
+          },
+        );
+      }
       pendingSeries.push(item);
       pendingHashes.push(hashes[index]!);
       return;
@@ -670,6 +911,24 @@ export async function createDicomUpload(
       receipt_upload_id: reservation.upload_id,
     });
   });
+  if (
+    input.series.length !== 1 &&
+    input.series.some((item) =>
+      releasedReservationById.has(item.series_archive_id),
+    )
+  ) {
+    throw new AppError(
+      "DUPLICATE_BUNDLE",
+      409,
+      "A DICOM integrity replacement must use one exact series receipt",
+      {
+        reason: "identity_conflict",
+        series_archive_id: input.series.find((item) =>
+          releasedReservationById.has(item.series_archive_id),
+        )!.series_archive_id,
+      },
+    );
+  }
   if (pendingSeries.length === 0) {
     return {
       body: {
@@ -727,9 +986,12 @@ export async function createDicomUpload(
       env.DB.prepare(
         `INSERT INTO dicom_upload_series
            (upload_id, series_archive_id, series_id, subject_id, session_id,
-            protocol_group_id, bundle_hash, dicom_count, archive_relative_key,
-            expected_size, expected_sha256)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)`,
+            protocol_group_id, bundle_hash, dicom_count, series_kind,
+            processing_route, effective_series_kind,
+            effective_processing_route, pixel_data_policy,
+            archive_relative_key, expected_size, expected_sha256)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?9, ?10,
+                 ?11, ?12, ?13, ?14)`,
       ).bind(
         uploadId,
         item.series_archive_id,
@@ -739,6 +1001,9 @@ export async function createDicomUpload(
         item.protocol_group_id,
         pendingHashes[index],
         item.dicom_count,
+        item.series_kind ?? "functional_epi",
+        processingRoute(item),
+        item.pixel_data_policy ?? "scanner-native-not-defaced",
         item.archive.relative_key,
         item.archive.size,
         item.archive.sha256,
@@ -850,7 +1115,7 @@ export async function createDicomUploadPartUrl(
   const timestamp = nowSeconds();
   if (
     !["created", "uploading"].includes(upload.status) ||
-    upload.expires_at <= timestamp
+    dicomUploadExpiresAt(upload) <= timestamp
   ) {
     throw new AppError(
       "UPLOAD_NOT_WRITABLE",
@@ -928,6 +1193,220 @@ function assertDicomHead(
   }
 }
 
+async function checkpointDicomObjects(
+  env: Env,
+  upload: UploadRow,
+  input: CompleteUploadRequest,
+): Promise<DicomSeriesRow[]> {
+  const rows = await dicomSeries(env, upload.id);
+  const reconciled = await dicomReconciledSeries(env, upload.id);
+  const expectedKeys = new Set(
+    rows.map((row) => `${upload.archive_prefix}${row.archive_relative_key}`),
+  );
+  const reconciledKeys = new Set(
+    reconciled.map(
+      (row) => `${upload.archive_prefix}${row.series_archive_id}/dicom.tar.zst`,
+    ),
+  );
+  const declared = new Map(input.objects.map((object) => [object.key, object]));
+  if (
+    rows.length !== upload.series_count ||
+    declared.size !== input.objects.length ||
+    input.objects.some(
+      (object) =>
+        !expectedKeys.has(object.key) && !reconciledKeys.has(object.key),
+    )
+  ) {
+    throw new AppError(
+      "OBJECT_MISMATCH",
+      409,
+      "Completion must list each declared DICOM archive at most once",
+    );
+  }
+
+  // Reconciliation is durable in D1 before this cleanup. If a duplicate
+  // provisional object exists, remove it before retaining the unique objects.
+  try {
+    for (let offset = 0; offset < reconciled.length; offset += 8) {
+      await Promise.all(
+        reconciled.slice(offset, offset + 8).map((row) =>
+          deleteObject(
+            env,
+            `${upload.archive_prefix}${row.series_archive_id}/dicom.tar.zst`,
+          ),
+        ),
+      );
+    }
+  } catch {
+    throw new AppError(
+      "STORAGE_UNAVAILABLE",
+      502,
+      "Duplicate DICOM cleanup is pending; retry the same folder",
+    );
+  }
+
+  const heads = new Map<string, R2Object>();
+  for (let offset = 0; offset < rows.length; offset += 8) {
+    await Promise.all(
+      rows.slice(offset, offset + 8).map(async (row) => {
+        const key = `${upload.archive_prefix}${row.archive_relative_key}`;
+        const object = declared.get(key);
+        if (
+          object &&
+          (object.size !== row.expected_size ||
+            object.sha256 !== row.expected_sha256)
+        ) {
+          throw new AppError(
+            "OBJECT_MISMATCH",
+            409,
+            "DICOM completion receipt is inconsistent",
+            { series_archive_id: row.series_archive_id },
+          );
+        }
+
+        let head = await env.ARCHIVE.head(key);
+        if (!head && row.completed_at === null) {
+          if (
+            !object ||
+            !row.r2_multipart_id ||
+            !row.part_size ||
+            object.parts.length !==
+              Math.ceil(row.expected_size / row.part_size)
+          ) {
+            throw new AppError(
+              "OBJECT_MISMATCH",
+              409,
+              "Completion must list every unfinished DICOM archive exactly once",
+              { series_archive_id: row.series_archive_id },
+            );
+          }
+          try {
+            await env.ARCHIVE.resumeMultipartUpload(
+              key,
+              row.r2_multipart_id,
+            ).complete(
+              object.parts.map((part) => ({
+                partNumber: part.part_number,
+                etag: stripEtag(part.etag),
+              })),
+            );
+          } catch {
+            // The response may have been lost after R2 durably completed the
+            // multipart object. Resolve that case using the authoritative HEAD.
+          }
+          head = await env.ARCHIVE.head(key);
+        }
+        if (!head) {
+          throw new AppError(
+            "STORAGE_UNAVAILABLE",
+            502,
+            "DICOM archive is temporarily unavailable after upload",
+          );
+        }
+        assertDicomHead(upload, row, head);
+        heads.set(row.series_archive_id, head);
+      }),
+    );
+  }
+
+  const checkpointedAt = nowSeconds();
+  const statements = rows.map((row) =>
+    env.DB.prepare(
+      `UPDATE dicom_upload_series
+       SET completed_at = COALESCE(completed_at, ?1), etag = ?2
+       WHERE upload_id = ?3 AND series_archive_id = ?4`,
+    ).bind(
+      checkpointedAt,
+      heads.get(row.series_archive_id)!.etag,
+      upload.id,
+      row.series_archive_id,
+    ),
+  );
+  statements.push(
+    env.DB.prepare(
+      `UPDATE uploads
+       SET provisional_expires_at = MAX(
+             COALESCE(provisional_expires_at, 0), ?1
+           ), updated_at = ?2
+       WHERE id = ?3 AND status IN ('created', 'uploading')`,
+    ).bind(
+      checkpointedAt + PROVISIONAL_DICOM_RETENTION_SECONDS,
+      checkpointedAt,
+      upload.id,
+    ),
+  );
+  await env.DB.batch(statements);
+  return rows;
+}
+
+export async function checkpointDicomUpload(
+  request: Request,
+  env: Env,
+  uploadId: string,
+  input: CompleteUploadRequest,
+): Promise<Record<string, unknown>> {
+  const device = await authenticateDevice(request, env);
+  let upload = await getDicomUploadForDevice(env, uploadId, device.id);
+  requireSupportedClient(upload.client_version);
+  if (upload.status === "committed") return dicomStatusResponse(env, upload);
+  if (
+    upload.status === "expired" ||
+    upload.status === "withdrawn" ||
+    dicomUploadExpiresAt(upload) <= nowSeconds()
+  ) {
+    throw new AppError(
+      "UPLOAD_NOT_WRITABLE",
+      409,
+      "Upload is no longer writable",
+    );
+  }
+  const timestamp = nowSeconds();
+  const token = crypto.randomUUID();
+  const claimed = await env.DB.prepare(
+    `UPDATE uploads SET receipt_token = ?1, receipt_expires_at = ?2,
+                        updated_at = ?3
+     WHERE id = ?4 AND ingest_format = 'dicom-series-v1'
+       AND status IN ('created', 'uploading')
+       AND COALESCE(provisional_expires_at, expires_at) > ?3
+       AND (receipt_token IS NULL OR receipt_expires_at <= ?3)
+     RETURNING *`,
+  )
+    .bind(token, timestamp + RECEIPT_LEASE_SECONDS, timestamp, upload.id)
+    .first<UploadRow>();
+  if (!claimed) {
+    upload = await getDicomUploadForDevice(env, upload.id, device.id);
+    return dicomStatusResponse(env, upload);
+  }
+  upload = claimed;
+  try {
+    await checkpointDicomObjects(env, upload, input);
+    const released = await env.DB.prepare(
+      `UPDATE uploads
+       SET status = 'uploading', receipt_token = NULL,
+           receipt_expires_at = NULL, updated_at = ?1
+       WHERE id = ?2 AND receipt_token = ?3
+       RETURNING *`,
+    )
+      .bind(nowSeconds(), upload.id, token)
+      .first<UploadRow>();
+    if (!released) {
+      throw new AppError("CONFLICT", 409, "DICOM checkpoint lost its lease");
+    }
+    const response = await dicomStatusResponse(env, released);
+    response.status = "checkpointed";
+    return response;
+  } catch (error) {
+    await env.DB.prepare(
+      `UPDATE uploads SET receipt_token = NULL, receipt_expires_at = NULL,
+                          updated_at = ?1
+       WHERE id = ?2 AND receipt_token = ?3`,
+    )
+      .bind(nowSeconds(), upload.id, token)
+      .run();
+    throw error;
+  }
+}
+
 export async function completeDicomUpload(
   request: Request,
   env: Env,
@@ -946,7 +1425,7 @@ export async function completeDicomUpload(
   if (
     upload.status === "expired" ||
     upload.status === "withdrawn" ||
-    upload.expires_at <= nowSeconds()
+    dicomUploadExpiresAt(upload) <= nowSeconds()
   ) {
     throw new AppError(
       "UPLOAD_NOT_WRITABLE",
@@ -960,7 +1439,8 @@ export async function completeDicomUpload(
     `UPDATE uploads SET receipt_token = ?1, receipt_expires_at = ?2,
                         updated_at = ?3
      WHERE id = ?4 AND ingest_format = 'dicom-series-v1'
-       AND status IN ('created', 'uploading') AND expires_at > ?3
+       AND status IN ('created', 'uploading')
+       AND COALESCE(provisional_expires_at, expires_at) > ?3
        AND (receipt_token IS NULL OR receipt_expires_at <= ?3)
      RETURNING *`,
   )
@@ -972,147 +1452,18 @@ export async function completeDicomUpload(
   }
   upload = claimed;
   try {
-    const rows = await dicomSeries(env, upload.id);
-    const reconciled = await dicomReconciledSeries(env, upload.id);
-    const expectedKeys = new Set(
-      rows.map(
-        (row) => `${upload.archive_prefix}${row.archive_relative_key}`,
-      ),
-    );
-    const reconciledKeys = new Set(
-      reconciled.map(
-        (row) =>
-          `${upload.archive_prefix}${row.series_archive_id}/dicom.tar.zst`,
-      ),
-    );
-    if (
-      rows.length !== upload.series_count ||
-      input.objects.some(
-        (object) =>
-          !expectedKeys.has(object.key) && !reconciledKeys.has(object.key),
-      )
-    ) {
-      throw new AppError(
-        "OBJECT_MISMATCH",
-        409,
-        "Completion must list every DICOM archive exactly once",
-      );
-    }
-    const declared = new Map(
-      input.objects
-        .filter((object) => expectedKeys.has(object.key))
-        .map((object) => [object.key, object]),
-    );
-    if (declared.size !== rows.length) {
-      throw new AppError(
-        "OBJECT_MISMATCH",
-        409,
-        "Completion must list every pending DICOM archive exactly once",
-      );
-    }
-
-    // Reconciliation is written to D1 before these deletes. If cleanup fails
-    // or this Worker is interrupted, the unchanged completion body is safe to
-    // retry and unique archives remain checkpointed at their original keys.
-    try {
-      for (let offset = 0; offset < reconciled.length; offset += 8) {
-        await Promise.all(
-          reconciled.slice(offset, offset + 8).map((row) =>
-            deleteObject(
-              env,
-              `${upload.archive_prefix}${row.series_archive_id}/dicom.tar.zst`,
-            ),
-          ),
-        );
-      }
-    } catch {
-      throw new AppError(
-        "STORAGE_UNAVAILABLE",
-        502,
-        "Duplicate DICOM cleanup is pending; retry the same folder",
-      );
-    }
-    const heads = new Map<string, R2Object>();
-    for (let offset = 0; offset < rows.length; offset += 8) {
-      await Promise.all(
-        rows.slice(offset, offset + 8).map(async (row) => {
-          const key = `${upload.archive_prefix}${row.archive_relative_key}`;
-          const object = declared.get(key);
-          if (
-            !object ||
-            object.size !== row.expected_size ||
-            object.sha256 !== row.expected_sha256 ||
-            !row.r2_multipart_id ||
-            !row.part_size ||
-            object.parts.length !== Math.ceil(row.expected_size / row.part_size)
-          ) {
-            throw new AppError(
-              "OBJECT_MISMATCH",
-              409,
-              "DICOM completion receipt is inconsistent",
-              { series_archive_id: row.series_archive_id },
-            );
-          }
-          let head = await env.ARCHIVE.head(key);
-          if (!head) {
-            try {
-              await env.ARCHIVE.resumeMultipartUpload(
-                key,
-                row.r2_multipart_id,
-              ).complete(
-                object.parts.map((part) => ({
-                  partNumber: part.part_number,
-                  etag: stripEtag(part.etag),
-                })),
-              );
-            } catch {
-              // A lost completion response is resolved by the authoritative HEAD.
-            }
-            head = await env.ARCHIVE.head(key);
-          }
-          if (!head) {
-            throw new AppError(
-              "STORAGE_UNAVAILABLE",
-              502,
-              "DICOM archive is temporarily unavailable after upload",
-            );
-          }
-          assertDicomHead(upload, row, head);
-          heads.set(row.series_archive_id, head);
-        }),
-      );
-    }
-    if (declared.size !== rows.length) {
-      throw new AppError(
-        "OBJECT_MISMATCH",
-        409,
-        "Completion contains an unexpected DICOM archive",
-      );
-    }
-
+    const rows = await checkpointDicomObjects(env, upload, input);
     const receivedAt = nowSeconds();
     const statements: D1PreparedStatement[] = [];
-    for (const row of rows) {
-      statements.push(
-        env.DB.prepare(
-          `UPDATE dicom_upload_series
-           SET completed_at = COALESCE(completed_at, ?1), etag = ?2
-           WHERE upload_id = ?3 AND series_archive_id = ?4`,
-        ).bind(
-          receivedAt,
-          heads.get(row.series_archive_id)!.etag,
-          upload.id,
-          row.series_archive_id,
-        ),
-      );
-    }
     statements.push(
       env.DB.prepare(
         `INSERT INTO received_series_reservations
            (upload_id, bundle_id, site_id, project_id, series_id,
-            bundle_hash, input_format, received_at)
+            bundle_hash, input_format, received_at, series_kind,
+            processing_route, pixel_data_policy)
          SELECT d.upload_id, d.series_archive_id, u.site_id, u.project_id,
-                d.series_id, d.bundle_hash, 'dicom-series-v1', ?1
+                d.series_id, d.bundle_hash, 'dicom-series-v1', ?1,
+                d.series_kind, d.processing_route, d.pixel_data_policy
          FROM dicom_upload_series d
          JOIN uploads u ON u.id = d.upload_id
          JOIN devices dv ON dv.id = u.device_id
@@ -1120,8 +1471,22 @@ export async function completeDicomUpload(
          WHERE d.upload_id = ?2 AND d.completed_at IS NOT NULL
            AND u.receipt_token = ?3
            AND dv.revoked_at IS NULL AND p.active = 1
-           AND p.consent_policy_version = u.consent_policy_version
-           AND dv.accepted_consent_policy_version = p.consent_policy_version`,
+           AND NOT EXISTS (
+             SELECT 1 FROM released_series_reservations released
+             WHERE released.site_id = u.site_id
+               AND released.project_id = u.project_id
+               AND released.series_archive_id = d.series_archive_id
+               AND released.withdrawn_at IS NOT NULL
+           )
+           AND dv.accepted_consent_policy_version = p.consent_policy_version
+           AND (
+             p.consent_policy_version = u.consent_policy_version
+             OR (
+               u.consent_policy_version = 'open-epi-1.0.0'
+               AND u.deidentification_policy_version = '1.0.0'
+               AND p.consent_policy_version = 'open-mri-1.0.0'
+             )
+           )`,
       ).bind(receivedAt, upload.id, token),
       env.DB.prepare(
         `INSERT OR IGNORE INTO processing_jobs
@@ -1147,12 +1512,29 @@ export async function completeDicomUpload(
              updated_at = ?1, receipt_token = NULL, receipt_expires_at = NULL
          WHERE id = ?2 AND receipt_token = ?3
            AND ingest_format = 'dicom-series-v1'
+           AND NOT EXISTS (
+             SELECT 1 FROM dicom_upload_series d
+             WHERE d.upload_id = uploads.id AND d.completed_at IS NOT NULL
+               AND NOT EXISTS (
+                 SELECT 1 FROM received_series_reservations r
+                 WHERE r.upload_id = d.upload_id
+                   AND r.bundle_id = d.series_archive_id
+                   AND r.withdrawn_at IS NULL
+               )
+           )
            AND EXISTS (
              SELECT 1 FROM devices dv JOIN projects p ON p.id = uploads.project_id
              WHERE dv.id = uploads.device_id AND dv.revoked_at IS NULL
                AND p.active = 1
-               AND p.consent_policy_version = uploads.consent_policy_version
                AND dv.accepted_consent_policy_version = p.consent_policy_version
+               AND (
+                 p.consent_policy_version = uploads.consent_policy_version
+                 OR (
+                   uploads.consent_policy_version = 'open-epi-1.0.0'
+                   AND uploads.deidentification_policy_version = '1.0.0'
+                   AND p.consent_policy_version = 'open-mri-1.0.0'
+                 )
+               )
            )`,
       ).bind(receivedAt, upload.id, token),
       env.DB.prepare(
@@ -1179,7 +1561,8 @@ export async function completeDicomUpload(
     } catch {
       const placeholders = rows.map((_, index) => `?${index + 3}`).join(", ");
       const conflicts = await env.DB.prepare(
-        `SELECT upload_id, bundle_id, series_id, bundle_hash, withdrawn_at
+        `SELECT upload_id, bundle_id, series_id, bundle_hash, series_kind,
+                processing_route, pixel_data_policy, withdrawn_at
          FROM received_series_reservations
          WHERE site_id = ?1 AND project_id = ?2
            AND bundle_id IN (${placeholders}) AND upload_id != ?${rows.length + 3}
@@ -1369,6 +1752,32 @@ async function requireActiveJobLease(
   return job;
 }
 
+interface DicomJobContract {
+  dicom_count: number;
+  series_kind: string;
+  processing_route: DicomProcessingRoute;
+  pixel_data_policy: "scanner-native-not-defaced";
+  deidentification_policy_version: string | null;
+}
+
+async function dicomJobContract(
+  env: Env,
+  job: ProcessingJobRow,
+): Promise<DicomJobContract> {
+  const contract = await env.DB.prepare(
+    `SELECT d.dicom_count, d.series_kind, d.processing_route,
+            d.pixel_data_policy, u.deidentification_policy_version
+     FROM dicom_upload_series d JOIN uploads u ON u.id = d.upload_id
+     WHERE d.upload_id = ?1 AND d.series_archive_id = ?2 LIMIT 1`,
+  )
+    .bind(job.upload_id, job.bundle_id)
+    .first<DicomJobContract>();
+  if (!contract) {
+    throw new AppError("INTERNAL", 500, "DICOM job contract is missing");
+  }
+  return contract;
+}
+
 async function signedInput(
   env: Env,
   job: ProcessingJobRow,
@@ -1389,6 +1798,9 @@ async function signedInput(
     return {
       series_id: row.series_id,
       series_archive_id: row.series_archive_id,
+      series_kind: row.series_kind,
+      processing_route: row.processing_route,
+      pixel_data_policy: row.pixel_data_policy,
       input: {
         format: "dicom-tar-zstd",
         dicom_count: row.dicom_count,
@@ -1458,10 +1870,10 @@ async function processingJobClaimResponse(
   }
   const details = await signedInput(env, job);
   const upload = await env.DB.prepare(
-    "SELECT archive_prefix FROM uploads WHERE id = ?1",
+    "SELECT archive_prefix, client_version FROM uploads WHERE id = ?1",
   )
     .bind(job.upload_id)
-    .first<{ archive_prefix: string }>();
+    .first<{ archive_prefix: string; client_version: string }>();
   if (!upload) {
     throw new AppError("INTERNAL", 500, "Processing upload is missing");
   }
@@ -1470,6 +1882,7 @@ async function processingJobClaimResponse(
     job_id: job.id,
     upload_id: job.upload_id,
     bundle_id: job.bundle_id,
+    client_version: upload.client_version,
     input_format: job.input_format,
     attempt: job.attempt,
     lease_token: job.lease_token,
@@ -1485,12 +1898,45 @@ export async function claimProcessingJob(
   input: ProcessorClaimRequest,
 ): Promise<Record<string, unknown> | null> {
   await authenticateProcessor(request, env);
+  const timestamp = nowSeconds();
+  const allMrProcessorCompatible =
+    input.processor_version === REQUIRED_PROCESSOR_VERSION &&
+    input.pipeline_version === REQUIRED_PROCESSOR_PIPELINE_VERSION &&
+    input.controller_source_sha256 ===
+      REQUIRED_PROCESSOR_CONTROLLER_SHA256;
+  if (
+    input.processor_version &&
+    input.pipeline_version &&
+    input.controller_source_sha256
+  ) {
+    await env.DB.prepare(
+      `INSERT INTO processor_instances
+         (processor_id, processor_version, pipeline_version,
+          controller_source_sha256, claim_input_format, first_seen_at,
+          last_seen_at)
+       VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?6)
+       ON CONFLICT(processor_id) DO UPDATE SET
+         processor_version = excluded.processor_version,
+         pipeline_version = excluded.pipeline_version,
+         controller_source_sha256 = excluded.controller_source_sha256,
+         claim_input_format = excluded.claim_input_format,
+         last_seen_at = excluded.last_seen_at`,
+    )
+      .bind(
+        input.processor_id,
+        input.processor_version,
+        input.pipeline_version,
+        input.controller_source_sha256,
+        input.claim_input_format ?? "all",
+        timestamp,
+      )
+      .run();
+  }
   // Privacy/archive/purpose rejects are first made terminal under their job
   // lease, then deleted. If storage or D1 was unavailable between those two
   // durable steps, a later claim finishes the idempotent purge before taking
   // more scientific work.
   await cleanupPendingRejectedDicomInputs(env, 4);
-  const timestamp = nowSeconds();
   await env.DB.batch([
     env.DB.prepare(
       `UPDATE processing_jobs
@@ -1525,6 +1971,8 @@ export async function claimProcessingJob(
          AND j.lease_token IS NOT NULL AND j.lease_expires_at > ?2
          AND u.status = 'committed' AND u.withdrawn_at IS NULL
          AND (?4 IS NULL OR j.input_format = ?4)
+         AND (j.input_format != 'dicom-series-v1'
+           OR u.deidentification_policy_version = ?5 OR ?6 = 1)
        ORDER BY j.started_at, j.id LIMIT 1
      )
      RETURNING *`,
@@ -1534,6 +1982,8 @@ export async function claimProcessingJob(
       timestamp,
       input.processor_id,
       input.claim_input_format ?? null,
+      LEGACY_DICOM_DEIDENTIFICATION_POLICY_VERSION,
+      allMrProcessorCompatible ? 1 : 0,
     )
     .first<ProcessingJobRow>();
   if (replayed) return processingJobClaimResponse(env, replayed);
@@ -1550,6 +2000,8 @@ export async function claimProcessingJob(
        WHERE j.status = 'queued' AND j.next_attempt_at <= ?4
          AND u.status = 'committed' AND u.withdrawn_at IS NULL
          AND (?5 IS NULL OR j.input_format = ?5)
+         AND (j.input_format != 'dicom-series-v1'
+           OR u.deidentification_policy_version = ?6 OR ?7 = 1)
          AND NOT EXISTS (
            SELECT 1 FROM processing_jobs active
            JOIN uploads active_upload ON active_upload.id = active.upload_id
@@ -1574,6 +2026,8 @@ export async function claimProcessingJob(
       timestamp + input.lease_seconds,
       timestamp,
       input.claim_input_format ?? null,
+      LEGACY_DICOM_DEIDENTIFICATION_POLICY_VERSION,
+      allMrProcessorCompatible ? 1 : 0,
     )
     .first<ProcessingJobRow>();
   if (!job) return null;
@@ -1587,17 +2041,30 @@ export async function heartbeatProcessingJob(
   input: ProcessorLeaseRequest,
 ): Promise<Record<string, unknown>> {
   await authenticateProcessor(request, env);
-  await requireActiveJobLease(env, jobId, input.lease_token);
+  const job = await requireActiveJobLease(env, jobId, input.lease_token);
   const timestamp = nowSeconds();
   const expiresAt = timestamp + input.lease_seconds;
-  const updated = await env.DB.prepare(
-    `UPDATE processing_jobs SET lease_expires_at = ?1, updated_at = ?2
-     WHERE id = ?3 AND status = 'processing' AND lease_token = ?4
-       AND lease_expires_at > ?2`,
-  )
-    .bind(expiresAt, timestamp, jobId, input.lease_token)
-    .run();
-  if ((updated.meta.changes ?? 0) !== 1) {
+  const updated = await env.DB.batch([
+    env.DB.prepare(
+      `UPDATE processing_jobs SET lease_expires_at = ?1, updated_at = ?2
+       WHERE id = ?3 AND status = 'processing' AND lease_token = ?4
+         AND lease_expires_at > ?2`,
+    ).bind(expiresAt, timestamp, jobId, input.lease_token),
+    env.DB.prepare(
+      `UPDATE processor_instances SET last_seen_at = ?1
+       WHERE processor_id = ?2
+         AND EXISTS (
+           SELECT 1 FROM processing_jobs active
+           JOIN uploads active_upload ON active_upload.id = active.upload_id
+           WHERE active.id = ?3 AND active.status = 'processing'
+             AND active.processor_id = ?2
+             AND active.lease_token = ?4 AND active.lease_expires_at > ?1
+             AND active_upload.status = 'committed'
+             AND active_upload.withdrawn_at IS NULL
+         )`,
+    ).bind(timestamp, job.processor_id, jobId, input.lease_token),
+  ]);
+  if ((updated[0]?.meta.changes ?? 0) !== 1) {
     throw new AppError("LEASE_LOST", 409, "Processing job lease was lost");
   }
   return {
@@ -1639,6 +2106,14 @@ export async function grantProcessingOutputs(
       "INVALID_REQUEST",
       400,
       "Legacy NIfTI validation jobs do not produce replacement outputs",
+    );
+  }
+  const contract = await dicomJobContract(env, job);
+  if (contract.processing_route !== "functional-epi-v1") {
+    throw new AppError(
+      "INVALID_REQUEST",
+      400,
+      "Archive verification jobs do not produce derived outputs",
     );
   }
   const required = new Set(["nifti", "sidecar", "processing_manifest"]);
@@ -1996,22 +2471,37 @@ export async function completeProcessingJob(
   }
   const job = await requireActiveJobLease(env, jobId, input.lease_token);
   let outputs: ProcessingOutputRow[] = [];
+  let processingRouteForAudit: DicomProcessingRoute | null = null;
+  let publishCatalog = job.input_format === "nifti-v1";
+  let downgradeToArchiveVerification = false;
   if (job.input_format === "dicom-series-v1") {
     const validation = input.validation as DicomProcessorValidation;
-    const declared = await env.DB.prepare(
-      `SELECT dicom_count FROM dicom_upload_series
-       WHERE upload_id = ?1 AND series_archive_id = ?2 LIMIT 1`,
-    )
-      .bind(job.upload_id, job.bundle_id)
-      .first<{ dicom_count: number }>();
+    const contract = await dicomJobContract(env, job);
+    processingRouteForAudit = contract.processing_route;
+    const privacyAuditSucceeded =
+      validation.dicom_privacy_audit_succeeded === true ||
+      (contract.deidentification_policy_version ===
+        LEGACY_DICOM_DEIDENTIFICATION_POLICY_VERSION &&
+        validation.dicom_privacy_audit_succeeded === undefined);
+    downgradeToArchiveVerification =
+      contract.processing_route === "functional-epi-v1" &&
+      validation.functional_epi_confirmed === false &&
+      input.dcm2niix_version === undefined &&
+      input.outputs.length === 0;
     if (
       !("archive_sha256_verified" in validation) ||
       !allTrue([
         validation.archive_sha256_verified,
         validation.dicom_parse_succeeded,
-        validation.functional_epi_confirmed,
+        privacyAuditSucceeded,
       ]) ||
-      validation.dicom_count !== declared?.dicom_count
+      validation.dicom_count !== contract.dicom_count ||
+      (contract.processing_route === "functional-epi-v1" &&
+        !downgradeToArchiveVerification &&
+        (!validation.functional_epi_confirmed || !input.dcm2niix_version)) ||
+      (contract.processing_route === "archive-verify-v1" &&
+        (validation.functional_epi_confirmed ||
+          input.dcm2niix_version !== undefined))
     ) {
       throw new AppError(
         "OBJECT_MISMATCH",
@@ -2026,37 +2516,58 @@ export async function completeProcessingJob(
         .bind(job.id)
         .all<ProcessingOutputRow>()
     ).results;
-    if (
-      outputs.length !== 3 ||
-      input.outputs.length !== 3 ||
-      input.outputs.some((descriptor) => {
-        const row = outputs.find((item) => item.kind === descriptor.kind);
-        return !row || !descriptorMatches(row, descriptor);
-      })
-    ) {
-      throw new AppError(
-        "OBJECT_MISMATCH",
-        409,
-        "Processed outputs differ from their allocation",
-      );
-    }
-    for (const row of outputs) {
-      const head = await env.ARCHIVE.head(row.object_key);
-      if (!head) {
+    if (contract.processing_route === "archive-verify-v1") {
+      if (outputs.length !== 0 || input.outputs.length !== 0) {
         throw new AppError(
-          "OBJECT_MISSING",
+          "OBJECT_MISMATCH",
           409,
-          "A processed output has not reached storage",
-          { kind: row.kind },
+          "Archive verification jobs cannot publish derived outputs",
         );
       }
-      assertOutputHead(job, row, head);
-      row.etag = head.etag;
+    } else if (downgradeToArchiveVerification) {
+      if (outputs.length !== 0) {
+        throw new AppError(
+          "OBJECT_MISMATCH",
+          409,
+          "A functional-purpose downgrade cannot retain derived output allocations",
+        );
+      }
+      processingRouteForAudit = "archive-verify-v1";
+    } else {
+      publishCatalog = true;
+      if (
+        outputs.length !== 3 ||
+        input.outputs.length !== 3 ||
+        input.outputs.some((descriptor) => {
+          const row = outputs.find((item) => item.kind === descriptor.kind);
+          return !row || !descriptorMatches(row, descriptor);
+        })
+      ) {
+        throw new AppError(
+          "OBJECT_MISMATCH",
+          409,
+          "Processed outputs differ from their allocation",
+        );
+      }
+      for (const row of outputs) {
+        const head = await env.ARCHIVE.head(row.object_key);
+        if (!head) {
+          throw new AppError(
+            "OBJECT_MISSING",
+            409,
+            "A processed output has not reached storage",
+            { kind: row.kind },
+          );
+        }
+        assertOutputHead(job, row, head);
+        row.etag = head.etag;
+      }
     }
   } else {
     const validation = input.validation;
     if (
       "archive_sha256_verified" in validation ||
+      !input.dcm2niix_version ||
       input.outputs.length !== 0 ||
       !allTrue([
         validation.nifti_sha256_verified,
@@ -2091,14 +2602,41 @@ export async function completeProcessingJob(
          )`,
     ).bind(timestamp, row.etag, job.id, row.kind, input.lease_token),
   );
+  if (downgradeToArchiveVerification) {
+    statements.push(
+      env.DB.prepare(
+        `UPDATE dicom_upload_series
+         SET effective_series_kind = 'other_mr',
+             effective_processing_route = 'archive-verify-v1'
+         WHERE upload_id = ?1 AND series_archive_id = ?2
+           AND series_kind = 'functional_epi'
+           AND processing_route = 'functional-epi-v1'
+           AND EXISTS (
+             SELECT 1 FROM processing_jobs j
+             WHERE j.id = ?3 AND j.status = 'processing'
+               AND j.lease_token = ?4 AND j.lease_expires_at > ?5
+           )`,
+      ).bind(
+        job.upload_id,
+        job.bundle_id,
+        job.id,
+        input.lease_token,
+        timestamp,
+      ),
+    );
+  }
+  if (publishCatalog) {
+    statements.push(
+      await catalogStatementForJob(
+        env,
+        job,
+        outputs,
+        timestamp,
+        input.lease_token,
+      ),
+    );
+  }
   statements.push(
-    await catalogStatementForJob(
-      env,
-      job,
-      outputs,
-      timestamp,
-      input.lease_token,
-    ),
     env.DB.prepare(
       `UPDATE processing_jobs
        SET status = 'processed', processor_version = ?1,
@@ -2113,7 +2651,7 @@ export async function completeProcessingJob(
          )`,
     ).bind(
       input.processor_version,
-      input.dcm2niix_version,
+      input.dcm2niix_version ?? null,
       timestamp,
       completionHash,
       job.id,
@@ -2132,7 +2670,7 @@ export async function completeProcessingJob(
       crypto.randomUUID(),
       job.upload_id,
       job.id,
-      job.input_format,
+      processingRouteForAudit ?? job.input_format,
       timestamp,
     ),
   );
@@ -2176,11 +2714,25 @@ export async function failProcessingJob(
   const job = await requireActiveJobLease(env, jobId, input.lease_token);
   const timestamp = nowSeconds();
   const retry = input.retryable && job.attempt < MAX_PROCESSING_ATTEMPTS;
+  // Each retry obtains a fresh signed GET and the processor streams and hashes
+  // the object again. Only repeated full-download mismatches at the retry
+  // ceiling establish that the immutable stored object itself is corrupt.
+  const terminalErrorCode =
+    !retry &&
+    input.retryable &&
+    input.error_code === "OBJECT_DOWNLOAD_INTEGRITY_MISMATCH" &&
+    job.attempt >= MAX_PROCESSING_ATTEMPTS
+      ? "STORED_OBJECT_SHA256_MISMATCH"
+      : input.error_code;
+  const terminalErrorMessage =
+    terminalErrorCode === "STORED_OBJECT_SHA256_MISMATCH"
+      ? terminalErrorCode
+      : input.error_message;
   const nextAttemptAt = timestamp + Math.min(300, 5 * 2 ** job.attempt);
   const purgeInput =
     !retry &&
     job.input_format === "dicom-series-v1" &&
-    shouldPurgeRejectedDicomInput(input.error_code);
+    shouldPurgeRejectedDicomInput(terminalErrorCode);
   if (purgeInput) {
     // Win the complete-vs-fail race in D1 before touching the source object.
     // Once terminal, no concurrent or stale processor can publish this job.
@@ -2194,25 +2746,10 @@ export async function failProcessingJob(
            AND lease_expires_at > ?1`,
       ).bind(
         timestamp,
-        input.error_code,
-        input.error_message,
+        terminalErrorCode,
+        terminalErrorMessage,
         job.id,
         input.lease_token,
-      ),
-      env.DB.prepare(
-        `UPDATE received_series_reservations
-         SET withdrawn_at = COALESCE(withdrawn_at, ?1)
-         WHERE upload_id = ?2 AND bundle_id = ?3
-           AND EXISTS (
-             SELECT 1 FROM processing_jobs
-             WHERE id = ?4 AND status = 'failed' AND error_code = ?5
-           )`,
-      ).bind(
-        timestamp,
-        job.upload_id,
-        job.bundle_id,
-        job.id,
-        input.error_code,
       ),
     ]);
     if ((transition[0]?.meta.changes ?? 0) !== 1) {
@@ -2221,7 +2758,7 @@ export async function failProcessingJob(
     await purgeRejectedDicomInput(env, {
       ...job,
       status: "failed",
-      error_code: input.error_code,
+      error_code: terminalErrorCode,
     });
     return { job_id: job.id, status: "failed", input_status: "purged" };
   }
@@ -2238,8 +2775,8 @@ export async function failProcessingJob(
       retry ? "queued" : "failed",
       retry ? nextAttemptAt : timestamp,
       timestamp,
-      input.error_code,
-      input.error_message,
+      terminalErrorCode,
+      terminalErrorMessage,
       job.id,
       input.lease_token,
     ),
@@ -2263,13 +2800,19 @@ async function purgeRejectedDicomInput(
     throw new AppError("INTERNAL", 500, "DICOM input is not purge-eligible");
   }
   const source = await env.DB.prepare(
-    `SELECT u.archive_prefix, d.archive_relative_key
+    `SELECT u.archive_prefix, u.site_id, u.project_id,
+            d.archive_relative_key
      FROM dicom_upload_series d
      JOIN uploads u ON u.id = d.upload_id
      WHERE d.upload_id = ?1 AND d.series_archive_id = ?2 LIMIT 1`,
   )
     .bind(job.upload_id, job.bundle_id)
-    .first<{ archive_prefix: string; archive_relative_key: string }>();
+    .first<{
+      archive_prefix: string;
+      site_id: string;
+      project_id: string;
+      archive_relative_key: string;
+    }>();
   if (!source) {
     throw new AppError("INTERNAL", 500, "Rejected DICOM input is missing");
   }
@@ -2286,18 +2829,28 @@ async function purgeRejectedDicomInput(
     );
   }
   const purgedAt = nowSeconds();
-  await env.DB.batch([
+  const priorIntegrityReleases =
+    job.error_code === "STORED_OBJECT_SHA256_MISMATCH"
+      ? Number(
+          (await env.DB.prepare(
+            `SELECT COUNT(*) AS count FROM released_series_reservations
+             WHERE site_id = ?1 AND project_id = ?2
+               AND series_archive_id = ?3`,
+          )
+            .bind(source.site_id, source.project_id, job.bundle_id)
+            .first<number>("count")) ?? 0,
+        )
+      : 0;
+  const releaseForOneIntegrityRetry =
+    job.error_code === "STORED_OBJECT_SHA256_MISMATCH" &&
+    priorIntegrityReleases === 0;
+  const statements: D1PreparedStatement[] = [
     env.DB.prepare(
       `UPDATE processing_jobs
        SET input_purged_at = COALESCE(input_purged_at, ?1), updated_at = ?1
        WHERE id = ?2 AND status = 'failed' AND input_format = 'dicom-series-v1'
          AND error_code = ?3`,
     ).bind(purgedAt, job.id, job.error_code),
-    env.DB.prepare(
-      `UPDATE received_series_reservations
-       SET withdrawn_at = COALESCE(withdrawn_at, ?1)
-       WHERE upload_id = ?2 AND bundle_id = ?3`,
-    ).bind(purgedAt, job.upload_id, job.bundle_id),
     env.DB.prepare(
       `INSERT INTO audit_events
          (id, event_type, upload_id, subject_type, subject_id,
@@ -2319,26 +2872,99 @@ async function purgeRejectedDicomInput(
       job.error_code,
       purgedAt,
     ),
-  ]);
+  ];
+  if (releaseForOneIntegrityRetry) {
+    statements.push(
+      env.DB.prepare(
+        `INSERT INTO released_series_reservations
+           (id, processing_job_id, upload_id, site_id, project_id,
+            series_archive_id, bundle_hash, release_reason, released_at)
+         SELECT ?1, ?2, r.upload_id, r.site_id, r.project_id, r.bundle_id,
+                r.bundle_hash, ?3, ?4
+         FROM received_series_reservations r
+         WHERE r.upload_id = ?5 AND r.bundle_id = ?6
+           AND r.withdrawn_at IS NULL
+           AND NOT EXISTS (
+             SELECT 1 FROM released_series_reservations
+             WHERE processing_job_id = ?2
+           )`,
+      ).bind(
+        crypto.randomUUID(),
+        job.id,
+        job.error_code,
+        purgedAt,
+        job.upload_id,
+        job.bundle_id,
+      ),
+      env.DB.prepare(
+        `DELETE FROM received_series_reservations
+         WHERE upload_id = ?1 AND bundle_id = ?2
+           AND EXISTS (
+             SELECT 1 FROM released_series_reservations
+             WHERE processing_job_id = ?3
+           )`,
+      ).bind(job.upload_id, job.bundle_id, job.id),
+      env.DB.prepare(
+        `UPDATE uploads
+         SET request_hash = request_hash || ':integrity-retired:' || ?1,
+             updated_at = ?2
+         WHERE id = ?3 AND status = 'committed'
+           AND EXISTS (
+             SELECT 1 FROM released_series_reservations
+             WHERE processing_job_id = ?1
+           )`,
+      ).bind(job.id, purgedAt, job.upload_id),
+      env.DB.prepare(
+        `INSERT INTO audit_events
+           (id, event_type, upload_id, subject_type, subject_id,
+            detail_code, created_at)
+         SELECT ?1, 'processing.integrity_replacement_released', ?2,
+                'processing_job', ?3, ?4, ?5
+         WHERE EXISTS (
+           SELECT 1 FROM released_series_reservations
+           WHERE processing_job_id = ?3
+         ) AND NOT EXISTS (
+           SELECT 1 FROM audit_events
+           WHERE event_type = 'processing.integrity_replacement_released'
+             AND subject_type = 'processing_job' AND subject_id = ?3
+         )`,
+      ).bind(
+        crypto.randomUUID(),
+        job.upload_id,
+        job.id,
+        job.error_code,
+        purgedAt,
+      ),
+    );
+  } else {
+    statements.push(
+      env.DB.prepare(
+        `UPDATE received_series_reservations
+         SET withdrawn_at = COALESCE(withdrawn_at, ?1)
+         WHERE upload_id = ?2 AND bundle_id = ?3`,
+      ).bind(purgedAt, job.upload_id, job.bundle_id),
+    );
+  }
+  await env.DB.batch(statements);
 }
 
 export async function cleanupPendingRejectedDicomInputs(
   env: Env,
   limit: number,
 ): Promise<void> {
+  const errorPlaceholders = PURGE_ELIGIBLE_DICOM_ERROR_CODES.map(
+    (_code, index) => `?${index + 1}`,
+  ).join(", ");
+  const limitPlaceholder = `?${PURGE_ELIGIBLE_DICOM_ERROR_CODES.length + 1}`;
   const candidates = (
     await env.DB.prepare(
       `SELECT * FROM processing_jobs
        WHERE status = 'failed' AND input_format = 'dicom-series-v1'
          AND input_purged_at IS NULL AND error_code IS NOT NULL
-         AND (error_code IN (
-           'DICOM_PRIVACY_AUDIT_FAILED',
-           'INVALID_DICOM_ARCHIVE',
-           'FUNCTIONAL_EPI_NOT_CONFIRMED'
-         ) OR substr(error_code, 1, 8) = 'ARCHIVE_')
-       ORDER BY failed_at, id LIMIT ?1`,
+         AND error_code IN (${errorPlaceholders})
+       ORDER BY failed_at, id LIMIT ${limitPlaceholder}`,
     )
-      .bind(limit)
+      .bind(...PURGE_ELIGIBLE_DICOM_ERROR_CODES, limit)
       .all<ProcessingJobRow>()
   ).results;
   for (const job of candidates) {
@@ -2360,10 +2986,5 @@ export async function cleanupPendingRejectedDicomInputs(
 }
 
 function shouldPurgeRejectedDicomInput(code: string): boolean {
-  return (
-    code === "DICOM_PRIVACY_AUDIT_FAILED" ||
-    code === "INVALID_DICOM_ARCHIVE" ||
-    code.startsWith("ARCHIVE_") ||
-    code === "FUNCTIONAL_EPI_NOT_CONFIRMED"
-  );
+  return PURGE_ELIGIBLE_DICOM_ERROR_CODE_SET.has(code);
 }

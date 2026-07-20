@@ -1,0 +1,11 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://scalingneuro.com/schemas/device-policy-v1.schema.json",
+  "title": "Scaling Neuro device contribution-policy acceptance v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["accepted_consent_policy_version"],
+  "properties": {
+    "accepted_consent_policy_version": { "const": "open-mri-1.0.0" }
+  }
+}

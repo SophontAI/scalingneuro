@@ -1,5 +1,5 @@
 use std::{
-    collections::HashSet,
+    collections::{HashMap, HashSet},
     fs::{self, File, OpenOptions},
     io::{BufReader, Read, Write},
     path::{Path, PathBuf},
@@ -20,9 +20,9 @@ use crate::{
     MANIFEST_SCHEMA_VERSION,
     api::{
         AlreadyReceivedSeries, CompleteUploadRequest, CompletedObject, ContributionInfo,
-        CreateUploadResponse, IngestApi, MultipartObject, RegisterRequest, UploadStatus,
-        VerificationProgress, has_error_code, is_not_found_api_error, is_transient_api_error,
-        normalize_base_url,
+        CreateUploadResponse, IngestApi, MultipartObject, ProcessingProgress, RegisterRequest,
+        UploadStatus, VerificationProgress, has_error_code, is_not_found_api_error,
+        is_transient_api_error, normalize_base_url,
     },
     archive::{
         ArchiveRequest, DICOM_METADATA_POLICY_ID, DICOM_METADATA_POLICY_VERSION,
@@ -32,7 +32,7 @@ use crate::{
     classify::classify_header,
     config::{AppPaths, ClientConfig},
     dicom::{
-        Discovery, DiscoveryPhase, SeriesGroup, discover_with_progress,
+        Discovery, DiscoveryPhase, SeriesGroup, SourceSnapshot, discover_with_progress,
         snapshot_source_with_progress,
     },
     model::{
@@ -48,16 +48,101 @@ use crate::{
 };
 
 const MAX_LEGACY_BUNDLES_PER_UPLOAD: usize = 32;
-// Keep each raw-DICOM receipt completion comfortably below Cloudflare Free's
-// per-request internal/D1 subrequest ceiling. A multipart series may require a
-// pre-completion HEAD, multipart completion, and a post-completion HEAD.
-const MAX_DICOM_SERIES_PER_UPLOAD: usize = 8;
+// One archive per durable receipt keeps local staging bounded to one series and
+// gives every series its own idempotent cleanup checkpoint.
+const MAX_DICOM_SERIES_PER_UPLOAD: usize = 1;
 const MAX_LEGACY_BYTES_PER_UPLOAD: u64 = 32 * 1024 * 1024 * 1024;
 const MAX_DICOM_ARCHIVE_BYTES_PER_SERIES: u64 = 64 * 1024 * 1024 * 1024;
 const MAX_DICOM_BYTES_PER_RECEIPT: u64 = 250 * 1024 * 1024 * 1024;
 const SOURCE_QUIET_INTERVAL: Duration = Duration::from_secs(2);
 const ARCHIVE_VERIFICATION_POLL_INTERVAL: Duration = Duration::from_secs(5);
 const ARCHIVE_VERIFICATION_NOTICE_INTERVAL: Duration = Duration::from_secs(2 * 60);
+const STAGING_HEADROOM_BYTES: u64 = 64 * 1024 * 1024;
+
+#[derive(Debug)]
+struct StagingStorageExhausted {
+    state_root: PathBuf,
+    required: u64,
+    available: u64,
+}
+
+impl std::fmt::Display for StagingStorageExhausted {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            formatter,
+            "local staging storage is exhausted (requires at least {} bytes ({}), available {} bytes ({}) in {}); free space or rerun with --state-dir <large-scratch-directory> (or set NEURO_SYNC_STATE_DIR)",
+            self.required,
+            human_bytes(self.required),
+            self.available,
+            human_bytes(self.available),
+            self.state_root.display()
+        )
+    }
+}
+
+impl std::error::Error for StagingStorageExhausted {}
+
+#[derive(Debug)]
+struct UnreadableDicomLikeFiles {
+    count: u64,
+}
+
+impl std::fmt::Display for UnreadableDicomLikeFiles {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            formatter,
+            "found {} DICOM-like file{} that could not be parsed; nothing new was uploaded because the affected series could be incomplete. Re-export or repair those files, then rerun the same neuro-sync <folder> command",
+            self.count,
+            if self.count == 1 { "" } else { "s" }
+        )
+    }
+}
+
+impl std::error::Error for UnreadableDicomLikeFiles {}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum CompletedDicomRepair {
+    Committed {
+        chunk_index: u32,
+        upload_id: String,
+    },
+    Reconciled {
+        chunk_index: u32,
+        replacement_upload_id: String,
+    },
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum DicomReceiptPhase {
+    /// Upload every multipart byte and persist the exact completion body, but
+    /// do not ask the Worker to finalize R2, record a receipt, or queue work.
+    TransferOnly,
+    /// Finalize only an already-checkpointed transfer. This phase must never
+    /// allocate a replacement session or read source bytes after the folder's
+    /// final stability check.
+    CommitOnly,
+    /// Backward-compatible path for non-streaming checkpoints and focused
+    /// recovery calls that still perform both phases in one invocation.
+    TransferAndCommit,
+}
+
+impl CompletedDicomRepair {
+    fn chunk_index(&self) -> u32 {
+        match self {
+            Self::Committed { chunk_index, .. } | Self::Reconciled { chunk_index, .. } => {
+                *chunk_index
+            }
+        }
+    }
+}
+
+struct InspectedDicomSource {
+    started_at: String,
+    summary: SourceSummary,
+    unreadable_dicom_like_files: u64,
+    source_snapshot: SourceSnapshot,
+    series: Vec<(usize, SeriesGroup, Classification)>,
+}
 
 struct PrivacyPreparationProgress<'a> {
     state: &'a StateStore,
@@ -121,7 +206,26 @@ pub struct DicomProcessingStatus {
     pub processed_series: u64,
     pub failed_series: u64,
     pub purged_series: u64,
+    pub repairable_series: u64,
+    pub functional_epi_series: u64,
+    pub archive_only_series: u64,
+    pub archive_verified_series: u64,
     pub processing_total_series: u64,
+}
+
+impl DicomProcessingStatus {
+    fn add(&mut self, processing: &ProcessingProgress) {
+        self.queued_series += u64::from(processing.queued_series);
+        self.processing_series += u64::from(processing.processing_series);
+        self.processed_series += u64::from(processing.processed_series);
+        self.failed_series += u64::from(processing.failed_series);
+        self.purged_series += u64::from(processing.purged_series);
+        self.repairable_series += u64::from(processing.repairable_series);
+        self.functional_epi_series += u64::from(processing.functional_epi_series);
+        self.archive_only_series += u64::from(processing.archive_only_series);
+        self.archive_verified_series += u64::from(processing.archive_verified_series);
+        self.processing_total_series += u64::from(processing.total_series);
+    }
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -270,6 +374,37 @@ impl Runtime {
         Ok(config)
     }
 
+    pub async fn accept_contribution_policy(
+        &self,
+        config: &ClientConfig,
+        policy_version: &str,
+    ) -> Result<ClientConfig> {
+        if policy_version.trim().is_empty() || policy_version.len() > 64 {
+            bail!("contribution policy version is invalid");
+        }
+        let response = IngestApi::from_config(config)?
+            .accept_device_policy(policy_version)
+            .await?;
+        if response.status != "accepted"
+            || response.device_id.trim().is_empty()
+            || response.site_id != config.site_id
+            || response.project_id != config.project_id
+            || response.consent_policy_version != policy_version
+            || response.project_name.as_ref().is_some_and(|name| {
+                name.trim().is_empty() || name.len() > 160 || name.chars().any(char::is_control)
+            })
+        {
+            bail!("policy acceptance response did not match this registered workstation");
+        }
+        let mut updated = config.clone();
+        updated.consent_policy_version = response.consent_policy_version;
+        if let Some(project_name) = response.project_name {
+            updated.project_name = project_name;
+        }
+        updated.save(&self.paths)?;
+        Ok(updated)
+    }
+
     pub async fn sync_folder(&self, source: PathBuf, dry_run: bool) -> Result<String> {
         let canonical_source = source
             .canonicalize()
@@ -324,8 +459,90 @@ impl Runtime {
                             comparison.set(progress.files_seen)
                         })?;
                     comparison.finish_at(comparison.completed());
-                    let current = current_snapshot.fingerprint(&canonical_source)?;
+                    let current = fingerprint_source_with_progress(
+                        &current_snapshot,
+                        &canonical_source,
+                        "Verifying completed folder contents",
+                    )?;
+                    confirm_source_snapshot_stable(
+                        &current_snapshot,
+                        &canonical_source,
+                        "Confirming completed folder stability",
+                    )?;
                     if current == previous {
+                        let manifest = load_checkpoint_manifest(&completed)?;
+                        let repairable = self
+                            .repairable_completed_dicom_chunks(&completed.id, &manifest, &config)
+                            .await?;
+                        if !repairable.is_empty() {
+                            let report_path = completed
+                                .report_path
+                                .as_deref()
+                                .context("completed DICOM run has no local report")?;
+                            let mut report: RunReport =
+                                serde_json::from_slice(&fs::read(report_path)?)
+                                    .context("completed DICOM report is invalid")?;
+                            for repair in &repairable {
+                                match repair {
+                                    CompletedDicomRepair::Committed {
+                                        chunk_index,
+                                        upload_id,
+                                    } => self.state.reset_single_series_chunk_for_repair(
+                                        &completed.id,
+                                        *chunk_index,
+                                        upload_id,
+                                    )?,
+                                    CompletedDicomRepair::Reconciled {
+                                        chunk_index,
+                                        replacement_upload_id,
+                                    } => self.state.adopt_reconciled_repair_upload(
+                                        &completed.id,
+                                        *chunk_index,
+                                        replacement_upload_id,
+                                    )?,
+                                }
+                                let chunk_index = repair.chunk_index();
+                                let completion_path = self.paths.reports.join(format!(
+                                    "{}.chunk-{chunk_index}.complete-request.json",
+                                    completed.id
+                                ));
+                                if let Err(error) = fs::remove_file(&completion_path) {
+                                    if error.kind() != std::io::ErrorKind::NotFound {
+                                        return Err(error).with_context(|| {
+                                            format!(
+                                                "could not clear the released receipt checkpoint: {}",
+                                                completion_path.display()
+                                            )
+                                        });
+                                    }
+                                }
+                            }
+                            report.status = "upload_failed".into();
+                            report.completed_at = None;
+                            if !report
+                                .errors
+                                .iter()
+                                .any(|error| error == "server_integrity_repair_required")
+                            {
+                                report
+                                    .errors
+                                    .push("server_integrity_repair_required".into());
+                            }
+                            write_json(Path::new(report_path), &report)?;
+                            tracing::warn!(
+                                run_id = %completed.id,
+                                repairable_series = repairable.len(),
+                                "The server released a proven-corrupt stored series; regenerating and retransmitting only that deterministic archive"
+                            );
+                            self.process_streaming_dicom_run(
+                                &completed.id,
+                                canonical_source,
+                                config,
+                                Some((manifest, report)),
+                            )
+                            .await?;
+                            return Ok(completed.id);
+                        }
                         tracing::info!(
                             run_id = %completed.id,
                             files = current.file_count,
@@ -356,6 +573,116 @@ impl Runtime {
         Ok(run_id)
     }
 
+    async fn repairable_completed_dicom_chunks(
+        &self,
+        run_id: &str,
+        manifest: &LocalManifest,
+        config: &ClientConfig,
+    ) -> Result<Vec<CompletedDicomRepair>> {
+        if manifest.bundles.is_empty()
+            || !manifest
+                .bundles
+                .iter()
+                .all(ManifestBundle::is_dicom_archive)
+        {
+            return Ok(Vec::new());
+        }
+        let api = IngestApi::from_config(config)?;
+        let chunks = self.state.run_uploads(run_id)?;
+        let mut repairable = Vec::new();
+        for chunk in chunks
+            .iter()
+            .filter(|chunk| matches!(chunk.status.as_str(), "committed" | "reconciled"))
+        {
+            let end = chunk
+                .bundle_start
+                .checked_add(chunk.bundle_count)
+                .context("DICOM receipt bundle range overflow")?;
+            if end > manifest.bundles.len() {
+                bail!("DICOM receipt points outside its completed manifest");
+            }
+            if chunk.bundle_count != 1 {
+                bail!("completed DICOM repair check requires one-series receipt checkpoints");
+            }
+            let bundle = manifest
+                .bundles
+                .get(chunk.bundle_start)
+                .context("DICOM receipt points outside its completed manifest")?;
+            match chunk.status.as_str() {
+                "committed" => {
+                    let upload_id = chunk
+                        .worker_upload_id
+                        .as_deref()
+                        .context("committed DICOM receipt has no server upload identity")?;
+                    let remote = api.dicom_status(upload_id).await?;
+                    let released = remote
+                        .processing
+                        .as_ref()
+                        .map_or(0, |processing| processing.repairable_series);
+                    if released == 0 {
+                        continue;
+                    }
+                    if released != 1 {
+                        bail!(
+                            "server integrity repair did not identify exactly one local one-series receipt"
+                        );
+                    }
+                    repairable.push(CompletedDicomRepair::Committed {
+                        chunk_index: chunk.chunk_index,
+                        upload_id: upload_id.to_owned(),
+                    });
+                }
+                "reconciled" => {
+                    if chunk.worker_upload_id.is_some() {
+                        bail!("reconciled DICOM receipt retained a non-queryable upload identity");
+                    }
+                    // A reconciled receipt belongs to another workstation, so
+                    // this device cannot GET its status. Replaying the exact
+                    // deterministic descriptor is the authenticated health
+                    // check: healthy storage returns already_received, while a
+                    // proven-corrupt released reservation atomically allocates
+                    // this device a one-series replacement session.
+                    let created = api
+                        .create_dicom_upload(
+                            std::slice::from_ref(bundle),
+                            crate::CLIENT_VERSION,
+                            DICOM_METADATA_POLICY_ID,
+                            DICOM_METADATA_POLICY_VERSION,
+                        )
+                        .await?;
+                    match created.status.as_str() {
+                        "already_received" => {
+                            validate_dicom_reconciliation(
+                                std::slice::from_ref(bundle),
+                                &created.already_received_series,
+                                true,
+                            )?;
+                            if !created.object_prefix.is_empty()
+                                || !created.multipart_objects.is_empty()
+                            {
+                                bail!(
+                                    "DICOM ingest API allocated objects for an already-received series"
+                                );
+                            }
+                        }
+                        "created" | "uploading" => {
+                            validate_integrity_replacement_allocation(bundle, &created)?;
+                            repairable.push(CompletedDicomRepair::Reconciled {
+                                chunk_index: chunk.chunk_index,
+                                replacement_upload_id: created.upload_id,
+                            });
+                        }
+                        status => bail!(
+                            "DICOM integrity replacement entered an unsupported server state: {status}"
+                        ),
+                    }
+                }
+                _ => unreachable!("receipt status was filtered above"),
+            }
+        }
+        Ok(repairable)
+    }
+
     async fn continue_or_reprepare_folder_run(
         &self,
         run: RunRecord,
@@ -363,26 +690,41 @@ impl Runtime {
         config: ClientConfig,
     ) -> Result<String> {
         let manifest = load_checkpoint_manifest(&run)?;
+        validate_manifest_scope(&manifest, &config)?;
+        let policy_is_current = !manifest.consent_policy_version.is_empty()
+            && manifest.consent_policy_version == config.consent_policy_version;
+        if !manifest_uses_current_privacy_contract(&manifest) || !policy_is_current {
+            let run_id = Uuid::new_v4().to_string();
+            tracing::info!(
+                old_run_id = %run.id,
+                new_run_id = %run_id,
+                old_policy = %manifest.consent_policy_version,
+                new_policy = %config.consent_policy_version,
+                "The privacy or contribution policy contract changed; safely re-preparing the same folder"
+            );
+            self.state
+                .supersede_run_for_repreparation(&run.id, &run_id)?;
+            remove_bundle_cache(&self.paths, &run.id);
+            self.process_existing_run(&run_id, source, run.dry_run, config, None)
+                .await?;
+            return Ok(run_id);
+        }
         validate_manifest_context(&manifest, &config)?;
-        let expected_bundle_ids = manifest
-            .bundles
-            .iter()
-            .map(|bundle| bundle.bundle_id.clone())
-            .collect::<HashSet<_>>();
         let saved_fingerprint = self.state.source_fingerprint(&run.id)?;
-        let comparison_total = saved_fingerprint
-            .as_ref()
-            .map(|fingerprint| fingerprint.file_count)
-            .unwrap_or(run.summary.files_seen);
-        let mut comparison = Progress::bounded(
-            "Checking checkpointed source",
-            comparison_total,
-            ProgressUnit::Files,
-        );
+        let mut comparison = Progress::spinner("Checking checkpointed source", ProgressUnit::Files);
         let current_snapshot =
             snapshot_source_with_progress(&source, |progress| comparison.set(progress.files_seen))?;
-        comparison.finish_at(current_snapshot.fingerprint(&source)?.file_count);
-        let current_fingerprint = current_snapshot.fingerprint(&source)?;
+        comparison.finish_at(comparison.completed());
+        let current_fingerprint = fingerprint_source_with_progress(
+            &current_snapshot,
+            &source,
+            "Verifying checkpointed folder contents",
+        )?;
+        confirm_source_snapshot_stable(
+            &current_snapshot,
+            &source,
+            "Confirming checkpointed folder stability",
+        )?;
         let source_reason = match saved_fingerprint.as_ref() {
             None => Some("source_checkpoint_missing"),
             Some(saved) if saved != &current_fingerprint => Some("source_changed_since_checkpoint"),
@@ -403,56 +745,57 @@ impl Runtime {
             return Ok(run_id);
         }
 
-        if manifest_uses_current_privacy_contract(&manifest) {
-            if let Err(error) = verify_prepared_objects(&manifest).await {
-                let run_id = Uuid::new_v4().to_string();
-                tracing::warn!(
-                    old_run_id = %run.id,
-                    new_run_id = %run_id,
-                    error = %error,
-                    "A checkpointed archive failed its local hash check; safely rebuilding it before any upload"
-                );
-                self.state
-                    .supersede_run(&run.id, &run_id, "prepared_archive_integrity_failed")?;
-                remove_bundle_cache(&self.paths, &run.id);
-                self.process_existing_run(
-                    &run_id,
-                    source,
-                    run.dry_run,
-                    config,
-                    Some(expected_bundle_ids),
-                )
-                .await?;
-                return Ok(run_id);
-            }
+        if manifest.metadata_policy.policy_id == DICOM_METADATA_POLICY_ID {
+            let report_path = run
+                .report_path
+                .as_deref()
+                .context("checkpointed DICOM run has no local report")?;
+            let report: RunReport = serde_json::from_slice(&fs::read(report_path)?)
+                .context("checkpointed DICOM report is invalid")?;
             tracing::info!(
                 run_id = %run.id,
                 previous_status = %run.status,
-                "Found a source-matched, hash-verified checkpoint; continuing its transfer"
+                "Found a source-matched DICOM checkpoint; reconciling durable receipts and continuing one series at a time"
             );
-            self.continue_prepared_run_verified(&run, &manifest, &config)
+            self.process_streaming_dicom_run(&run.id, source, config, Some((manifest, report)))
                 .await?;
             return Ok(run.id);
         }
 
-        let run_id = Uuid::new_v4().to_string();
+        if let Err(error) = verify_prepared_objects(&manifest).await {
+            let expected_bundle_ids = manifest
+                .bundles
+                .iter()
+                .map(|bundle| bundle.bundle_id.clone())
+                .collect::<HashSet<_>>();
+            let run_id = Uuid::new_v4().to_string();
+            tracing::warn!(
+                old_run_id = %run.id,
+                new_run_id = %run_id,
+                error = %error,
+                "A checkpointed archive failed its local hash check; safely rebuilding it before any upload"
+            );
+            self.state
+                .supersede_run(&run.id, &run_id, "prepared_archive_integrity_failed")?;
+            remove_bundle_cache(&self.paths, &run.id);
+            self.process_existing_run(
+                &run_id,
+                source,
+                run.dry_run,
+                config,
+                Some(expected_bundle_ids),
+            )
+            .await?;
+            return Ok(run_id);
+        }
         tracing::info!(
-            old_run_id = %run.id,
-            new_run_id = %run_id,
-            "The privacy contract changed; safely re-preparing the same folder"
+            run_id = %run.id,
+            previous_status = %run.status,
+            "Found a source-matched, hash-verified checkpoint; continuing its transfer"
         );
-        self.state
-            .supersede_run_for_repreparation(&run.id, &run_id)?;
-        remove_bundle_cache(&self.paths, &run.id);
-        self.process_existing_run(
-            &run_id,
-            source,
-            run.dry_run,
-            config,
-            Some(expected_bundle_ids),
-        )
-        .await?;
-        Ok(run_id)
+        self.continue_prepared_run_verified(&run, &manifest, &config)
+            .await?;
+        Ok(run.id)
     }
 
     async fn process_existing_run(
@@ -463,6 +806,11 @@ impl Runtime {
         config: ClientConfig,
         expected_bundle_ids: Option<HashSet<String>>,
     ) -> Result<()> {
+        if !dry_run && expected_bundle_ids.is_none() {
+            return self
+                .process_streaming_dicom_run(run_id, source, config, None)
+                .await;
+        }
         let state = self.state.clone();
         let paths = self.paths.clone();
         let prepare_id = run_id.to_owned();
@@ -503,12 +851,9 @@ impl Runtime {
                     .run(run_id)?
                     .map(|run| run.summary)
                     .unwrap_or_default();
-                self.state.update_run(
-                    run_id,
-                    "failed",
-                    &summary,
-                    Some("local_preparation_failed"),
-                )?;
+                let code = preparation_failure_code(&error);
+                self.state
+                    .update_run(run_id, "failed", &summary, Some(code))?;
                 remove_bundle_cache(&self.paths, run_id);
                 return Err(error);
             }
@@ -591,6 +936,444 @@ impl Runtime {
             .update_run(run_id, "complete", &manifest.source_summary, None)?;
         remove_bundle_cache(&self.paths, run_id);
         Ok(())
+    }
+
+    async fn process_streaming_dicom_run(
+        &self,
+        run_id: &str,
+        source: PathBuf,
+        config: ClientConfig,
+        checkpoint: Option<(LocalManifest, RunReport)>,
+    ) -> Result<()> {
+        let resuming = checkpoint.is_some();
+        let state = self.state.clone();
+        let inspect_id = run_id.to_owned();
+        let inspect_source = source.clone();
+        let inspection = tokio::task::spawn_blocking(move || {
+            inspect_dicom_source(&state, &inspect_id, &inspect_source, !resuming)
+        })
+        .await
+        .context("local DICOM discovery task stopped unexpectedly")?;
+        let inspection = match inspection {
+            Ok(value) => value,
+            Err(error) => {
+                let summary = self
+                    .state
+                    .run(run_id)?
+                    .map(|run| run.summary)
+                    .unwrap_or_default();
+                let status = if resuming { "upload_failed" } else { "failed" };
+                let code = preparation_failure_code(&error);
+                self.state
+                    .update_run(run_id, status, &summary, Some(code))?;
+                return Err(error);
+            }
+        };
+
+        let pseudonymizer = Pseudonymizer::from_base64(&config.pseudonym_key_b64)?;
+        let (mut manifest, mut report) = match checkpoint {
+            Some((manifest, report)) => {
+                if report.run_id != run_id || manifest.run_id != run_id {
+                    bail!("checkpointed DICOM artifacts do not match the local run identity");
+                }
+                (manifest, report)
+            }
+            None => {
+                let artifacts =
+                    initial_dicom_artifacts(run_id, &config, &inspection, &pseudonymizer);
+                checkpoint_new_streaming_run(
+                    &self.paths,
+                    &self.state,
+                    run_id,
+                    &source,
+                    &inspection.source_snapshot,
+                    &artifacts.0,
+                    &artifacts.1,
+                )?;
+                artifacts
+            }
+        };
+
+        validate_manifest_enrollment(&manifest, &config)?;
+        cleanup_orphaned_bundle_archives(&self.paths, run_id, &manifest)?;
+        let expected_source_fingerprint = self
+            .state
+            .source_fingerprint(run_id)?
+            .context("streaming DICOM run has no checkpointed source identity")?;
+
+        let mut existing_by_series = HashMap::new();
+        for (index, bundle) in manifest.bundles.iter().enumerate() {
+            if existing_by_series
+                .insert(bundle.series_id.clone(), index)
+                .is_some()
+            {
+                bail!("checkpointed DICOM manifest repeats a series identity");
+            }
+        }
+        let accepted_series_ids = inspection
+            .series
+            .iter()
+            .filter(|(_, _, classification)| {
+                classification.decision == ClassificationDecision::Accepted
+            })
+            .map(|(_, group, _)| pseudonymizer.id("series", &group.series_uid))
+            .collect::<HashSet<_>>();
+        if manifest.source_summary.accepted != manifest.bundles.len() as u64
+            || existing_by_series
+                .keys()
+                .any(|series_id| !accepted_series_ids.contains(series_id))
+        {
+            mark_streaming_failure(
+                &self.paths,
+                &self.state,
+                run_id,
+                &mut report,
+                &manifest,
+                "checkpoint_classification_mismatch",
+            )?;
+            bail!("checkpointed DICOM series no longer match the current classifier contract");
+        }
+
+        let api = IngestApi::from_config(&config)?;
+        // Releases before bounded staging could checkpoint several series in
+        // one server-bound receipt. Never rechunk those rows. Upload and
+        // checkpoint every remaining archive first, then use the same final
+        // folder-stability gate as current one-series runs before committing
+        // any new receipt.
+        let legacy_receipt_layout = self
+            .state
+            .run_uploads(run_id)?
+            .iter()
+            .any(|chunk| chunk.bundle_count != 1);
+        if legacy_receipt_layout {
+            tracing::info!(
+                "Checkpointing a legacy multi-series transfer before the final source-stability gate"
+            );
+            for chunk in self.state.run_uploads(run_id)? {
+                let end = chunk.bundle_start + chunk.bundle_count;
+                let bundles = manifest
+                    .bundles
+                    .get(chunk.bundle_start..end)
+                    .context("legacy DICOM upload chunk points outside its manifest")?;
+                if !matches!(chunk.status.as_str(), "committed" | "reconciled") {
+                    verify_prepared_objects_for_bundles(bundles).await?;
+                    if let Err(error) = self
+                        .checkpoint_dicom_upload_chunk(
+                            run_id,
+                            &chunk,
+                            bundles,
+                            &manifest.client_version,
+                            &api,
+                        )
+                        .await
+                    {
+                        mark_streaming_failure(
+                            &self.paths,
+                            &self.state,
+                            run_id,
+                            &mut report,
+                            &manifest,
+                            "upload_failed",
+                        )?;
+                        return Err(error);
+                    }
+                }
+                for bundle in bundles {
+                    cleanup_prepared_bundle(&self.paths, run_id, bundle)?;
+                }
+            }
+        }
+
+        if !legacy_receipt_layout {
+            let held_ids = report
+                .held_series
+                .iter()
+                .map(|held| held.series_id.clone())
+                .collect::<HashSet<_>>();
+            let accepted_total = accepted_series_ids.len();
+            let mut accepted_position = 0_usize;
+
+            for (source_index, group, classification) in inspection.series {
+                if classification.decision != ClassificationDecision::Accepted {
+                    continue;
+                }
+                accepted_position += 1;
+                let series_id = pseudonymizer.id("series", &group.series_uid);
+                if held_ids.contains(&series_id) && !existing_by_series.contains_key(&series_id) {
+                    continue;
+                }
+
+                if let Some(&bundle_index) = existing_by_series.get(&series_id) {
+                    let mut chunk = self
+                        .state
+                        .ensure_single_series_upload(run_id, bundle_index)?;
+                    let existing = manifest.bundles[bundle_index].clone();
+                    if matches!(chunk.status.as_str(), "committed" | "reconciled") {
+                        cleanup_prepared_bundle(&self.paths, run_id, &existing)?;
+                        continue;
+                    }
+
+                    match prepared_bundle_state(&existing).await? {
+                        PreparedBundleState::Valid => {}
+                        PreparedBundleState::Missing => {
+                            // The server may already have the bytes (for example,
+                            // after a crash between receipt and local cleanup).
+                            match self
+                                .checkpoint_dicom_upload_chunk(
+                                    run_id,
+                                    &chunk,
+                                    std::slice::from_ref(&existing),
+                                    &manifest.client_version,
+                                    &api,
+                                )
+                                .await
+                            {
+                                Ok(()) => {
+                                    cleanup_prepared_bundle(&self.paths, run_id, &existing)?;
+                                    continue;
+                                }
+                                Err(error)
+                                    if error_has_io_kind(&error, std::io::ErrorKind::NotFound) =>
+                                {
+                                    chunk = self
+                                        .state
+                                        .ensure_single_series_upload(run_id, bundle_index)?;
+                                }
+                                Err(error) => {
+                                    mark_streaming_failure(
+                                        &self.paths,
+                                        &self.state,
+                                        run_id,
+                                        &mut report,
+                                        &manifest,
+                                        "upload_failed",
+                                    )?;
+                                    return Err(error);
+                                }
+                            }
+                        }
+                        PreparedBundleState::Invalid => {
+                            cleanup_prepared_bundle(&self.paths, run_id, &existing)?;
+                        }
+                    }
+
+                    if !prepared_archive_path(&existing).is_file() {
+                        let regenerated = match prepare_one_dicom_series(
+                            &self.paths,
+                            run_id,
+                            &group,
+                            classification.clone(),
+                            &pseudonymizer,
+                            accepted_position,
+                            accepted_total,
+                        )
+                        .await
+                        {
+                            Ok(bundle) => bundle,
+                            Err(error) => {
+                                let code = preparation_failure_code(&error);
+                                mark_streaming_failure(
+                                    &self.paths,
+                                    &self.state,
+                                    run_id,
+                                    &mut report,
+                                    &manifest,
+                                    code,
+                                )?;
+                                return Err(error);
+                            }
+                        };
+                        if !same_prepared_bundle(&existing, &regenerated)? {
+                            cleanup_prepared_bundle(&self.paths, run_id, &regenerated)?;
+                            mark_streaming_failure(
+                                &self.paths,
+                                &self.state,
+                                run_id,
+                                &mut report,
+                                &manifest,
+                                "regenerated_archive_identity_mismatch",
+                            )?;
+                            bail!(
+                                "recreated DICOM archive identity does not match its upload checkpoint"
+                            );
+                        }
+                        manifest.bundles[bundle_index] = regenerated;
+                        checkpoint_streaming_artifacts(
+                            &self.paths,
+                            &self.state,
+                            run_id,
+                            &mut manifest,
+                            &mut report,
+                        )?;
+                    }
+
+                    if let Err(error) = self
+                        .checkpoint_dicom_upload_chunk(
+                            run_id,
+                            &chunk,
+                            std::slice::from_ref(&manifest.bundles[bundle_index]),
+                            &manifest.client_version,
+                            &api,
+                        )
+                        .await
+                    {
+                        mark_streaming_failure(
+                            &self.paths,
+                            &self.state,
+                            run_id,
+                            &mut report,
+                            &manifest,
+                            "upload_failed",
+                        )?;
+                        return Err(error);
+                    }
+                    cleanup_prepared_bundle(&self.paths, run_id, &manifest.bundles[bundle_index])?;
+                    continue;
+                }
+
+                let bundle = match prepare_one_dicom_series(
+                    &self.paths,
+                    run_id,
+                    &group,
+                    classification,
+                    &pseudonymizer,
+                    accepted_position,
+                    accepted_total,
+                )
+                .await
+                {
+                    Ok(bundle) if bundle.total_size() <= MAX_DICOM_ARCHIVE_BYTES_PER_SERIES => {
+                        bundle
+                    }
+                    Ok(bundle) => {
+                        cleanup_prepared_bundle(&self.paths, run_id, &bundle)?;
+                        manifest.source_summary.held += 1;
+                        report.held_series.push(held(
+                            &pseudonymizer,
+                            &group,
+                            source_index,
+                            &coded_hold("bundle_exceeds_upload_limit", "privacy_processor"),
+                        ));
+                        checkpoint_streaming_artifacts(
+                            &self.paths,
+                            &self.state,
+                            run_id,
+                            &mut manifest,
+                            &mut report,
+                        )?;
+                        continue;
+                    }
+                    Err(error) if deterministic_series_hold_code(&error).is_some() => {
+                        let code = deterministic_series_hold_code(&error)
+                            .expect("guarded deterministic preparation error");
+                        tracing::warn!(
+                            series = accepted_position,
+                            total_series = accepted_total,
+                            error = %error,
+                            "MR DICOM series was held by the local privacy processor"
+                        );
+                        manifest.source_summary.held += 1;
+                        report.held_series.push(held(
+                            &pseudonymizer,
+                            &group,
+                            source_index,
+                            &coded_hold(code, "privacy_processor"),
+                        ));
+                        checkpoint_streaming_artifacts(
+                            &self.paths,
+                            &self.state,
+                            run_id,
+                            &mut manifest,
+                            &mut report,
+                        )?;
+                        continue;
+                    }
+                    Err(error) => {
+                        let code = preparation_failure_code(&error);
+                        mark_streaming_failure(
+                            &self.paths,
+                            &self.state,
+                            run_id,
+                            &mut report,
+                            &manifest,
+                            code,
+                        )?;
+                        return Err(error);
+                    }
+                };
+
+                manifest.source_summary.accepted += 1;
+                manifest.bundles.push(bundle);
+                let bundle_index = manifest.bundles.len() - 1;
+                existing_by_series.insert(series_id, bundle_index);
+                checkpoint_streaming_artifacts(
+                    &self.paths,
+                    &self.state,
+                    run_id,
+                    &mut manifest,
+                    &mut report,
+                )?;
+                let chunk = self
+                    .state
+                    .ensure_single_series_upload(run_id, bundle_index)?;
+                if let Err(error) = self
+                    .checkpoint_dicom_upload_chunk(
+                        run_id,
+                        &chunk,
+                        std::slice::from_ref(&manifest.bundles[bundle_index]),
+                        &manifest.client_version,
+                        &api,
+                    )
+                    .await
+                {
+                    mark_streaming_failure(
+                        &self.paths,
+                        &self.state,
+                        run_id,
+                        &mut report,
+                        &manifest,
+                        "upload_failed",
+                    )?;
+                    return Err(error);
+                }
+                cleanup_prepared_bundle(&self.paths, run_id, &manifest.bundles[bundle_index])?;
+            }
+        }
+
+        std::thread::sleep(SOURCE_QUIET_INTERVAL);
+        if let Err(error) = confirm_final_streaming_source_identity(
+            &inspection.source_snapshot,
+            &expected_source_fingerprint,
+            &source,
+            inspection.summary.files_seen,
+        ) {
+            mark_streaming_failure(
+                &self.paths,
+                &self.state,
+                run_id,
+                &mut report,
+                &manifest,
+                "source_changed_during_sync",
+            )?;
+            return Err(error);
+        }
+
+        if let Err(error) = self
+            .commit_checkpointed_dicom_receipts(run_id, &manifest, &api)
+            .await
+        {
+            mark_streaming_failure(
+                &self.paths,
+                &self.state,
+                run_id,
+                &mut report,
+                &manifest,
+                "upload_failed",
+            )?;
+            return Err(error);
+        }
+
+        finalize_streaming_run(&self.paths, &self.state, run_id, &mut report, &manifest)
     }
 
     async fn continue_upload_verified(
@@ -709,6 +1492,76 @@ impl Runtime {
         Ok(())
     }
 
+    async fn checkpoint_dicom_upload_chunk(
+        &self,
+        run_id: &str,
+        chunk: &crate::state::RunUploadRecord,
+        bundles: &[ManifestBundle],
+        preparation_client_version: &str,
+        api: &IngestApi,
+    ) -> Result<()> {
+        self.drive_dicom_upload_chunk(
+            run_id,
+            chunk,
+            bundles,
+            preparation_client_version,
+            api,
+            DicomReceiptPhase::TransferOnly,
+        )
+        .await
+    }
+
+    async fn commit_dicom_upload_chunk(
+        &self,
+        run_id: &str,
+        chunk: &crate::state::RunUploadRecord,
+        bundles: &[ManifestBundle],
+        preparation_client_version: &str,
+        api: &IngestApi,
+    ) -> Result<()> {
+        self.drive_dicom_upload_chunk(
+            run_id,
+            chunk,
+            bundles,
+            preparation_client_version,
+            api,
+            DicomReceiptPhase::CommitOnly,
+        )
+        .await
+    }
+
+    async fn commit_checkpointed_dicom_receipts(
+        &self,
+        run_id: &str,
+        manifest: &LocalManifest,
+        api: &IngestApi,
+    ) -> Result<()> {
+        for chunk in self.state.run_uploads(run_id)? {
+            if matches!(chunk.status.as_str(), "committed" | "reconciled") {
+                continue;
+            }
+            let end = chunk
+                .bundle_start
+                .checked_add(chunk.bundle_count)
+                .context("DICOM receipt bundle range overflow")?;
+            let bundles = manifest
+                .bundles
+                .get(chunk.bundle_start..end)
+                .context("DICOM receipt points outside its manifest")?;
+            self.commit_dicom_upload_chunk(run_id, &chunk, bundles, &manifest.client_version, api)
+                .await?;
+        }
+        if self
+            .state
+            .run_uploads(run_id)?
+            .iter()
+            .any(|chunk| !matches!(chunk.status.as_str(), "committed" | "reconciled"))
+        {
+            bail!("not every DICOM series archive has a durable receipt");
+        }
+        Ok(())
+    }
+
     async fn continue_dicom_upload_chunk(
         &self,
         run_id: &str,
@@ -716,6 +1569,26 @@ impl Runtime {
         bundles: &[ManifestBundle],
         preparation_client_version: &str,
         api: &IngestApi,
+    ) -> Result<()> {
+        self.drive_dicom_upload_chunk(
+            run_id,
+            chunk,
+            bundles,
+            preparation_client_version,
+            api,
+            DicomReceiptPhase::TransferAndCommit,
+        )
+        .await
+    }
+
+    async fn drive_dicom_upload_chunk(
+        &self,
+        run_id: &str,
+        chunk: &crate::state::RunUploadRecord,
+        bundles: &[ManifestBundle],
+        preparation_client_version: &str,
+        api: &IngestApi,
+        phase: DicomReceiptPhase,
     ) -> Result<()> {
         if bundles.is_empty() || bundles.iter().any(|bundle| !bundle.is_dicom_archive()) {
             bail!("DICOM receipt chunk contains an invalid series archive");
@@ -740,9 +1613,27 @@ impl Runtime {
                     record_dicom_receipt(&self.state, run_id, chunk.chunk_index, bundles, &status)?;
                     return Ok(());
                 }
-                Ok(status) if matches!(status.status.as_str(), "created" | "uploading") => {
+                Ok(status)
+                    if matches!(
+                        status.status.as_str(),
+                        "created" | "uploading" | "checkpointed"
+                    ) =>
+                {
                     let saved: CompleteUploadRequest =
                         serde_json::from_slice(&fs::read(&completion_path)?)?;
+                    if phase == DicomReceiptPhase::TransferOnly {
+                        let checkpoint = api
+                            .checkpoint_dicom_upload(upload_id, saved.objects)
+                            .await?;
+                        require_dicom_transfer_checkpoint(&checkpoint, bundles.len())?;
+                        self.state
+                            .set_chunk_status(run_id, chunk.chunk_index, "uploaded")?;
+                        tracing::info!(
+                            series = bundles.len(),
+                            "Series bytes are uploaded and checkpointed; durable receipt is deferred until the folder is stable"
+                        );
+                        return Ok(());
+                    }
                     let mut receipt = Progress::bounded(
                         "Confirming receipt and queueing",
                         bundles.len() as u64,
@@ -760,6 +1651,11 @@ impl Runtime {
                     return Ok(());
                 }
                 Ok(status) if status.status == "expired" => {
+                    if phase == DicomReceiptPhase::CommitOnly {
+                        bail!(
+                            "checkpointed DICOM upload expired before the folder-level receipt gate; rerun the same neuro-sync <folder> command to resume safely"
+                        );
+                    }
                     fs::remove_file(&completion_path)?;
                 }
                 Ok(status) if status.status == "withdrawn" => {
@@ -772,6 +1668,19 @@ impl Runtime {
                 Err(error) if is_transient_api_error(&error) => {
                     let saved: CompleteUploadRequest =
                         serde_json::from_slice(&fs::read(&completion_path)?)?;
+                    if phase == DicomReceiptPhase::TransferOnly {
+                        let checkpoint = api
+                            .checkpoint_dicom_upload(upload_id, saved.objects)
+                            .await?;
+                        require_dicom_transfer_checkpoint(&checkpoint, bundles.len())?;
+                        self.state
+                            .set_chunk_status(run_id, chunk.chunk_index, "uploaded")?;
+                        tracing::info!(
+                            series = bundles.len(),
+                            "Series bytes remain checkpointed while receipt status is temporarily unavailable"
+                        );
+                        return Ok(());
+                    }
                     let status = api.complete_dicom_upload(upload_id, saved.objects).await?;
                     if !dicom_receipt_complete(&status.status) {
                         bail!("DICOM receipt API did not commit the transferred archives");
@@ -781,6 +1690,19 @@ impl Runtime {
                 }
                 Err(error) => return Err(error),
             }
+        }
+
+        if phase == DicomReceiptPhase::CommitOnly {
+            if let Some(upload_id) = chunk.worker_upload_id.as_deref() {
+                let status = api.dicom_status(upload_id).await?;
+                if dicom_receipt_complete(&status.status) {
+                    record_dicom_receipt(&self.state, run_id, chunk.chunk_index, bundles, &status)?;
+                    return Ok(());
+                }
+            }
+            bail!(
+                "DICOM series has no completed transfer checkpoint after the folder-level stability gate; rerun the same neuro-sync <folder> command"
+            );
         }
 
         let (upload_id, object_prefix, descriptors, already_received, committed) =
@@ -904,6 +1826,21 @@ impl Runtime {
         let completed = uploader.upload_all(&objects, &descriptors).await?;
         let request = CompleteUploadRequest { objects: completed };
         write_json(&completion_path, &request)?;
+        if phase == DicomReceiptPhase::TransferOnly {
+            let checkpoint = api
+                .checkpoint_dicom_upload(&upload_id, request.objects)
+                .await?;
+            require_dicom_transfer_checkpoint(&checkpoint, bundles.len())?;
+            self.state
+                .set_chunk_status(run_id, chunk.chunk_index, "uploaded")?;
+            tracing::info!(
+                series = bundles.len(),
+                "Series archive is durably checkpointed in object storage; its scientific receipt is deferred until the folder is stable"
+            );
+            return Ok(());
+        }
+        self.state
+            .set_chunk_status(run_id, chunk.chunk_index, "uploaded")?;
         let mut receipt = Progress::bounded(
             "Confirming receipt and queueing",
             bundles.len() as u64,
@@ -1258,12 +2195,7 @@ impl Runtime {
                 Ok(remote) => {
                     summary.queryable_receipts += 1;
                     if let Some(processing) = remote.processing {
-                        summary.queued_series += u64::from(processing.queued_series);
-                        summary.processing_series += u64::from(processing.processing_series);
-                        summary.processed_series += u64::from(processing.processed_series);
-                        summary.failed_series += u64::from(processing.failed_series);
-                        summary.purged_series += u64::from(processing.purged_series);
-                        summary.processing_total_series += u64::from(processing.total_series);
+                        summary.add(&processing);
                     }
                 }
                 Err(error) if is_not_found_api_error(&error) => {
@@ -1275,7 +2207,9 @@ impl Runtime {
                 Err(error) => return Err(error),
             }
         }
-        summary.status = if summary.purged_series > 0 {
+        summary.status = if summary.repairable_series > 0 {
+            "repair_required".into()
+        } else if summary.purged_series > 0 {
             "purged_or_partially_purged".into()
         } else if summary.failed_series > 0 {
             "failed".into()
@@ -1644,6 +2578,8 @@ fn manifest_uses_current_privacy_contract(manifest: &LocalManifest) -> bool {
     }
     if manifest.metadata_policy.policy_id == DICOM_METADATA_POLICY_ID {
         return manifest.schema_version == MANIFEST_SCHEMA_VERSION
+            && manifest.classifier_contract_version == crate::DICOM_CLASSIFIER_CONTRACT_VERSION
+            && manifest.archive_contract_version == crate::DICOM_ARCHIVE_CONTRACT_VERSION
             && manifest.metadata_policy.policy_version == DICOM_METADATA_POLICY_VERSION
             && manifest.bundles.iter().all(|bundle| {
                 let Some(archive) = bundle.archive.as_ref() else {
@@ -1653,8 +2589,19 @@ fn manifest_uses_current_privacy_contract(manifest: &LocalManifest) -> bool {
                     && archive.format == crate::archive::DICOM_ARCHIVE_FORMAT
                     && archive.deidentification_profile == DICOM_METADATA_POLICY_ID
                     && archive.deidentification_profile_version == DICOM_METADATA_POLICY_VERSION
+                    && matches!(
+                        bundle.processing_route.as_str(),
+                        crate::archive::FUNCTIONAL_EPI_PROCESSING_ROUTE
+                            | crate::archive::ARCHIVE_VERIFY_PROCESSING_ROUTE
+                    )
+                    && crate::archive::supported_series_kind(&bundle.series_kind)
+                    && bundle.processing_route
+                        == crate::archive::processing_route_for_kind(&bundle.series_kind)
+                    && bundle.classification.decision == ClassificationDecision::Accepted
+                    && bundle.classification.kind == bundle.series_kind
+                    && bundle.pixel_data_policy
+                        == crate::archive::SCANNER_NATIVE_NOT_DEFACED_PIXEL_POLICY
                     && archive.dicom_instance_count == bundle.source_dicom_count
-                    && Path::new(&archive.object.local_path).is_file()
             });
     }
     if manifest.metadata_policy.policy_id != METADATA_POLICY_ID
@@ -1702,13 +2649,18 @@ fn privacy_client_version_supported(value: &str) -> bool {
 }
 
 fn validate_manifest_context(manifest: &LocalManifest, config: &ClientConfig) -> Result<()> {
-    if manifest.site_id != config.site_id || manifest.project_id != config.project_id {
-        bail!("prepared run belongs to a different enrolled site or project");
-    }
+    validate_manifest_scope(manifest, config)?;
     if manifest.consent_policy_version.is_empty()
         || manifest.consent_policy_version != config.consent_policy_version
     {
         bail!("prepared run requires approval under the current contribution policy");
+    }
+    Ok(())
+}
+
+fn validate_manifest_scope(manifest: &LocalManifest, config: &ClientConfig) -> Result<()> {
+    if manifest.site_id != config.site_id || manifest.project_id != config.project_id {
+        bail!("prepared run belongs to a different enrolled site or project");
     }
     Ok(())
 }
@@ -1731,12 +2683,10 @@ fn completed_run_matches_config(run: &RunRecord, config: &ClientConfig) -> bool 
 }
 
 fn completed_result_uses_current_classifier(run: &RunRecord) -> bool {
-    if run.status == "complete" {
-        return true;
-    }
     load_checkpoint_manifest(run).is_ok_and(|manifest| {
-        manifest.client_version == crate::CLIENT_VERSION
-            && manifest.schema_version == MANIFEST_SCHEMA_VERSION
+        manifest.schema_version == MANIFEST_SCHEMA_VERSION
+            && manifest.classifier_contract_version == crate::DICOM_CLASSIFIER_CONTRACT_VERSION
+            && manifest.archive_contract_version == crate::DICOM_ARCHIVE_CONTRACT_VERSION
             && manifest.metadata_policy.policy_id == DICOM_METADATA_POLICY_ID
             && manifest.metadata_policy.policy_version == DICOM_METADATA_POLICY_VERSION
     })
@@ -1953,6 +2903,670 @@ fn validate_existing_bundles(
     Ok(ids)
 }
 
+fn inspect_dicom_source(
+    state: &StateStore,
+    run_id: &str,
+    source: &Path,
+    update_preparation_status: bool,
+) -> Result<InspectedDicomSource> {
+    let started_at = Utc::now().to_rfc3339();
+    if update_preparation_status {
+        state.update_run(run_id, "discovering", &SourceSummary::default(), None)?;
+    }
+    let mut discovery_phase = DiscoveryPhase::Inventory;
+    let mut discovery_progress =
+        Progress::spinner("Inventorying source files", ProgressUnit::Files);
+    let discovery = discover_with_progress(source, |progress| {
+        if progress.phase != discovery_phase {
+            let total = progress
+                .total_files
+                .expect("header discovery always reports its inventory total");
+            discovery_progress.finish_at(total);
+            discovery_progress =
+                Progress::bounded("Reading DICOM headers", total, ProgressUnit::Files);
+            discovery_phase = progress.phase;
+        }
+        discovery_progress.set(progress.files_seen);
+    })?;
+    discovery_progress.finish();
+    tracing::info!(
+        files_checked = discovery.summary.files_seen,
+        dicom_files = discovery.summary.dicom_files,
+        series = discovery.summary.series_found,
+        "DICOM discovery complete"
+    );
+    if update_preparation_status {
+        state.update_run(run_id, "preparing", &discovery.summary, None)?;
+    }
+    std::thread::sleep(SOURCE_QUIET_INTERVAL);
+    let mut stability_progress = Progress::bounded(
+        "Confirming source stability",
+        discovery.summary.files_seen,
+        ProgressUnit::Files,
+    );
+    let quiet_snapshot = snapshot_source_with_progress(source, |progress| {
+        stability_progress.set(progress.files_seen);
+    })?;
+    stability_progress.finish();
+    if !discovery.source_snapshot.is_stable_with(&quiet_snapshot) {
+        bail!(
+            "the selected DICOM folder is still changing; wait for the scanner export to finish, then rerun the same neuro-sync <folder> command"
+        );
+    }
+    ensure_no_unreadable_dicom_like_files(discovery.unreadable_dicom_like_files)?;
+    let classifications = discovery
+        .series
+        .iter()
+        .map(classify_header)
+        .collect::<Vec<_>>();
+    let series = discovery
+        .series
+        .into_iter()
+        .zip(classifications)
+        .enumerate()
+        .map(|(index, (group, classification))| (index, group, classification))
+        .collect();
+    Ok(InspectedDicomSource {
+        started_at,
+        summary: discovery.summary,
+        unreadable_dicom_like_files: discovery.unreadable_dicom_like_files,
+        source_snapshot: quiet_snapshot,
+        series,
+    })
+}
+
+fn initial_dicom_artifacts(
+    run_id: &str,
+    config: &ClientConfig,
+    inspection: &InspectedDicomSource,
+    pseudonymizer: &Pseudonymizer,
+) -> (LocalManifest, RunReport) {
+    let mut summary = inspection.summary.clone();
+    summary.accepted = 0;
+    summary.held = 0;
+    summary.excluded = 0;
+    let mut held_series = Vec::new();
+    for (index, group, classification) in &inspection.series {
+        match classification.decision {
+            ClassificationDecision::Accepted => {}
+            ClassificationDecision::Held => {
+                summary.held += 1;
+                held_series.push(held(pseudonymizer, group, *index, classification));
+            }
+            ClassificationDecision::Excluded => summary.excluded += 1,
+        }
+    }
+    let manifest = LocalManifest {
+        schema_version: MANIFEST_SCHEMA_VERSION.into(),
+        run_id: run_id.into(),
+        site_id: config.site_id.clone(),
+        project_id: config.project_id.clone(),
+        consent_policy_version: config.consent_policy_version.clone(),
+        client_version: crate::CLIENT_VERSION.into(),
+        classifier_contract_version: crate::DICOM_CLASSIFIER_CONTRACT_VERSION.into(),
+        archive_contract_version: crate::DICOM_ARCHIVE_CONTRACT_VERSION.into(),
+        metadata_policy: metadata_policy(),
+        created_at: Utc::now().to_rfc3339(),
+        source_summary: summary.clone(),
+        bundles: Vec::new(),
+    };
+    let errors = (inspection.unreadable_dicom_like_files > 0)
+        .then(|| "unreadable_dicom_like_files".to_owned())
+        .into_iter()
+        .collect();
+    let report = RunReport {
+        run_id: run_id.into(),
+        status: "prepared".into(),
+        site_id: config.site_id.clone(),
+        project_id: config.project_id.clone(),
+        project_name: config.project_name.clone(),
+        consent_policy_version: config.consent_policy_version.clone(),
+        client_version: crate::CLIENT_VERSION.into(),
+        started_at: inspection.started_at.clone(),
+        completed_at: None,
+        source_summary: summary,
+        bundles: Vec::new(),
+        held_series,
+        errors,
+        worker_upload_id: None,
+        worker_upload_ids: Vec::new(),
+        existing_bundles: Vec::new(),
+        archive_commit_count: 0,
+    };
+    (manifest, report)
+}
+
+fn checkpoint_new_streaming_run(
+    paths: &AppPaths,
+    state: &StateStore,
+    run_id: &str,
+    source: &Path,
+    source_snapshot: &SourceSnapshot,
+    manifest: &LocalManifest,
+    report: &RunReport,
+) -> Result<()> {
+    let manifest_path = paths.reports.join(format!("{run_id}.manifest.json"));
+    let report_path = paths.reports.join(format!("{run_id}.json"));
+    write_json(&manifest_path, manifest)?;
+    write_json(&report_path, report)?;
+    state.set_artifacts(run_id, &manifest_path, &report_path)?;
+    let fingerprint = fingerprint_source_with_progress(
+        source_snapshot,
+        source,
+        "Fingerprinting source contents",
+    )?;
+    state.set_source_fingerprint(run_id, &fingerprint)?;
+    state.update_run(run_id, "prepared", &manifest.source_summary, None)
+}
+
+fn fingerprint_source_with_progress(
+    snapshot: &SourceSnapshot,
+    source: &Path,
+    label: &str,
+) -> Result<crate::dicom::SourceFingerprint> {
+    let mut progress = Progress::bounded(label, snapshot.total_bytes()?, ProgressUnit::Bytes);
+    let fingerprint = snapshot.fingerprint_with_progress(source, |bytes| progress.set(bytes))?;
+    progress.finish();
+    Ok(fingerprint)
+}
+
+fn confirm_source_snapshot_stable(
+    snapshot: &SourceSnapshot,
+    source: &Path,
+    label: &str,
+) -> Result<()> {
+    let mut progress = Progress::spinner(label, ProgressUnit::Files);
+    let confirmed =
+        snapshot_source_with_progress(source, |update| progress.set(update.files_seen))?;
+    progress.finish_at(progress.completed());
+    if !snapshot.is_stable_with(&confirmed) {
+        bail!(
+            "the selected DICOM folder changed while its content identity was being checked; wait for the export to finish, then rerun the same neuro-sync <folder> command"
+        );
+    }
+    Ok(())
+}
+
+fn confirm_final_streaming_source_identity(
+    initial_snapshot: &SourceSnapshot,
+    expected_fingerprint: &crate::dicom::SourceFingerprint,
+    source: &Path,
+    expected_files_seen: u64,
+) -> Result<()> {
+    let mut snapshot_progress = Progress::bounded(
+        "Final source stability check",
+        expected_files_seen,
+        ProgressUnit::Files,
+    );
+    let final_snapshot = snapshot_source_with_progress(source, |progress| {
+        snapshot_progress.set(progress.files_seen)
+    })?;
+    snapshot_progress.finish();
+    if !initial_snapshot.is_stable_with(&final_snapshot) {
+        bail!(
+            "the selected DICOM folder changed during sync; no new durable receipts were committed. Rerun the same neuro-sync <folder> command after the export is complete"
+        );
+    }
+
+    let final_fingerprint = fingerprint_source_with_progress(
+        &final_snapshot,
+        source,
+        "Confirming final folder content identity",
+    )?;
+    if &final_fingerprint != expected_fingerprint {
+        bail!(
+            "the selected DICOM folder contents changed during sync; no new durable receipts were committed. Rerun the same neuro-sync <folder> command after the export is complete"
+        );
+    }
+    confirm_source_snapshot_stable(
+        &final_snapshot,
+        source,
+        "Confirming final folder snapshot",
+    )
+    .map_err(|_| {
+        anyhow::anyhow!(
+            "the selected DICOM folder changed during its final identity check; no new durable receipts were committed. Rerun the same neuro-sync <folder> command after the export is complete"
+        )
+    })
+}
+
+fn checkpoint_streaming_artifacts(
+    paths: &AppPaths,
+    state: &StateStore,
+    run_id: &str,
+    manifest: &mut LocalManifest,
+    report: &mut RunReport,
+) -> Result<()> {
+    report.source_summary = manifest.source_summary.clone();
+    report.bundles = manifest.bundles.iter().map(ReportBundle::from).collect();
+    write_json(
+        &paths.reports.join(format!("{run_id}.manifest.json")),
+        manifest,
+    )?;
+    write_json(&paths.reports.join(format!("{run_id}.json")), report)?;
+    state.update_run_summary(run_id, &manifest.source_summary)
+}
+
+fn mark_streaming_failure(
+    paths: &AppPaths,
+    state: &StateStore,
+    run_id: &str,
+    report: &mut RunReport,
+    manifest: &LocalManifest,
+    code: &str,
+) -> Result<()> {
+    report.status = "upload_failed".into();
+    report.completed_at = None;
+    report.source_summary = manifest.source_summary.clone();
+    report.bundles = manifest.bundles.iter().map(ReportBundle::from).collect();
+    if !report.errors.iter().any(|error| error == code) {
+        report.errors.push(code.into());
+    }
+    write_json(&paths.reports.join(format!("{run_id}.json")), report)?;
+    state.update_run(
+        run_id,
+        "upload_failed",
+        &manifest.source_summary,
+        Some(code),
+    )
+}
+
+fn finalize_streaming_run(
+    paths: &AppPaths,
+    state: &StateStore,
+    run_id: &str,
+    report: &mut RunReport,
+    manifest: &LocalManifest,
+) -> Result<()> {
+    let chunks = state.run_uploads(run_id)?;
+    if chunks
+        .iter()
+        .any(|chunk| !matches!(chunk.status.as_str(), "committed" | "reconciled"))
+    {
+        bail!("not every DICOM series archive has a durable receipt");
+    }
+    let status = if manifest.bundles.is_empty() {
+        "complete_no_eligible_series"
+    } else {
+        "complete"
+    };
+    report.status = status.into();
+    report.completed_at = Some(Utc::now().to_rfc3339());
+    report.source_summary = manifest.source_summary.clone();
+    report.bundles = manifest.bundles.iter().map(ReportBundle::from).collect();
+    report.worker_upload_ids = chunks
+        .iter()
+        .filter(|chunk| chunk.status == "committed")
+        .filter_map(|chunk| chunk.worker_upload_id.clone())
+        .collect();
+    report.worker_upload_id = report.worker_upload_ids.first().cloned();
+    report.existing_bundles = state.existing_bundles(run_id)?;
+    report.archive_commit_count = chunks
+        .iter()
+        .filter(|chunk| chunk.status == "committed" && chunk.worker_upload_id.is_some())
+        .count() as u64;
+    write_json(&paths.reports.join(format!("{run_id}.json")), report)?;
+    state.update_run(run_id, status, &manifest.source_summary, None)?;
+    remove_bundle_cache(paths, run_id);
+    Ok(())
+}
+
+async fn prepare_one_dicom_series(
+    paths: &AppPaths,
+    run_id: &str,
+    group: &SeriesGroup,
+    classification: Classification,
+    pseudonymizer: &Pseudonymizer,
+    position: usize,
+    total: usize,
+) -> Result<ManifestBundle> {
+    let paths = paths.clone();
+    let run_id = run_id.to_owned();
+    let group = group.clone();
+    let pseudonymizer = pseudonymizer.clone();
+    tokio::task::spawn_blocking(move || {
+        let bundle_root = paths.bundles.join(&run_id);
+        fs::create_dir_all(&bundle_root)?;
+        let staging_required = ensure_series_staging_capacity(&paths, &group)?;
+        let source_bytes = group.files.iter().try_fold(0_u64, |total, path| {
+            Ok::<_, std::io::Error>(total.saturating_add(fs::metadata(path)?.len()))
+        })?;
+        let mut progress = Progress::bounded(
+            format!("Preparing MR DICOM series {position}/{total}"),
+            source_bytes,
+            ProgressUnit::Bytes,
+        );
+        let result = create_dicom_archive(ArchiveRequest {
+            group: &group,
+            classification,
+            pseudonymizer: &pseudonymizer,
+            bundle_root: &bundle_root,
+            progress: |bytes| progress.inc(bytes),
+        });
+        progress.finish_at(progress.completed());
+        match result {
+            Err(error) if is_storage_exhaustion(&error) => {
+                let available = fs2::available_space(&paths.root).unwrap_or(0);
+                Err(StagingStorageExhausted {
+                    state_root: paths.root,
+                    required: staging_required,
+                    available,
+                }
+                .into())
+            }
+            other => other,
+        }
+    })
+    .await
+    .context("DICOM archive preparation task stopped unexpectedly")?
+}
+
+fn ensure_series_staging_capacity(paths: &AppPaths, group: &SeriesGroup) -> Result<u64> {
+    let sizes = group
+        .files
+        .iter()
+        .map(|path| fs::metadata(path).map(|metadata| metadata.len()))
+        .collect::<std::io::Result<Vec<_>>>()?;
+    let required = required_series_staging_bytes(sizes)?;
+    let available = fs2::available_space(&paths.root)?;
+    validate_staging_capacity(&paths.root, required, available)?;
+    Ok(required)
+}
+
+fn required_series_staging_bytes(sizes: impl IntoIterator<Item = u64>) -> Result<u64> {
+    let (source_bytes, largest_instance) =
+        sizes
+            .into_iter()
+            .try_fold((0_u64, 0_u64), |(total, largest), size| {
+                Ok::<_, anyhow::Error>((
+                    total
+                        .checked_add(size)
+                        .context("DICOM series byte total overflow")?,
+                    largest.max(size),
+                ))
+            })?;
+    // The writer may simultaneously hold the compressed archive-so-far, one
+    // immutable staged source instance, and that instance's sanitized output.
+    // The source total conservatively bounds the archive payload; two largest-
+    // instance allowances cover both current-instance copies.
+    source_bytes
+        .checked_add(largest_instance)
+        .and_then(|value| value.checked_add(largest_instance))
+        .and_then(|value| value.checked_add(STAGING_HEADROOM_BYTES))
+        .context("DICOM staging-space requirement overflow")
+}
+
+fn validate_staging_capacity(state_root: &Path, required: u64, available: u64) -> Result<()> {
+    if available < required {
+        return Err(StagingStorageExhausted {
+            state_root: state_root.to_path_buf(),
+            required,
+            available,
+        }
+        .into());
+    }
+    Ok(())
+}
+
+fn is_storage_exhaustion(error: &anyhow::Error) -> bool {
+    error.chain().any(|cause| {
+        cause
+            .downcast_ref::<std::io::Error>()
+            .and_then(std::io::Error::raw_os_error)
+            .is_some_and(|code| matches!(code, 28 | 69 | 112 | 122))
+    })
+}
+
+fn error_has_io_kind(error: &anyhow::Error, kind: std::io::ErrorKind) -> bool {
+    error.chain().any(|cause| {
+        cause
+            .downcast_ref::<std::io::Error>()
+            .is_some_and(|error| error.kind() == kind)
+    })
+}
+
+fn error_contains_io(error: &anyhow::Error) -> bool {
+    error
+        .chain()
+        .any(|cause| cause.downcast_ref::<std::io::Error>().is_some())
+}
+
+fn preparation_failure_code(error: &anyhow::Error) -> &'static str {
+    if error.downcast_ref::<UnreadableDicomLikeFiles>().is_some() {
+        "unreadable_dicom_like_files"
+    } else if error.downcast_ref::<StagingStorageExhausted>().is_some()
+        || is_storage_exhaustion(error)
+    {
+        "staging_storage_exhausted"
+    } else if error_contains_io(error) {
+        "local_preparation_io_failed"
+    } else {
+        "local_preparation_failed"
+    }
+}
+
+fn ensure_no_unreadable_dicom_like_files(count: u64) -> Result<()> {
+    if count > 0 {
+        return Err(UnreadableDicomLikeFiles { count }.into());
+    }
+    Ok(())
+}
+
+fn deterministic_series_hold_code(error: &anyhow::Error) -> Option<&'static str> {
+    let message = error.to_string();
+    match message.as_str() {
+        "dicom_instance_exceeds_64_gib" => Some("dicom_instance_exceeds_64_gib"),
+        "series_exceeds_64_gib_uncompressed_dicom_limit" => {
+            Some("series_exceeds_64_gib_uncompressed_dicom_limit")
+        }
+        "dicom_archive_expansion_ratio_exceeded" => Some("dicom_archive_expansion_ratio_exceeded"),
+        "DICOM contains overlay or graphic data and was held locally" => {
+            Some("dicom_overlay_or_graphics_present")
+        }
+        "DICOM declared possible burned-in annotation"
+        | "MR DICOM series declared possible burned-in annotation" => {
+            Some("possible_burned_in_annotation")
+        }
+        "deflated DICOM transfer syntax is not supported by the bounded privacy writer" => {
+            Some("unsupported_deflated_transfer_syntax")
+        }
+        "DICOM transfer syntax is not supported for bounded pixel copying" => {
+            Some("unsupported_transfer_syntax")
+        }
+        "DICOM file meta length overflow" => Some("dicom_file_meta_invalid"),
+        "DICOM contained an unsupported semantic UID constant" => {
+            Some("dicom_semantic_uid_unsupported")
+        }
+        "DICOM sequence nesting exceeds the privacy processor limit"
+        | "sanitized DICOM exceeded sequence-depth policy" => Some("dicom_sequence_depth_limit"),
+        "DICOM contains more than 100000 aggregate sequence items"
+        | "sanitized DICOM contains more than 100000 aggregate sequence items" => {
+            Some("dicom_sequence_item_limit")
+        }
+        "DICOM has no readable PixelData element" => Some("dicom_pixel_data_unreadable"),
+        "DICOM pixel module is missing or inconsistent with its MR SOP Class" => {
+            Some("dicom_pixel_module_invalid")
+        }
+        "DICOM RealWorldValueMapping is not supported by the privacy writer" => {
+            Some("dicom_real_world_value_mapping_unsupported")
+        }
+        "DICOM contains an unsupported pixel transform" => {
+            Some("dicom_pixel_transform_unsupported")
+        }
+        "DICOM contains an incomplete or invalid rescale transform"
+        | "DICOM contains an invalid PixelValueTransformationSequence"
+        | "DICOM contains an unsupported PixelValueTransformationSequence item"
+        | "DICOM contains an incomplete PixelValueTransformationSequence"
+        | "DICOM contains an incomplete or invalid window transform" => {
+            Some("dicom_pixel_transform_invalid")
+        }
+        "DICOM Extended Offset Table failed structural validation" => {
+            Some("dicom_extended_offset_table_invalid")
+        }
+        "DICOM ImageType failed positional validation" => Some("dicom_image_type_invalid"),
+        "DICOM contains an invalid UID" => Some("dicom_invalid_uid"),
+        "DICOM contains ASL conditional metadata outside its required macro"
+        | "DICOM contains an invalid ASL Context Sequence"
+        | "DICOM ASL Context omitted a valid crusher flag"
+        | "DICOM ASL Context omitted a valid bolus cut-off flag"
+        | "DICOM contains an incomplete or invalid ASL crusher group"
+        | "DICOM ASL crusher children contradict a NO flag"
+        | "DICOM contains an incomplete ASL bolus cut-off group"
+        | "DICOM ASL bolus cut-off sequence must contain exactly one item"
+        | "DICOM contains an incomplete or invalid ASL bolus cut-off item"
+        | "DICOM ASL bolus cut-off sequence contradicts a NO flag" => {
+            Some("asl_scientific_metadata_incomplete")
+        }
+        _ if message.starts_with("sanitized DICOM omitted required Type 1 attribute")
+            || message.starts_with("sanitized DICOM has an invalid required Type 1 attribute")
+            || message.starts_with("sanitized DICOM omitted required Type 2 attribute")
+            || message.starts_with("sanitized DICOM has an invalid required Type 2 attribute")
+            || message.starts_with("sanitized classic MR omitted required Type 1")
+            || message.starts_with("sanitized Enhanced MR omitted required Type 1")
+            || message.starts_with("sanitized DICOM has an unsupported MR SOP Class UID")
+            || message
+                .starts_with("sanitized DICOM violates the supported MR identity contract")
+            || message.starts_with("sanitized DICOM has a non-pseudonymous required UID")
+            || message.starts_with("sanitized DICOM omitted required Frame of Reference UID")
+            || message.starts_with("sanitized DICOM has an invalid Frame of Reference UID")
+            || message.starts_with(
+                "sanitized Enhanced MR retained a non-pseudonymous device serial number",
+            )
+            || message.starts_with(
+                "sanitized DICOM retained a non-empty privacy-sensitive Type 2 attribute",
+            )
+            || message.starts_with("sanitized DICOM retained unsafe Manufacturer text")
+            || message.starts_with("sanitized DICOM retained an invalid Type 2 attribute") =>
+        {
+            Some("dicom_iod_contract_invalid")
+        }
+        _ => None,
+    }
+}
+
+enum PreparedBundleState {
+    Valid,
+    Missing,
+    Invalid,
+}
+
+async fn prepared_bundle_state(bundle: &ManifestBundle) -> Result<PreparedBundleState> {
+    let objects = bundle
+        .upload_objects()
+        .into_iter()
+        .cloned()
+        .collect::<Vec<_>>();
+    if objects.len() != 1 {
+        bail!("DICOM checkpoint does not contain exactly one archive object");
+    }
+    let path = Path::new(&objects[0].local_path);
+    match fs::metadata(path) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(PreparedBundleState::Missing);
+        }
+        Err(error) => return Err(error.into()),
+        Ok(metadata) if !metadata.is_file() => return Ok(PreparedBundleState::Invalid),
+        Ok(_) => {}
+    }
+    match tokio::task::spawn_blocking(move || verify_prepared_object_files(&objects)).await {
+        Err(error) => Err(error).context("prepared archive verification task stopped unexpectedly"),
+        Ok(Ok(())) => Ok(PreparedBundleState::Valid),
+        Ok(Err(error)) if error_has_io_kind(&error, std::io::ErrorKind::NotFound) => {
+            Ok(PreparedBundleState::Missing)
+        }
+        Ok(Err(error)) if error_contains_io(&error) => Err(error),
+        Ok(Err(_)) => Ok(PreparedBundleState::Invalid),
+    }
+}
+
+async fn verify_prepared_objects_for_bundles(bundles: &[ManifestBundle]) -> Result<()> {
+    let objects = bundles
+        .iter()
+        .flat_map(ManifestBundle::upload_objects)
+        .cloned()
+        .collect::<Vec<_>>();
+    tokio::task::spawn_blocking(move || verify_prepared_object_files(&objects))
+        .await
+        .context("prepared archive verification task stopped unexpectedly")?
+}
+
+fn same_prepared_bundle(left: &ManifestBundle, right: &ManifestBundle) -> Result<bool> {
+    Ok(serde_json::to_value(left)? == serde_json::to_value(right)?)
+}
+
+fn prepared_archive_path(bundle: &ManifestBundle) -> PathBuf {
+    bundle
+        .archive
+        .as_ref()
+        .map(|archive| PathBuf::from(&archive.object.local_path))
+        .unwrap_or_default()
+}
+
+fn cleanup_prepared_bundle(paths: &AppPaths, run_id: &str, bundle: &ManifestBundle) -> Result<()> {
+    let archive = bundle
+        .archive
+        .as_ref()
+        .context("DICOM bundle has no prepared archive")?;
+    let expected_directory = paths.bundles.join(run_id).join(&bundle.bundle_id);
+    let expected_archive = expected_directory.join("dicom.tar.zst");
+    if Path::new(&archive.object.local_path) != expected_archive {
+        bail!("refused to clean a prepared archive outside its run staging directory");
+    }
+    match fs::remove_dir_all(&expected_directory) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error).with_context(|| {
+            format!(
+                "durable receipt was recorded, but local staging cleanup failed at {}",
+                expected_directory.display()
+            )
+        }),
+    }
+}
+
+fn cleanup_orphaned_bundle_archives(
+    paths: &AppPaths,
+    run_id: &str,
+    manifest: &LocalManifest,
+) -> Result<()> {
+    let root = paths.bundles.join(run_id);
+    fs::create_dir_all(&root)?;
+    let referenced = manifest
+        .bundles
+        .iter()
+        .map(|bundle| bundle.bundle_id.as_str())
+        .collect::<HashSet<_>>();
+    for entry in fs::read_dir(&root)? {
+        let entry = entry?;
+        let name = entry.file_name();
+        let retained = name.to_str().is_some_and(|name| referenced.contains(name));
+        if retained {
+            continue;
+        }
+        if entry.file_type()?.is_dir() {
+            fs::remove_dir_all(entry.path())?;
+        } else {
+            fs::remove_file(entry.path())?;
+        }
+    }
+    Ok(())
+}
+
+fn human_bytes(bytes: u64) -> String {
+    const UNITS: [&str; 5] = ["B", "KiB", "MiB", "GiB", "TiB"];
+    let mut value = bytes as f64;
+    let mut unit = 0_usize;
+    while value >= 1024.0 && unit + 1 < UNITS.len() {
+        value /= 1024.0;
+        unit += 1;
+    }
+    if unit == 0 {
+        format!("{bytes} {}", UNITS[unit])
+    } else {
+        format!("{value:.1} {}", UNITS[unit])
+    }
+}
+
 fn prepare_run(
     paths: &AppPaths,
     state: &StateStore,
@@ -2010,12 +3624,12 @@ fn prepare_run(
         );
     }
     let source_snapshot = quiet_snapshot;
-    if discovery.unreadable_dicom_like_files > 0 {
-        tracing::warn!(
-            unreadable_files = discovery.unreadable_dicom_like_files,
-            "Unreadable DICOM-like files will stay local; independent readable series can continue"
-        );
-    }
+    ensure_no_unreadable_dicom_like_files(discovery.unreadable_dicom_like_files)?;
+    let source_fingerprint = fingerprint_source_with_progress(
+        &source_snapshot,
+        source,
+        "Fingerprinting source contents",
+    )?;
     let bundle_root = paths.bundles.join(run_id);
     fs::create_dir_all(&bundle_root)?;
     let mut bundles = Vec::new();
@@ -2036,16 +3650,13 @@ fn prepare_run(
         .series
         .iter()
         .zip(&classifications)
-        .filter(|(_, classification)| {
-            classification.decision == ClassificationDecision::Accepted
-                && classification.kind == "functional_epi_candidate"
-        })
+        .filter(|(_, classification)| classification.decision == ClassificationDecision::Accepted)
         .flat_map(|(group, _)| &group.files)
         .try_fold(0_u64, |total, path| {
             Ok::<_, anyhow::Error>(total.saturating_add(fs::metadata(path)?.len()))
         })?;
     let mut archive_progress = Progress::bounded(
-        "Preparing privacy-cleared EPI archives",
+        "Preparing privacy-cleared MR DICOM archives",
         preparation_bytes,
         ProgressUnit::Bytes,
     );
@@ -2065,17 +3676,8 @@ fn prepare_run(
             }
             ClassificationDecision::Accepted => {}
         }
-        if initial.kind != "functional_epi_candidate" {
-            let classification = coded_hold(
-                "insufficient_functional_epi_header_evidence",
-                "dicom_header",
-            );
-            summary.held += 1;
-            held_series.push(held(&pseudonymizer, group, index, &classification));
-            local_progress.checkpoint(&summary, index + 1)?;
-            continue;
-        }
         let before = archive_progress.completed();
+        let staging_required = ensure_series_staging_capacity(paths, group)?;
         match create_dicom_archive(ArchiveRequest {
             group,
             classification: initial,
@@ -2104,22 +3706,32 @@ fn prepare_run(
                 let classification = coded_hold("bundle_exceeds_upload_limit", "privacy_processor");
                 held_series.push(held(&pseudonymizer, group, index, &classification));
             }
+            Err(error) if is_storage_exhaustion(&error) => {
+                return Err(StagingStorageExhausted {
+                    state_root: paths.root.clone(),
+                    required: staging_required,
+                    available: fs2::available_space(&paths.root).unwrap_or(0),
+                }
+                .into());
+            }
+            Err(error) if error_contains_io(&error) => return Err(error),
             Err(error) => {
                 tracing::warn!(
                     series = index + 1,
                     total_series = series_total,
                     error = %error,
-                    "Functional series was held by the local privacy processor"
+                    "MR DICOM series was held by the local privacy processor"
                 );
                 summary.held += 1;
                 let preparation_code = match error.to_string().as_str() {
-                    "dicom_instance_exceeds_256_mib" => "dicom_instance_exceeds_256_mib",
+                    "dicom_instance_exceeds_64_gib" => "dicom_instance_exceeds_64_gib",
                     "series_exceeds_64_gib_uncompressed_dicom_limit" => {
                         "series_exceeds_64_gib_uncompressed_dicom_limit"
                     }
                     "dicom_archive_expansion_ratio_exceeded" => {
                         "dicom_archive_expansion_ratio_exceeded"
                     }
+                    "DICOM ImageType failed positional validation" => "dicom_image_type_invalid",
                     _ => "dicom_privacy_preparation_failed",
                 };
                 let classification = coded_hold(preparation_code, "privacy_processor");
@@ -2152,7 +3764,7 @@ fn prepare_run(
             &pseudonymizer,
         );
     }
-    state.set_source_fingerprint(run_id, &final_snapshot.fingerprint(source)?)?;
+    state.set_source_fingerprint(run_id, &source_fingerprint)?;
     tracing::info!(
         accepted = summary.accepted,
         held = summary.held,
@@ -2178,6 +3790,8 @@ fn prepare_run(
         project_id: config.project_id.clone(),
         consent_policy_version: config.consent_policy_version.clone(),
         client_version: crate::CLIENT_VERSION.into(),
+        classifier_contract_version: crate::DICOM_CLASSIFIER_CONTRACT_VERSION.into(),
+        archive_contract_version: crate::DICOM_ARCHIVE_CONTRACT_VERSION.into(),
         metadata_policy: metadata_policy(),
         created_at: Utc::now().to_rfc3339(),
         source_summary: summary.clone(),
@@ -2192,6 +3806,7 @@ fn prepare_run(
         project_id: config.project_id.clone(),
         project_name: config.project_name.clone(),
         consent_policy_version: config.consent_policy_version.clone(),
+        client_version: crate::CLIENT_VERSION.into(),
         started_at,
         completed_at: None,
         source_summary: summary.clone(),
@@ -2237,6 +3852,8 @@ fn finish_unstable_preparation(
         project_id: config.project_id.clone(),
         consent_policy_version: config.consent_policy_version.clone(),
         client_version: crate::CLIENT_VERSION.into(),
+        classifier_contract_version: crate::DICOM_CLASSIFIER_CONTRACT_VERSION.into(),
+        archive_contract_version: crate::DICOM_ARCHIVE_CONTRACT_VERSION.into(),
         metadata_policy: metadata_policy(),
         created_at: Utc::now().to_rfc3339(),
         source_summary: summary.clone(),
@@ -2249,6 +3866,7 @@ fn finish_unstable_preparation(
         project_id: config.project_id.clone(),
         project_name: config.project_name.clone(),
         consent_policy_version: config.consent_policy_version.clone(),
+        client_version: crate::CLIENT_VERSION.into(),
         started_at,
         completed_at: None,
         source_summary: summary.clone(),
@@ -2445,6 +4063,20 @@ fn dicom_receipt_complete(status: &str) -> bool {
     matches!(status, "committed" | "already_received")
 }
 
+fn require_dicom_transfer_checkpoint(status: &UploadStatus, series_count: usize) -> Result<()> {
+    if dicom_receipt_complete(&status.status) {
+        return Ok(());
+    }
+    let received = status
+        .receipt
+        .as_ref()
+        .map_or(0, |receipt| receipt.received_series as usize);
+    if status.status != "checkpointed" || received != series_count {
+        bail!("DICOM checkpoint API did not durably receive every transferred series archive");
+    }
+    Ok(())
+}
+
 fn record_dicom_receipt(
     state: &StateStore,
     run_id: &str,
@@ -2489,6 +4121,39 @@ fn validate_dicom_reconciliation(
         bail!("DICOM ingest API returned an incomplete already-received series receipt");
     }
     Ok(reconciled)
+}
+
+fn validate_integrity_replacement_allocation(
+    bundle: &ManifestBundle,
+    response: &CreateUploadResponse,
+) -> Result<()> {
+    if response.upload_id.is_empty()
+        || response.upload_id.len() > 128
+        || response
+            .upload_id
+            .chars()
+            .any(|character| character.is_control() || character.is_whitespace())
+        || !response.already_received_series.is_empty()
+        || !response.object_prefix.ends_with('/')
+        || response.multipart_objects.len() != 1
+    {
+        bail!("DICOM ingest API returned an invalid integrity replacement allocation");
+    }
+    let archive = bundle
+        .archive
+        .as_ref()
+        .context("integrity replacement bundle has no DICOM archive")?;
+    let descriptor = &response.multipart_objects[0];
+    let expected_key = format!("{}{}", response.object_prefix, archive.object.relative_key);
+    if descriptor.kind.as_deref() != Some("dicom_archive")
+        || descriptor.series_archive_id.as_deref() != Some(bundle.bundle_id.as_str())
+        || descriptor.key != expected_key
+        || descriptor.upload_id.is_empty()
+        || descriptor.part_size == 0
+    {
+        bail!("DICOM ingest API integrity replacement plan does not match the released series");
+    }
+    Ok(())
 }
 
 fn held(
@@ -2626,6 +4291,9 @@ mod tests {
             subject_id: "3".repeat(24),
             session_id: "4".repeat(24),
             protocol_group_id: "5".repeat(24),
+            series_kind: "functional_epi".into(),
+            processing_route: String::new(),
+            pixel_data_policy: String::new(),
             nifti: Some(crate::model::ManifestObject {
                 relative_key: format!("{bundle_id}/scan_bold.nii.gz"),
                 local_path: format!("/private/{bundle_id}/scan_bold.nii.gz"),
@@ -2664,6 +4332,9 @@ mod tests {
             subject_id: "3".repeat(24),
             session_id: "4".repeat(24),
             protocol_group_id: "5".repeat(24),
+            series_kind: "functional_epi".into(),
+            processing_route: crate::archive::FUNCTIONAL_EPI_PROCESSING_ROUTE.into(),
+            pixel_data_policy: crate::archive::SCANNER_NATIVE_NOT_DEFACED_PIXEL_POLICY.into(),
             nifti: None,
             metadata: None,
             archive: Some(crate::model::ManifestArchiveObject {
@@ -2707,14 +4378,298 @@ mod tests {
     }
 
     #[test]
+    fn mixed_route_processing_counters_aggregate_across_receipts() {
+        let mut summary = DicomProcessingStatus::default();
+        for processing in [
+            ProcessingProgress {
+                status: "processing".into(),
+                queued_series: 0,
+                processing_series: 1,
+                processed_series: 1,
+                failed_series: 0,
+                purged_series: 0,
+                repairable_series: 1,
+                functional_epi_series: 1,
+                archive_only_series: 1,
+                archive_verified_series: 1,
+                total_series: 2,
+                updated_at: "2026-07-19T00:00:00Z".into(),
+            },
+            ProcessingProgress {
+                status: "processed".into(),
+                queued_series: 0,
+                processing_series: 0,
+                processed_series: 2,
+                failed_series: 0,
+                purged_series: 2,
+                repairable_series: 0,
+                functional_epi_series: 0,
+                archive_only_series: 2,
+                archive_verified_series: 2,
+                total_series: 2,
+                updated_at: "2026-07-19T00:01:00Z".into(),
+            },
+        ] {
+            summary.add(&processing);
+        }
+        assert_eq!(summary.functional_epi_series, 1);
+        assert_eq!(summary.archive_only_series, 3);
+        assert_eq!(summary.archive_verified_series, 3);
+        assert_eq!(summary.processed_series, 3);
+        assert_eq!(summary.purged_series, 2);
+        assert_eq!(summary.repairable_series, 1);
+        assert_eq!(summary.processing_total_series, 4);
+        let json = serde_json::to_value(summary).unwrap();
+        assert_eq!(json["functional_epi_series"], 1);
+        assert_eq!(json["archive_only_series"], 3);
+        assert_eq!(json["archive_verified_series"], 3);
+    }
+
+    #[tokio::test]
+    async fn completed_dicom_receipts_reopen_only_the_remote_repairable_series() {
+        use axum::{Json, Router, extract::Path as AxumPath, routing::get};
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let status_requests = Arc::new(AtomicUsize::new(0));
+        let requests_for_handler = Arc::clone(&status_requests);
+        let repairable_upload = "11111111-1111-4111-8111-111111111111";
+        let terminal_upload = "22222222-2222-4222-8222-222222222222";
+        let app = Router::new().route(
+            "/v1/dicom-uploads/{upload_id}",
+            get(move |AxumPath(upload_id): AxumPath<String>| {
+                requests_for_handler.fetch_add(1, Ordering::SeqCst);
+                async move {
+                    let repairable = u32::from(upload_id == repairable_upload);
+                    Json(serde_json::json!({
+                        "upload_id": upload_id,
+                        "status": "committed",
+                        "processing": {
+                            "status": "failed",
+                            "queued_series": 0,
+                            "processing_series": 0,
+                            "processed_series": 0,
+                            "failed_series": 1,
+                            "purged_series": 1,
+                            "repairable_series": repairable,
+                            "functional_epi_series": 1,
+                            "archive_only_series": 0,
+                            "archive_verified_series": 0,
+                            "total_series": 1,
+                            "updated_at": "2026-07-19T00:00:00Z"
+                        }
+                    }))
+                }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+
+        let state_root = tempfile::tempdir().unwrap();
+        let runtime = Runtime::initialize(Some(state_root.path())).unwrap();
+        runtime
+            .state
+            .create_run("completed-repair", Path::new("/private/source"), false)
+            .unwrap();
+        for (index, upload_id) in [repairable_upload, terminal_upload].iter().enumerate() {
+            runtime
+                .state
+                .ensure_single_series_upload("completed-repair", index)
+                .unwrap();
+            runtime
+                .state
+                .set_chunk_worker("completed-repair", index as u32, upload_id)
+                .unwrap();
+            runtime
+                .state
+                .set_chunk_status("completed-repair", index as u32, "committed")
+                .unwrap();
+        }
+        let mut config = sync_test_config();
+        config.api_url = format!("http://{address}");
+        let manifest = LocalManifest {
+            schema_version: MANIFEST_SCHEMA_VERSION.into(),
+            run_id: "completed-repair".into(),
+            site_id: config.site_id.clone(),
+            project_id: config.project_id.clone(),
+            consent_policy_version: config.consent_policy_version.clone(),
+            client_version: crate::CLIENT_VERSION.into(),
+            classifier_contract_version: crate::DICOM_CLASSIFIER_CONTRACT_VERSION.into(),
+            archive_contract_version: crate::DICOM_ARCHIVE_CONTRACT_VERSION.into(),
+            metadata_policy: crate::archive::metadata_policy(),
+            created_at: "2026-07-19T00:00:00Z".into(),
+            source_summary: SourceSummary {
+                accepted: 2,
+                ..Default::default()
+            },
+            bundles: vec![
+                dicom_upload_test_bundle('1', '3'),
+                dicom_upload_test_bundle('2', '4'),
+            ],
+        };
+
+        let repairs = runtime
+            .repairable_completed_dicom_chunks("completed-repair", &manifest, &config)
+            .await
+            .unwrap();
+        assert_eq!(status_requests.load(Ordering::SeqCst), 2);
+        assert_eq!(
+            repairs,
+            vec![CompletedDicomRepair::Committed {
+                chunk_index: 0,
+                upload_id: repairable_upload.into(),
+            }]
+        );
+        let CompletedDicomRepair::Committed {
+            chunk_index,
+            upload_id,
+        } = &repairs[0]
+        else {
+            panic!("expected committed repair")
+        };
+        runtime
+            .state
+            .reset_single_series_chunk_for_repair("completed-repair", *chunk_index, upload_id)
+            .unwrap();
+        let chunks = runtime.state.run_uploads("completed-repair").unwrap();
+        assert_eq!(chunks[0].status, "pending");
+        assert!(chunks[0].worker_upload_id.is_none());
+        assert_eq!(chunks[1].status, "committed");
+        assert_eq!(chunks[1].worker_upload_id.as_deref(), Some(terminal_upload));
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn reconciled_receipts_replay_exact_identity_and_adopt_only_a_released_replacement() {
+        use axum::{Json, Router, routing::post};
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let healthy = dicom_upload_test_bundle('1', '3');
+        let released = dicom_upload_test_bundle('2', '4');
+        let healthy_id = healthy.bundle_id.clone();
+        let released_id = released.bundle_id.clone();
+        let released_relative_key = released
+            .archive
+            .as_ref()
+            .unwrap()
+            .object
+            .relative_key
+            .clone();
+        let replacement_upload = "33333333-3333-4333-8333-333333333333".to_owned();
+        let replacement_for_handler = replacement_upload.clone();
+        let requests = Arc::new(AtomicUsize::new(0));
+        let requests_for_handler = Arc::clone(&requests);
+        let app = Router::new().route(
+            "/v1/dicom-uploads",
+            post(move |Json(request): Json<serde_json::Value>| {
+                requests_for_handler.fetch_add(1, Ordering::SeqCst);
+                let healthy_id = healthy_id.clone();
+                let released_id = released_id.clone();
+                let released_relative_key = released_relative_key.clone();
+                let replacement_upload = replacement_for_handler.clone();
+                async move {
+                    let requested_id = request["series"][0]["series_archive_id"].as_str().unwrap();
+                    if requested_id == healthy_id {
+                        Json(serde_json::json!({
+                            "upload_id": "receipt-owned-by-other-device",
+                            "status": "already_received",
+                            "already_received_series": [{
+                                "series_archive_id": healthy_id,
+                                "receipt_upload_id": "receipt-owned-by-other-device"
+                            }]
+                        }))
+                    } else {
+                        assert_eq!(requested_id, released_id);
+                        let prefix = format!("dicom/v1/site/project/{replacement_upload}/");
+                        Json(serde_json::json!({
+                            "upload_id": replacement_upload,
+                            "status": "uploading",
+                            "object_prefix": prefix,
+                            "multipart_objects": [{
+                                "kind": "dicom_archive",
+                                "series_archive_id": released_id,
+                                "key": format!("{prefix}{released_relative_key}"),
+                                "upload_id": "r2-multipart-id",
+                                "part_size": 67_108_864
+                            }]
+                        }))
+                    }
+                }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+
+        let state_root = tempfile::tempdir().unwrap();
+        let runtime = Runtime::initialize(Some(state_root.path())).unwrap();
+        runtime
+            .state
+            .create_run("reconciled-repair", Path::new("/private/source"), false)
+            .unwrap();
+        for index in 0..2 {
+            runtime
+                .state
+                .ensure_single_series_upload("reconciled-repair", index)
+                .unwrap();
+            runtime
+                .state
+                .set_chunk_reconciled("reconciled-repair", index as u32)
+                .unwrap();
+        }
+        let mut config = sync_test_config();
+        config.api_url = format!("http://{address}");
+        let manifest = LocalManifest {
+            schema_version: MANIFEST_SCHEMA_VERSION.into(),
+            run_id: "reconciled-repair".into(),
+            site_id: config.site_id.clone(),
+            project_id: config.project_id.clone(),
+            consent_policy_version: config.consent_policy_version.clone(),
+            client_version: crate::CLIENT_VERSION.into(),
+            classifier_contract_version: crate::DICOM_CLASSIFIER_CONTRACT_VERSION.into(),
+            archive_contract_version: crate::DICOM_ARCHIVE_CONTRACT_VERSION.into(),
+            metadata_policy: crate::archive::metadata_policy(),
+            created_at: "2026-07-19T00:00:00Z".into(),
+            source_summary: SourceSummary {
+                accepted: 2,
+                ..Default::default()
+            },
+            bundles: vec![healthy, released],
+        };
+
+        let repairs = runtime
+            .repairable_completed_dicom_chunks("reconciled-repair", &manifest, &config)
+            .await
+            .unwrap();
+        assert_eq!(requests.load(Ordering::SeqCst), 2);
+        assert_eq!(
+            repairs,
+            vec![CompletedDicomRepair::Reconciled {
+                chunk_index: 1,
+                replacement_upload_id: replacement_upload.clone(),
+            }]
+        );
+        runtime
+            .state
+            .adopt_reconciled_repair_upload("reconciled-repair", 1, &replacement_upload)
+            .unwrap();
+        let chunks = runtime.state.run_uploads("reconciled-repair").unwrap();
+        assert_eq!(chunks[0].status, "reconciled");
+        assert!(chunks[0].worker_upload_id.is_none());
+        assert_eq!(chunks[1].status, "uploading");
+        assert_eq!(
+            chunks[1].worker_upload_id.as_deref(),
+            Some(replacement_upload.as_str())
+        );
+        server.abort();
+    }
+
+    #[test]
     fn dicom_receipts_use_raw_series_count_and_byte_limits_without_changing_legacy() {
         let root = tempfile::tempdir().unwrap();
         let state = StateStore::open(&root.path().join("state.sqlite3")).unwrap();
 
-        for (run_id, series_count, expected_layout) in [
-            ("dicom-15", 15_usize, vec![(0_usize, 8_usize), (8, 7)]),
-            ("dicom-32", 32, vec![(0, 8), (8, 8), (16, 8), (24, 8)]),
-        ] {
+        for (run_id, series_count) in [("dicom-15", 15_usize), ("dicom-32", 32)] {
             state.create_run(run_id, root.path(), false).unwrap();
             let subjects = vec!["same-subject".to_owned(); series_count];
             let sizes = vec![1_u64; series_count];
@@ -2725,7 +4680,12 @@ mod tests {
                 .into_iter()
                 .map(|chunk| (chunk.bundle_start, chunk.bundle_count))
                 .collect::<Vec<_>>();
-            assert_eq!(layout, expected_layout);
+            assert_eq!(
+                layout,
+                (0..series_count)
+                    .map(|index| (index, 1))
+                    .collect::<Vec<_>>()
+            );
             assert!(
                 layout
                     .iter()
@@ -2746,7 +4706,7 @@ mod tests {
             .into_iter()
             .map(|chunk| (chunk.bundle_start, chunk.bundle_count))
             .collect::<Vec<_>>();
-        assert_eq!(byte_layout, vec![(0, 4), (4, 1)]);
+        assert_eq!(byte_layout, vec![(0, 1), (1, 1), (2, 1), (3, 1), (4, 1)]);
 
         state
             .create_run("dicom-archive-too-large", root.path(), false)
@@ -2777,6 +4737,143 @@ mod tests {
         assert_eq!(legacy[0].bundle_count, 32);
     }
 
+    #[test]
+    fn staging_capacity_failure_is_actionable_and_never_a_series_hold() {
+        let root = Path::new("/private/small-state");
+        let error = validate_staging_capacity(root, 10 * 1024, 9 * 1024).unwrap_err();
+        assert!(error.downcast_ref::<StagingStorageExhausted>().is_some());
+        assert_eq!(
+            preparation_failure_code(&error),
+            "staging_storage_exhausted"
+        );
+        let message = error.to_string();
+        assert!(message.contains("requires at least 10240 bytes"));
+        assert!(message.contains("available 9216 bytes"));
+        assert!(message.contains("--state-dir <large-scratch-directory>"));
+        assert!(message.contains("NEURO_SYNC_STATE_DIR"));
+        assert!(deterministic_series_hold_code(&error).is_none());
+    }
+
+    #[test]
+    fn staging_budget_covers_archive_and_both_current_instance_copies() {
+        assert_eq!(
+            required_series_staging_bytes([100, 60]).unwrap(),
+            160 + 2 * 100 + STAGING_HEADROOM_BYTES
+        );
+        assert!(required_series_staging_bytes([u64::MAX]).is_err());
+    }
+
+    #[test]
+    fn unreadable_dicom_like_files_are_a_terminal_preparation_failure() {
+        let error = ensure_no_unreadable_dicom_like_files(2).unwrap_err();
+        assert_eq!(
+            preparation_failure_code(&error),
+            "unreadable_dicom_like_files"
+        );
+        assert!(error.to_string().contains("nothing new was uploaded"));
+        assert!(ensure_no_unreadable_dicom_like_files(0).is_ok());
+    }
+
+    #[test]
+    fn invalid_image_type_is_a_deterministic_local_hold() {
+        let error = anyhow::anyhow!("DICOM ImageType failed positional validation");
+        assert_eq!(
+            deterministic_series_hold_code(&error),
+            Some("dicom_image_type_invalid")
+        );
+    }
+
+    #[test]
+    fn invalid_pixel_and_iod_contracts_are_deterministic_local_holds() {
+        for (message, expected) in [
+            (
+                "DICOM pixel module is missing or inconsistent with its MR SOP Class",
+                "dicom_pixel_module_invalid",
+            ),
+            (
+                "DICOM RealWorldValueMapping is not supported by the privacy writer",
+                "dicom_real_world_value_mapping_unsupported",
+            ),
+            (
+                "DICOM contains an unsupported pixel transform",
+                "dicom_pixel_transform_unsupported",
+            ),
+            (
+                "DICOM contains an incomplete PixelValueTransformationSequence",
+                "dicom_pixel_transform_invalid",
+            ),
+            (
+                "sanitized DICOM omitted required Type 1 attribute (0008,0018)",
+                "dicom_iod_contract_invalid",
+            ),
+            (
+                "DICOM contains an incomplete or invalid ASL crusher group",
+                "asl_scientific_metadata_incomplete",
+            ),
+        ] {
+            assert_eq!(
+                deterministic_series_hold_code(&anyhow::anyhow!(message)),
+                Some(expected)
+            );
+        }
+    }
+
+    #[test]
+    fn durable_series_cleanup_never_removes_the_next_staged_archive() {
+        let directory = tempfile::tempdir().unwrap();
+        let runtime = Runtime::initialize(Some(directory.path())).unwrap();
+        let run_id = "bounded-cleanup";
+        let mut first = dicom_upload_test_bundle('1', '2');
+        let mut second = dicom_upload_test_bundle('3', '4');
+        for bundle in [&mut first, &mut second] {
+            let archive = bundle.archive.as_mut().unwrap();
+            let path = runtime
+                .paths
+                .bundles
+                .join(run_id)
+                .join(&bundle.bundle_id)
+                .join("dicom.tar.zst");
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(&path, b"archive").unwrap();
+            archive.object.local_path = path.to_string_lossy().into_owned();
+        }
+        let first_path = prepared_archive_path(&first);
+        let second_path = prepared_archive_path(&second);
+        cleanup_prepared_bundle(&runtime.paths, run_id, &first).unwrap();
+        assert!(!first_path.exists());
+        assert!(second_path.exists());
+    }
+
+    #[tokio::test]
+    async fn resume_reprepares_only_missing_or_invalid_unreceived_archive() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut bundle = dicom_upload_test_bundle('1', '2');
+        let path = directory.path().join("dicom.tar.zst");
+        let archive = bundle.archive.as_mut().unwrap();
+        archive.object.local_path = path.to_string_lossy().into_owned();
+        archive.object.size = 7;
+        archive.object.sha256 = hex::encode(Sha256::digest(b"archive"));
+
+        assert!(matches!(
+            prepared_bundle_state(&bundle).await.unwrap(),
+            PreparedBundleState::Missing
+        ));
+        fs::write(&path, b"archive").unwrap();
+        assert!(matches!(
+            prepared_bundle_state(&bundle).await.unwrap(),
+            PreparedBundleState::Valid
+        ));
+        fs::write(&path, b"changed").unwrap();
+        assert!(matches!(
+            prepared_bundle_state(&bundle).await.unwrap(),
+            PreparedBundleState::Invalid
+        ));
+
+        let mut identity_mismatch = bundle.clone();
+        identity_mismatch.archive.as_mut().unwrap().object.sha256 = "e".repeat(64);
+        assert!(!same_prepared_bundle(&bundle, &identity_mismatch).unwrap());
+    }
+
     fn write_empty_sync_checkpoint(runtime: &Runtime, run_id: &str, status: &str) {
         let config = sync_test_config();
         let manifest = LocalManifest {
@@ -2786,9 +4883,11 @@ mod tests {
             project_id: config.project_id.clone(),
             consent_policy_version: config.consent_policy_version.clone(),
             client_version: crate::CLIENT_VERSION.into(),
+            classifier_contract_version: crate::DICOM_CLASSIFIER_CONTRACT_VERSION.into(),
+            archive_contract_version: crate::DICOM_ARCHIVE_CONTRACT_VERSION.into(),
             metadata_policy: crate::model::MetadataPolicy {
-                policy_id: METADATA_POLICY_ID.into(),
-                policy_version: METADATA_POLICY_VERSION.into(),
+                policy_id: DICOM_METADATA_POLICY_ID.into(),
+                policy_version: DICOM_METADATA_POLICY_VERSION.into(),
             },
             created_at: "2026-07-18T00:00:00Z".into(),
             source_summary: SourceSummary::default(),
@@ -2801,6 +4900,7 @@ mod tests {
             project_id: config.project_id,
             project_name: config.project_name,
             consent_policy_version: config.consent_policy_version,
+            client_version: crate::CLIENT_VERSION.into(),
             started_at: "2026-07-18T00:00:00Z".into(),
             completed_at: None,
             source_summary: SourceSummary::default(),
@@ -2902,6 +5002,144 @@ mod tests {
         .unwrap();
         let chunk = runtime.state.run_uploads(run_id).unwrap().remove(0);
         (bundle, chunk)
+    }
+
+    #[tokio::test]
+    async fn streaming_transfer_checkpoint_defers_durable_receipt_until_commit_phase() {
+        use axum::{Json, Router, routing::get, routing::post};
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let status_attempts = Arc::new(AtomicUsize::new(0));
+        let status_attempts_for_handler = Arc::clone(&status_attempts);
+        let checkpoint_attempts = Arc::new(AtomicUsize::new(0));
+        let checkpoint_attempts_for_handler = Arc::clone(&checkpoint_attempts);
+        let completion_attempts = Arc::new(AtomicUsize::new(0));
+        let completion_attempts_for_handler = Arc::clone(&completion_attempts);
+        let upload_id = "22222222-2222-4222-8222-222222222222";
+        let app = Router::new()
+            .route(
+                "/v1/dicom-uploads/{upload_id}",
+                get(move || {
+                    status_attempts_for_handler.fetch_add(1, Ordering::SeqCst);
+                    async move {
+                        Json(serde_json::json!({
+                            "upload_id": upload_id,
+                            "status": "uploading"
+                        }))
+                    }
+                }),
+            )
+            .route(
+                "/v1/dicom-uploads/{upload_id}/checkpoint",
+                post(move || {
+                    checkpoint_attempts_for_handler.fetch_add(1, Ordering::SeqCst);
+                    async move {
+                        Json(serde_json::json!({
+                            "upload_id": upload_id,
+                            "status": "checkpointed",
+                            "receipt": {
+                                "received_series": 1,
+                                "received_bytes": 2_048
+                            }
+                        }))
+                    }
+                }),
+            )
+            .route(
+                "/v1/dicom-uploads/{upload_id}/complete",
+                post(move || {
+                    completion_attempts_for_handler.fetch_add(1, Ordering::SeqCst);
+                    async move {
+                        Json(serde_json::json!({
+                            "upload_id": upload_id,
+                            "status": "committed"
+                        }))
+                    }
+                }),
+            );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+
+        let state_root = tempfile::tempdir().unwrap();
+        let runtime = Runtime::initialize(Some(state_root.path())).unwrap();
+        let (bundle, chunk) =
+            write_saved_dicom_completion_checkpoint(&runtime, "deferred", upload_id);
+        let mut config = sync_test_config();
+        config.api_url = format!("http://{address}");
+        let api = IngestApi::from_config(&config).unwrap();
+
+        runtime
+            .checkpoint_dicom_upload_chunk(
+                "deferred",
+                &chunk,
+                std::slice::from_ref(&bundle),
+                crate::CLIENT_VERSION,
+                &api,
+            )
+            .await
+            .unwrap();
+        assert_eq!(completion_attempts.load(Ordering::SeqCst), 0);
+        assert_eq!(checkpoint_attempts.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            runtime.state.run_uploads("deferred").unwrap()[0].status,
+            "uploaded"
+        );
+
+        let checkpointed = runtime.state.run_uploads("deferred").unwrap().remove(0);
+        runtime
+            .commit_dicom_upload_chunk(
+                "deferred",
+                &checkpointed,
+                std::slice::from_ref(&bundle),
+                crate::CLIENT_VERSION,
+                &api,
+            )
+            .await
+            .unwrap();
+        assert_eq!(status_attempts.load(Ordering::SeqCst), 2);
+        assert_eq!(completion_attempts.load(Ordering::SeqCst), 1);
+        assert_eq!(checkpoint_attempts.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            runtime.state.run_uploads("deferred").unwrap()[0].status,
+            "committed"
+        );
+        server.abort();
+    }
+
+    #[test]
+    fn final_streaming_identity_detects_new_and_same_metadata_dicom_bytes() {
+        let source = tempfile::tempdir().unwrap();
+        let first = source.path().join("first.dcm");
+        fs::write(&first, b"AAAA").unwrap();
+        let initial = snapshot_source_with_progress(source.path(), |_| {}).unwrap();
+        let fingerprint = initial.fingerprint(source.path()).unwrap();
+
+        fs::write(source.path().join("new-instance.dcm"), b"BBBB").unwrap();
+        let added_error =
+            confirm_final_streaming_source_identity(&initial, &fingerprint, source.path(), 1)
+                .unwrap_err();
+        assert!(added_error.to_string().contains("no new durable receipts"));
+        fs::remove_file(source.path().join("new-instance.dcm")).unwrap();
+
+        let original_modified = first.metadata().unwrap().modified().unwrap();
+        fs::write(&first, b"CCCC").unwrap();
+        File::options()
+            .write(true)
+            .open(&first)
+            .unwrap()
+            .set_times(std::fs::FileTimes::new().set_modified(original_modified))
+            .unwrap();
+        let metadata_only = snapshot_source_with_progress(source.path(), |_| {}).unwrap();
+        assert!(initial.is_stable_with(&metadata_only));
+        let changed_error =
+            confirm_final_streaming_source_identity(&initial, &fingerprint, source.path(), 1)
+                .unwrap_err();
+        assert!(
+            changed_error
+                .to_string()
+                .contains("no new durable receipts")
+        );
     }
 
     #[test]
@@ -3514,6 +5752,8 @@ mod tests {
             project_id: config.project_id.clone(),
             consent_policy_version: config.consent_policy_version.clone(),
             client_version: crate::CLIENT_VERSION.into(),
+            classifier_contract_version: crate::DICOM_CLASSIFIER_CONTRACT_VERSION.into(),
+            archive_contract_version: crate::DICOM_ARCHIVE_CONTRACT_VERSION.into(),
             metadata_policy: crate::archive::metadata_policy(),
             created_at: "2026-07-18T00:00:00Z".into(),
             source_summary: SourceSummary::default(),
@@ -3650,6 +5890,8 @@ mod tests {
             project_id: config.project_id.clone(),
             consent_policy_version: config.consent_policy_version.clone(),
             client_version: crate::CLIENT_VERSION.into(),
+            classifier_contract_version: crate::DICOM_CLASSIFIER_CONTRACT_VERSION.into(),
+            archive_contract_version: crate::DICOM_ARCHIVE_CONTRACT_VERSION.into(),
             metadata_policy: crate::archive::metadata_policy(),
             created_at: "2026-07-18T00:00:00Z".into(),
             source_summary: SourceSummary::default(),
@@ -3773,6 +6015,8 @@ mod tests {
             project_id: config.project_id.clone(),
             consent_policy_version: config.consent_policy_version.clone(),
             client_version: crate::CLIENT_VERSION.into(),
+            classifier_contract_version: crate::DICOM_CLASSIFIER_CONTRACT_VERSION.into(),
+            archive_contract_version: crate::DICOM_ARCHIVE_CONTRACT_VERSION.into(),
             metadata_policy: crate::archive::metadata_policy(),
             created_at: "2026-07-18T00:00:00Z".into(),
             source_summary: SourceSummary::default(),
@@ -3934,14 +6178,87 @@ mod tests {
         assert_eq!(selected, "checkpointed-run");
         let completed = runtime.state.latest_run().unwrap().unwrap();
         assert_eq!(completed.id, "checkpointed-run");
-        assert_eq!(completed.status, "complete");
+        assert_eq!(completed.status, "complete_no_eligible_series");
+    }
+
+    #[tokio::test]
+    async fn old_partial_upload_is_reprepared_after_policy_and_privacy_upgrade() {
+        let state_root = tempfile::tempdir().unwrap();
+        let source = tempfile::tempdir().unwrap();
+        let runtime = Runtime::initialize(Some(state_root.path())).unwrap();
+        let mut current_config = sync_test_config();
+        current_config.consent_policy_version = "open-mri-1.0.0".into();
+        current_config.save(&runtime.paths).unwrap();
+        let canonical_source = source.path().canonicalize().unwrap();
+        runtime
+            .state
+            .create_run("old-partial", &canonical_source, false)
+            .unwrap();
+        write_empty_sync_checkpoint(&runtime, "old-partial", "upload_failed");
+        let checkpoint = runtime
+            .state
+            .run("old-partial")
+            .unwrap()
+            .unwrap()
+            .manifest_path
+            .unwrap();
+        let mut old_manifest: LocalManifest =
+            serde_json::from_slice(&fs::read(&checkpoint).unwrap()).unwrap();
+        old_manifest.client_version = "0.3.1".into();
+        old_manifest.consent_policy_version = "open-epi-1.0.0".into();
+        old_manifest.metadata_policy = crate::model::MetadataPolicy {
+            policy_id: DICOM_METADATA_POLICY_ID.into(),
+            policy_version: "1.0.0".into(),
+        };
+        write_json(Path::new(&checkpoint), &old_manifest).unwrap();
+        let fingerprint = snapshot_source_with_progress(&canonical_source, |_| {})
+            .unwrap()
+            .fingerprint(&canonical_source)
+            .unwrap();
+        runtime
+            .state
+            .set_source_fingerprint("old-partial", &fingerprint)
+            .unwrap();
+        runtime
+            .state
+            .set_worker_upload("old-partial", "11111111-1111-4111-8111-111111111111")
+            .unwrap();
+        runtime
+            .state
+            .update_run(
+                "old-partial",
+                "upload_failed",
+                &SourceSummary::default(),
+                Some("upload_failed"),
+            )
+            .unwrap();
+
+        let selected = runtime
+            .sync_folder(source.path().to_path_buf(), false)
+            .await
+            .unwrap();
+        assert_ne!(selected, "old-partial");
+        let old = runtime.state.run("old-partial").unwrap().unwrap();
+        assert_eq!(old.status, "superseded");
+        assert_eq!(
+            old.error_code.as_deref(),
+            Some("privacy_contract_superseded")
+        );
+        let current = runtime.state.run(&selected).unwrap().unwrap();
+        assert_eq!(current.status, "complete_no_eligible_series");
+        let current_manifest = load_checkpoint_manifest(&current).unwrap();
+        assert_eq!(current_manifest.consent_policy_version, "open-mri-1.0.0");
+        assert_eq!(
+            current_manifest.metadata_policy.policy_version,
+            DICOM_METADATA_POLICY_VERSION
+        );
     }
 
     #[tokio::test]
     async fn changed_source_supersedes_an_unfinished_run_before_continuation() {
         let state_root = tempfile::tempdir().unwrap();
         let source = tempfile::tempdir().unwrap();
-        fs::write(source.path().join("export.bin"), b"first export").unwrap();
+        fs::write(source.path().join("export.dcm"), b"first export").unwrap();
         let runtime = Runtime::initialize(Some(state_root.path())).unwrap();
         sync_test_config().save(&runtime.paths).unwrap();
         let canonical_source = source.path().canonicalize().unwrap();
@@ -3967,12 +6284,14 @@ mod tests {
                 Some("upload_failed"),
             )
             .unwrap();
-        fs::write(source.path().join("export.bin"), b"second export").unwrap();
+        fs::write(source.path().join("export.dcm"), b"second export").unwrap();
 
-        let selected = runtime
+        let error = runtime
             .sync_folder(source.path().to_path_buf(), false)
             .await
-            .unwrap();
+            .unwrap_err();
+        assert!(error.to_string().contains("DICOM-like file"));
+        let selected = runtime.state.latest_run().unwrap().unwrap().id;
         assert_ne!(selected, "stale-run");
         let stale = runtime.state.run("stale-run").unwrap().unwrap();
         assert_eq!(stale.status, "superseded");
@@ -4019,6 +6338,8 @@ mod tests {
             project_id: config.project_id.clone(),
             consent_policy_version: config.consent_policy_version.clone(),
             client_version: crate::CLIENT_VERSION.into(),
+            classifier_contract_version: crate::DICOM_CLASSIFIER_CONTRACT_VERSION.into(),
+            archive_contract_version: crate::DICOM_ARCHIVE_CONTRACT_VERSION.into(),
             metadata_policy: crate::archive::metadata_policy(),
             created_at: "2026-07-18T00:00:00Z".into(),
             source_summary: SourceSummary::default(),
@@ -4080,7 +6401,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn unchanged_completed_folder_is_a_local_no_op() {
+    async fn unchanged_completed_folder_is_a_local_no_op_across_binary_patches() {
         let state_root = tempfile::tempdir().unwrap();
         let source = tempfile::tempdir().unwrap();
         fs::write(source.path().join("scan.dcm"), b"stable source fixture").unwrap();
@@ -4092,6 +6413,14 @@ mod tests {
             .create_run("completed-run", &canonical_source, false)
             .unwrap();
         write_empty_sync_checkpoint(&runtime, "completed-run", "complete");
+        let checkpoint = runtime.state.run("completed-run").unwrap().unwrap();
+        let mut manifest = load_checkpoint_manifest(&checkpoint).unwrap();
+        manifest.client_version = "0.4.99".into();
+        write_json(
+            Path::new(checkpoint.manifest_path.as_deref().unwrap()),
+            &manifest,
+        )
+        .unwrap();
         runtime
             .state
             .update_run("completed-run", "complete", &SourceSummary::default(), None)
@@ -4105,6 +6434,10 @@ mod tests {
             .set_source_fingerprint("completed-run", &fingerprint)
             .unwrap();
 
+        fs::write(source.path().join("README"), b"operator notes").unwrap();
+        fs::write(source.path().join("scanner.log"), b"export complete").unwrap();
+        fs::write(source.path().join(".DS_Store"), b"finder metadata").unwrap();
+
         let selected = runtime
             .sync_folder(source.path().to_path_buf(), false)
             .await
@@ -4114,10 +6447,31 @@ mod tests {
             runtime.state.latest_run().unwrap().unwrap().id,
             "completed-run"
         );
+
+        let dicom_path = source.path().join("scan.dcm");
+        let original_modified = dicom_path.metadata().unwrap().modified().unwrap();
+        fs::write(&dicom_path, b"xtable source fixture").unwrap();
+        File::options()
+            .write(true)
+            .open(&dicom_path)
+            .unwrap()
+            .set_times(std::fs::FileTimes::new().set_modified(original_modified))
+            .unwrap();
+        let error = runtime
+            .sync_folder(source.path().to_path_buf(), false)
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("DICOM-like file"));
+        let changed_run = runtime.state.latest_run().unwrap().unwrap();
+        assert_ne!(changed_run.id, "completed-run");
+        assert_eq!(
+            changed_run.error_code.as_deref(),
+            Some("unreadable_dicom_like_files")
+        );
     }
 
     #[tokio::test]
-    async fn old_no_eligible_result_is_reclassified_after_client_upgrade() {
+    async fn old_no_eligible_result_is_reclassified_after_classifier_upgrade() {
         let state_root = tempfile::tempdir().unwrap();
         let source = tempfile::tempdir().unwrap();
         fs::write(
@@ -4136,6 +6490,7 @@ mod tests {
         let checkpoint = runtime.state.run("old-no-eligible").unwrap().unwrap();
         let mut manifest = load_checkpoint_manifest(&checkpoint).unwrap();
         manifest.client_version = "0.3.0".into();
+        manifest.classifier_contract_version = "0.9.0".into();
         manifest.metadata_policy = crate::archive::metadata_policy();
         write_json(
             Path::new(checkpoint.manifest_path.as_deref().unwrap()),
@@ -4205,6 +6560,8 @@ mod tests {
             project_id: "project-a".into(),
             consent_policy_version: "policy-2".into(),
             client_version: crate::CLIENT_VERSION.into(),
+            classifier_contract_version: crate::DICOM_CLASSIFIER_CONTRACT_VERSION.into(),
+            archive_contract_version: crate::DICOM_ARCHIVE_CONTRACT_VERSION.into(),
             metadata_policy: crate::model::MetadataPolicy {
                 policy_id: METADATA_POLICY_ID.into(),
                 policy_version: METADATA_POLICY_VERSION.into(),
@@ -4251,6 +6608,8 @@ mod tests {
             project_id: "project".into(),
             consent_policy_version: "policy".into(),
             client_version: crate::CLIENT_VERSION.into(),
+            classifier_contract_version: crate::DICOM_CLASSIFIER_CONTRACT_VERSION.into(),
+            archive_contract_version: crate::DICOM_ARCHIVE_CONTRACT_VERSION.into(),
             metadata_policy: crate::model::MetadataPolicy {
                 policy_id: METADATA_POLICY_ID.into(),
                 policy_version: METADATA_POLICY_VERSION.into(),
@@ -4413,6 +6772,74 @@ mod tests {
                 0o600
             );
         }
+    }
+
+    #[tokio::test]
+    async fn existing_workstation_policy_refresh_is_authenticated_and_preserves_identity() {
+        use axum::{
+            Json, Router,
+            http::{HeaderMap, StatusCode},
+            routing::post,
+        };
+
+        let app = Router::new().route(
+            "/v1/device/policy",
+            post(
+                |headers: HeaderMap, Json(body): Json<serde_json::Value>| async move {
+                    assert_eq!(
+                        headers
+                            .get("authorization")
+                            .and_then(|value| value.to_str().ok()),
+                        Some("Bearer sn_device_fixture")
+                    );
+                    assert_eq!(
+                        body,
+                        serde_json::json!({
+                            "accepted_consent_policy_version": "open-mri-1.0.0"
+                        })
+                    );
+                    (
+                        StatusCode::OK,
+                        Json(serde_json::json!({
+                            "status": "accepted",
+                            "device_id": "11111111-1111-4111-8111-111111111111",
+                            "site_id": "site",
+                            "project_id": "project",
+                            "project_name": "Scaling Neuro public MRI contribution",
+                            "consent_policy_version": "open-mri-1.0.0"
+                        })),
+                    )
+                },
+            ),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let directory = tempfile::tempdir().unwrap();
+        let runtime = Runtime::initialize(Some(directory.path())).unwrap();
+        let mut original = sync_test_config();
+        original.api_url = format!("http://{address}");
+        original.project_name = "Scaling Neuro public EPI contribution".into();
+        original.consent_policy_version = "open-epi-1.0.0".into();
+        original.save(&runtime.paths).unwrap();
+
+        let updated = runtime
+            .accept_contribution_policy(&original, "open-mri-1.0.0")
+            .await
+            .unwrap();
+        let persisted = ClientConfig::load(&runtime.paths).unwrap();
+        assert_eq!(updated.consent_policy_version, "open-mri-1.0.0");
+        assert_eq!(persisted.consent_policy_version, "open-mri-1.0.0");
+        assert_eq!(persisted.api_url, original.api_url);
+        assert_eq!(persisted.device_token, original.device_token);
+        assert_eq!(persisted.site_id, original.site_id);
+        assert_eq!(persisted.project_id, original.project_id);
+        assert_eq!(
+            persisted.project_name,
+            "Scaling Neuro public MRI contribution"
+        );
+        assert_eq!(persisted.pseudonym_key_b64, original.pseudonym_key_b64);
+        server.abort();
     }
 
     #[tokio::test]

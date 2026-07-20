@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "scaling-neuro-processor"
-version = "0.1.1"
-description = "Cluster-side Scaling Neuro DICOM EPI processor"
+version = "0.2.0"
+description = "Cluster-side Scaling Neuro MR DICOM verifier and EPI processor"
 requires-python = ">=3.12"
 dependencies = ["numpy==2.2.6", "pydicom==3.0.1"]
 

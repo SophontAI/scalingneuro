@@ -1,9 +1,9 @@
 {
   "format": "dicom-series-v1",
-  "client_version": "0.3.0",
+  "client_version": "0.4.0",
   "deidentification": {
     "policy_id": "scaling-neuro.dicom-deidentification",
-    "policy_version": "1.0.0"
+    "policy_version": "2.0.0"
   },
   "series": [
     {
@@ -13,11 +13,31 @@
       "session_id": "6a138b712e4d11af9a011234",
       "protocol_group_id": "bb1c4ef23b97d8029a011234",
       "dicom_count": 300,
+      "series_kind": "functional_epi",
+      "processing_route": "functional-epi-v1",
+      "pixel_data_policy": "scanner-native-not-defaced",
       "archive": {
         "format": "dicom-tar-zstd",
         "relative_key": "7c2a5f77f3ab6c6d9e011234/dicom.tar.zst",
         "size": 104857600,
         "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      }
+    },
+    {
+      "series_archive_id": "8d3b6a88f4bc7d7e0f122345",
+      "series_id": "4e6b098d125ef730af122345",
+      "subject_id": "9c48102a77e3500f3a011234",
+      "session_id": "6a138b712e4d11af9a011234",
+      "protocol_group_id": "cc2d5fa34ca8e913af122345",
+      "dicom_count": 176,
+      "series_kind": "structural_t1w",
+      "processing_route": "archive-verify-v1",
+      "pixel_data_policy": "scanner-native-not-defaced",
+      "archive": {
+        "format": "dicom-tar-zstd",
+        "relative_key": "8d3b6a88f4bc7d7e0f122345/dicom.tar.zst",
+        "size": 157286400,
+        "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
       }
     }
   ]

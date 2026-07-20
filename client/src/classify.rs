@@ -1,7 +1,10 @@
+use std::collections::HashSet;
+
 use crate::{
     dicom::{
-        SeriesGroup, dicom_instance_count_supported, dicom_instance_size_supported,
-        dicom_series_uncompressed_size_supported,
+        ENHANCED_MR_IMAGE_STORAGE_UID, LEGACY_CONVERTED_ENHANCED_MR_IMAGE_STORAGE_UID, SeriesGroup,
+        dicom_instance_count_supported, dicom_instance_size_supported,
+        dicom_series_uncompressed_size_supported, supported_mr_image_sop_class,
     },
     model::{Classification, ClassificationDecision, ClassificationEvidence},
 };
@@ -84,10 +87,10 @@ pub fn classify_header(group: &SeriesGroup) -> Classification {
         .any(|size| !dicom_instance_size_supported(*size))
     {
         return hold(
-            "dicom_instance_exceeds_256_mib",
+            "dicom_instance_exceeds_64_gib",
             1.0,
             [(
-                "dicom_instance_exceeds_256_mib",
+                "dicom_instance_exceeds_64_gib",
                 "series_inventory",
                 "contradicts",
             )],
@@ -143,7 +146,7 @@ pub fn classify_header(group: &SeriesGroup) -> Classification {
     if group
         .sop_class_uids
         .iter()
-        .any(|value| !is_supported_mr_sop(value))
+        .any(|value| !supported_mr_image_sop_class(value))
     {
         return hold(
             "unsupported_sop_class",
@@ -173,11 +176,14 @@ pub fn classify_header(group: &SeriesGroup) -> Classification {
     // Scanner identity is provenance, not eligibility. Unknown, absent, or
     // previously unmeasured manufacturer/model/software values must never
     // prevent standards-conformant functional MR from reaching the archive.
-    let all_siemens = !group.manufacturers.is_empty()
+    let all_philips = !group.manufacturers.is_empty()
         && group
             .manufacturers
             .iter()
-            .all(|value| is_siemens_manufacturer(value));
+            .all(|value| is_philips_manufacturer(value));
+    let classic_philips = all_philips
+        && group.sop_class_uids.len() == 1
+        && group.sop_class_uids[0] == crate::dicom::MR_IMAGE_STORAGE_UID;
     if group
         .burned_in_annotations
         .iter()
@@ -210,6 +216,24 @@ pub fn classify_header(group: &SeriesGroup) -> Classification {
     let local_text = group.local_protocol_texts.join(" ").to_ascii_lowercase();
     let all_text = format!("{image_type} {scanning} {sequence} {local_text}");
 
+    if group.burned_in_annotation_missing
+        && group.sop_class_uids.iter().any(|uid| {
+            matches!(
+                uid.as_str(),
+                ENHANCED_MR_IMAGE_STORAGE_UID | LEGACY_CONVERTED_ENHANCED_MR_IMAGE_STORAGE_UID
+            )
+        })
+    {
+        return hold(
+            "enhanced_mr_burned_in_annotation_not_declared",
+            1.0,
+            [(
+                "enhanced_mr_missing_required_burned_in_annotation_no",
+                "dicom_header",
+                "contradicts",
+            )],
+        );
+    }
     if group.burned_in_annotation_missing && !group.all_missing_bia_instances_original_primary {
         return hold(
             "burned_in_annotation_not_declared_unsafe_image_type",
@@ -222,23 +246,36 @@ pub fn classify_header(group: &SeriesGroup) -> Classification {
         );
     }
 
-    if all_siemens
-        && image_type.contains("mosaic")
+    if image_type.contains("mosaic")
         && (!group.siemens_csa_image_header_present
             || !group.all_siemens_csa_image_headers_sanitizable)
     {
         return hold(
-            "siemens_classic_mosaic_requires_safe_csa",
+            "classic_mosaic_requires_safe_csa",
             1.0,
             [(
-                "siemens_mosaic_private_geometry_not_exported",
+                "mosaic_private_geometry_not_exported",
                 "dicom_header",
                 "contradicts",
             )],
         );
     }
+    if group.uih_grid_or_vframe
+        && (!group.uih_grid_slice_count_present || !group.all_uih_grid_slice_counts_verified)
+    {
+        let evidence_code = if group.uih_grid_slice_count_present {
+            "uih_grid_slice_count_malformed"
+        } else {
+            "uih_grid_slice_count_missing"
+        };
+        return hold(
+            "uih_grid_slice_count_missing_or_invalid",
+            1.0,
+            [(evidence_code, "dicom_private_header", "contradicts")],
+        );
+    }
 
-    if contains_any(
+    let derived = contains_any(
         &image_type,
         &[
             "derived",
@@ -250,36 +287,83 @@ pub fn classify_header(group: &SeriesGroup) -> Classification {
             "graphic",
             "presentation",
         ],
-    ) || contains_any(&all_text, &["screensave", "secondary capture", "derived"])
+    ) || contains_any(&all_text, &["screensave", "secondary capture", "derived"]);
+    let diffusion = group.diffusion_context
+        || contains_any(&all_text, &["diffusion", " dwi", "dti", "b0 map", "tracew"]);
+    // ASL has a dedicated scientific-metadata contract. DSC/DCE and other
+    // contrast perfusion acquisitions do not carry ASL label/control macros,
+    // so a generic "perfusion" protocol label must remain independently
+    // archiveable instead of being failed against the ASL contract.
+    let asl_perfusion =
+        group.asl_context || contains_any(&all_text, &[" arterial spin", " asl", "pcasl", "pasl"]);
+    let perfusion = !asl_perfusion && contains_any(&all_text, &["perfusion", " dsc", " dce"]);
+    // ORIGINAL or explicitly MIXED data remain acquired scans even when a
+    // vendor also emits a derived-looking component. Pure DERIVED/SECONDARY
+    // ADC, FA, and trace-weighted products are archival derivatives and do
+    // not need to masquerade as reconstructable acquired diffusion.
+    let acquired_or_mixed = contains_any(&image_type, &["original", "mixed"]);
+    let derived_diffusion = diffusion && derived && !acquired_or_mixed;
+    let acquired_diffusion = diffusion && !derived_diffusion;
+    if acquired_diffusion
+        && (!group.diffusion_metadata_present || !group.all_diffusion_metadata_contracts_verified)
     {
         return hold(
-            "derived_image",
-            0.99,
-            [("derived_or_secondary", "dicom_header", "contradicts")],
+            "diffusion_scientific_metadata_incomplete",
+            1.0,
+            [(
+                "diffusion_b_value_or_direction_contract_missing_or_invalid",
+                "dicom_header",
+                "contradicts",
+            )],
         );
     }
-    if group.diffusion_context
-        || contains_any(&all_text, &["diffusion", " dwi", "dti", "b0 map", "tracew"])
+    if asl_perfusion && (!group.asl_metadata_present || !group.all_asl_metadata_contracts_verified)
     {
         return hold(
-            "diffusion",
-            0.99,
-            [("diffusion_detected", "dicom_header", "contradicts")],
+            "asl_scientific_metadata_incomplete",
+            1.0,
+            [(
+                if classic_philips && group.philips_private_asl_label_type_present {
+                    "philips_private_asl_label_contract_missing_or_invalid"
+                } else {
+                    "asl_technique_or_label_context_contract_missing_or_invalid"
+                },
+                "dicom_header",
+                "contradicts",
+            )],
         );
     }
-    if group.asl_context
-        || contains_any(
-            &all_text,
-            &[" arterial spin", " asl", "pcasl", "pasl", "perfusion"],
-        )
-    {
+    // A series cannot safely be routed as both acquired diffusion and ASL.
+    // Both contracts can be individually valid (for example after a scanner
+    // exports stale supplemental fields), but selecting one route would then
+    // discard a contradictory scientific interpretation. Keep that ambiguity
+    // local instead of producing an archive the processor must reject.
+    if diffusion && asl_perfusion {
         return hold(
-            "asl_or_perfusion",
-            0.99,
-            [("asl_or_perfusion_detected", "dicom_header", "contradicts")],
+            "ambiguous_diffusion_and_asl_scientific_context",
+            1.0,
+            [(
+                "diffusion_and_asl_scientific_context_conflict",
+                "dicom_header",
+                "contradicts",
+            )],
         );
     }
-    if contains_any(
+    if acquired_diffusion {
+        evidence.push(ev(
+            "diffusion_scientific_metadata_contract_verified",
+            "dicom_header",
+            "supports",
+        ));
+    }
+    if asl_perfusion {
+        evidence.push(ev(
+            "asl_scientific_metadata_contract_verified",
+            "dicom_header",
+            "supports",
+        ));
+    }
+    let fieldmap = contains_any(
         &all_text,
         &[
             "fieldmap",
@@ -293,23 +377,10 @@ pub fn classify_header(group: &SeriesGroup) -> Classification {
             "se ap",
             "se pa",
         ],
-    ) {
-        return hold(
-            "fieldmap",
-            0.98,
-            [("fieldmap_detected", "dicom_header", "contradicts")],
-        );
-    }
-    if contains_any(&all_text, &["sbref", "single band ref", "single-band ref"])
-        || image_type.contains("sbref")
-    {
-        return hold(
-            "sbref",
-            0.99,
-            [("sbref_detected", "dicom_header", "contradicts")],
-        );
-    }
-    if contains_any(
+    );
+    let sbref = contains_any(&all_text, &["sbref", "single band ref", "single-band ref"])
+        || image_type.contains("sbref");
+    let localizer = contains_any(
         &all_text,
         &[
             "localizer",
@@ -319,57 +390,13 @@ pub fn classify_header(group: &SeriesGroup) -> Classification {
             "three plane",
             "3-plane",
         ],
-    ) {
-        return hold(
-            "localizer",
-            0.99,
-            [("localizer_detected", "dicom_header", "contradicts")],
-        );
-    }
-    if contains_any(
-        &all_text,
-        &[
-            "mprage",
-            "mp-rage",
-            " t1",
-            "t1w",
-            " t2",
-            "t2w",
-            "flair",
-            "spgr",
-            "bravo",
-            "structural",
-            "anatomical",
-        ],
-    ) || has_token(&all_text, "space")
-    {
-        return hold(
-            "structural",
-            0.98,
-            [("structural_detected", "dicom_header", "contradicts")],
-        );
-    }
-    if contains_any(
-        &all_text,
-        &[
-            "spectro",
-            "mrs",
-            "angiograph",
-            "tof",
-            "swi",
-            "susceptibility",
-        ],
-    ) {
-        return hold(
-            "unsupported_mr",
-            0.95,
-            [("unsupported_mr_detected", "dicom_header", "contradicts")],
-        );
-    }
-
-    if let Err((kind, evidence_code)) = series_timing_contract(group) {
-        return hold(kind, 1.0, [(evidence_code, "dicom_header", "contradicts")]);
-    }
+    );
+    let structural_t1w = contains_any(&all_text, &["mprage", "mp-rage", "t1w", "spgr", "bravo"])
+        || has_token(&all_text, "t1");
+    let structural_t2w = contains_any(&all_text, &["t2w", "flair"])
+        || has_token(&all_text, "t2")
+        || has_token(&all_text, "space");
+    let structural_other = contains_any(&all_text, &["structural", "anatomical"]);
 
     let mut score = 0_u8;
     if group
@@ -470,53 +497,118 @@ pub fn classify_header(group: &SeriesGroup) -> Classification {
         ));
     }
 
-    if strong_functional_evidence && temporal_evidence {
-        Classification {
-            decision: ClassificationDecision::Accepted,
-            kind: "functional_epi_candidate".into(),
-            confidence: (0.90 + f64::from(score.min(5)) * 0.01).min(0.95),
-            evidence,
-        }
+    let functional_timing = if strong_functional_evidence && temporal_evidence {
+        series_timing_contract(group).err()
     } else {
+        None
+    };
+    if let Some((_, evidence_code)) = functional_timing {
+        evidence.push(ev(evidence_code, "dicom_header", "limits_processing"));
+    }
+
+    let (kind, confidence, kind_evidence) = if derived_diffusion {
+        ("derived_mr", 0.99, "derived_or_secondary")
+    } else if diffusion {
+        ("diffusion", 0.99, "diffusion_detected")
+    } else if asl_perfusion {
+        ("asl_perfusion", 0.99, "asl_or_perfusion_detected")
+    } else if perfusion {
+        ("perfusion", 0.98, "perfusion_detected")
+    } else if fieldmap {
+        ("fieldmap", 0.98, "fieldmap_detected")
+    } else if sbref {
+        ("sbref", 0.99, "sbref_detected")
+    } else if localizer {
+        ("localizer", 0.99, "localizer_detected")
+    } else if structural_t1w {
+        ("structural_t1w", 0.98, "structural_t1w_detected")
+    } else if structural_t2w {
+        ("structural_t2w", 0.98, "structural_t2w_detected")
+    } else if structural_other {
+        ("structural_other", 0.95, "structural_detected")
+    } else if derived {
+        ("derived_mr", 0.99, "derived_or_secondary")
+    } else if strong_functional_evidence && temporal_evidence && functional_timing.is_none() {
+        (
+            "functional_epi",
+            (0.90 + f64::from(score.min(5)) * 0.01).min(0.95),
+            "functional_epi_confirmed",
+        )
+    } else {
+        ("other_mr", 0.90, "supported_mr_image")
+    };
+    if classic_philips
+        && group.philips_private_pixel_scaling_present
+        && !group.all_philips_pixel_scaling_contracts_verified
+    {
+        return hold(
+            "philips_private_scientific_metadata_incomplete",
+            1.0,
+            [(
+                "philips_private_scaling_malformed_without_public_fallback",
+                "dicom_private_header",
+                "contradicts",
+            )],
+        );
+    }
+    if classic_philips
+        && group.philips_private_pixel_scaling_incomplete
+        && group.all_philips_pixel_scaling_contracts_verified
+    {
         evidence.push(ev(
-            "insufficient_functional_epi_header_evidence",
+            "philips_private_metadata_dropped_public_pixel_scaling_retained",
             "dicom_header",
-            "contradicts",
+            "limits_processing",
         ));
-        Classification {
-            decision: ClassificationDecision::Held,
-            kind: "insufficient_functional_epi_header_evidence".into(),
-            confidence: 1.0,
-            evidence,
-        }
+    }
+    if kind != "functional_epi" && !evidence.iter().any(|item| item.code == kind_evidence) {
+        evidence.push(ev(kind_evidence, "dicom_header", "supports"));
+    }
+    Classification {
+        decision: ClassificationDecision::Accepted,
+        kind: kind.into(),
+        confidence,
+        evidence,
     }
 }
 
 fn repeated_slice_time_series(group: &SeriesGroup) -> bool {
-    let mut positions = Vec::<[i64; 3]>::new();
+    repeated_positions(
+        group.instances.iter().map(|instance| {
+            if instance.image_position_patient.len() != 3
+                || instance
+                    .image_position_patient
+                    .iter()
+                    .any(|value| !value.is_finite())
+            {
+                return None;
+            }
+            Some([
+                (instance.image_position_patient[0] * 1_000_000.0).round() as i64,
+                (instance.image_position_patient[1] * 1_000_000.0).round() as i64,
+                (instance.image_position_patient[2] * 1_000_000.0).round() as i64,
+            ])
+        }),
+        group.instances.len(),
+    )
+}
+
+fn repeated_positions(
+    positions: impl Iterator<Item = Option<[i64; 3]>>,
+    total_instances: usize,
+) -> bool {
+    let mut unique_positions = HashSet::<[i64; 3]>::new();
     let mut measured_instances = 0_usize;
-    for instance in &group.instances {
-        if instance.image_position_patient.len() != 3
-            || instance
-                .image_position_patient
-                .iter()
-                .any(|value| !value.is_finite())
-        {
+    for position in positions {
+        let Some(position) = position else {
             continue;
-        }
+        };
         measured_instances += 1;
-        let position = [
-            (instance.image_position_patient[0] * 1_000_000.0).round() as i64,
-            (instance.image_position_patient[1] * 1_000_000.0).round() as i64,
-            (instance.image_position_patient[2] * 1_000_000.0).round() as i64,
-        ];
-        if !positions.contains(&position) {
-            positions.push(position);
-        }
+        unique_positions.insert(position);
     }
-    !positions.is_empty()
-        && measured_instances == group.instances.len()
-        && measured_instances / positions.len() >= 2
+    !unique_positions.is_empty()
+        && measured_instances == total_instances
+        && measured_instances / unique_positions.len() >= 2
 }
 
 fn series_timing_contract(
@@ -580,13 +672,6 @@ fn series_timing_contract(
     Ok(())
 }
 
-fn is_supported_mr_sop(value: &str) -> bool {
-    matches!(
-        value,
-        "1.2.840.10008.5.1.4.1.1.4" | "1.2.840.10008.5.1.4.1.1.4.1" | "1.2.840.10008.5.1.4.1.1.4.4"
-    )
-}
-
 fn is_secondary_capture_sop(value: &str) -> bool {
     matches!(
         value,
@@ -598,12 +683,9 @@ fn is_secondary_capture_sop(value: &str) -> bool {
     )
 }
 
-fn is_siemens_manufacturer(value: &str) -> bool {
+fn is_philips_manufacturer(value: &str) -> bool {
     let value = normalized_family_text(value);
-    value == "SIEMENS"
-        || value == "SIEMENS HEALTHCARE"
-        || value == "SIEMENS HEALTHINEERS"
-        || value.starts_with("SIEMENS MEDICAL ")
+    value == "PHILIPS" || value == "PHILIPS MEDICAL SYSTEMS" || value.starts_with("PHILIPS ")
 }
 
 fn normalized_family_text(value: &str) -> String {
@@ -802,8 +884,12 @@ mod tests {
                     .then(|| "NO".to_owned()),
             )
             .collect();
-        let diffusion_context = header.diffusion_b_value.is_some_and(|value| value > 1.0);
-        let asl_context = header.asl_technique.is_some();
+        let diffusion_context = header.diffusion_b_value.is_some_and(|value| value > 1.0)
+            || header.public_diffusion_semantic_evidence
+            || header.reviewed_private_diffusion_semantic_evidence;
+        let asl_context = header.asl_technique.is_some()
+            || header.reviewed_private_asl_metadata_present
+            || header.ge_asl_supplemental_metadata_present;
         SeriesGroup {
             study_uid: "1.2.3".into(),
             series_uid: "1.2.3.4".into(),
@@ -841,8 +927,23 @@ mod tests {
             all_siemens_csa_image_headers_sanitizable: header.siemens_csa_image_header_sanitizable,
             philips_dynamic_timing_detected: false,
             philips_dynamic_timing_contract_verified: false,
-            all_philips_classic_private_metadata_contract_verified: header
-                .philips_classic_private_metadata_contract_verified,
+            philips_private_pixel_scaling_present: header.philips_private_pixel_scaling_present,
+            philips_private_pixel_scaling_incomplete: header.philips_private_pixel_scaling_present
+                && !header.philips_private_pixel_scaling_usable,
+            philips_private_asl_label_type_present: header.philips_private_asl_label_type_present,
+            all_philips_pixel_scaling_contracts_verified: header
+                .philips_private_pixel_scaling_usable
+                || header.public_pixel_scaling_contract_verified,
+            uih_grid_or_vframe: header.uih_grid_or_vframe,
+            uih_grid_slice_count_present: header.uih_grid_slice_count_present,
+            all_uih_grid_slice_counts_verified: !header.uih_grid_or_vframe
+                || header.uih_grid_slice_count_verified,
+            diffusion_metadata_present: header.public_diffusion_metadata_present
+                || header.reviewed_private_diffusion_metadata_present,
+            all_diffusion_metadata_contracts_verified: header.diffusion_metadata_contract_verified,
+            asl_metadata_present: header.public_asl_metadata_present
+                || header.reviewed_private_asl_metadata_present,
+            all_asl_metadata_contracts_verified: header.asl_metadata_contract_verified,
             overlay_or_graphics: header.overlay_or_graphics,
             has_extended_offset_table: header.has_extended_offset_table,
             temporal_position_identifiers: header
@@ -857,7 +958,49 @@ mod tests {
     }
 
     #[test]
-    fn generic_epi_without_functional_or_temporal_evidence_is_held() {
+    fn packed_geometry_is_required_without_trusting_manufacturer_identity() {
+        let mut mosaic = group(DicomHeader {
+            modality: Some("MR".into()),
+            burned_in_annotation: Some("NO".into()),
+            ..Default::default()
+        });
+        mosaic.manufacturers.clear();
+        mosaic.manufacturer_missing = true;
+        mosaic.representative.manufacturer = None;
+        mosaic.siemens_csa_image_header_present = false;
+        mosaic.all_siemens_csa_image_headers_sanitizable = false;
+
+        let classification = classify_header(&mosaic);
+        assert_eq!(classification.decision, ClassificationDecision::Held);
+        assert_eq!(classification.kind, "classic_mosaic_requires_safe_csa");
+
+        let mut grid = group(DicomHeader {
+            modality: Some("MR".into()),
+            image_type: vec!["ORIGINAL".into(), "PRIMARY".into(), "GRID".into()],
+            burned_in_annotation: Some("NO".into()),
+            uih_grid_or_vframe: true,
+            uih_grid_slice_count_present: false,
+            uih_grid_slice_count_verified: false,
+            ..Default::default()
+        });
+        grid.image_types.retain(|value| value != "MOSAIC");
+        grid.representative
+            .image_type
+            .retain(|value| value != "MOSAIC");
+        grid.manufacturers.clear();
+        grid.manufacturer_missing = true;
+        grid.representative.manufacturer = None;
+
+        let classification = classify_header(&grid);
+        assert_eq!(classification.decision, ClassificationDecision::Held);
+        assert_eq!(
+            classification.kind,
+            "uih_grid_slice_count_missing_or_invalid"
+        );
+    }
+
+    #[test]
+    fn generic_epi_without_temporal_evidence_is_archived_as_other_mr() {
         let classification = classify_header(&group(DicomHeader {
             modality: Some("MR".into()),
             scanning_sequence: vec!["EP".into()],
@@ -865,25 +1008,139 @@ mod tests {
             burned_in_annotation: Some("NO".into()),
             ..Default::default()
         }));
-        assert_eq!(classification.decision, ClassificationDecision::Held);
-        assert_eq!(
-            classification.kind,
-            "insufficient_functional_epi_header_evidence"
-        );
+        assert_eq!(classification.decision, ClassificationDecision::Accepted);
+        assert_eq!(classification.kind, "other_mr");
     }
 
     #[test]
-    fn diffusion_never_passes_even_when_epi() {
+    fn diffusion_is_accepted_for_archive_verification() {
         let classification = classify_header(&group(DicomHeader {
             modality: Some("MR".into()),
             scanning_sequence: vec!["EP".into()],
             sequence_name: Some("ep2d_diff".into()),
             diffusion_b_value: Some(1_000.0),
+            public_diffusion_metadata_present: true,
+            diffusion_metadata_contract_verified: true,
             burned_in_annotation: Some("NO".into()),
             ..Default::default()
         }));
         assert_eq!(classification.kind, "diffusion");
+        assert_eq!(classification.decision, ClassificationDecision::Accepted);
+    }
+
+    #[test]
+    fn diffusion_and_asl_fail_closed_without_scientific_metadata_contracts() {
+        let diffusion = classify_header(&group(DicomHeader {
+            modality: Some("MR".into()),
+            sequence_name: Some("ep2d_diff".into()),
+            diffusion_b_value: Some(1_000.0),
+            public_diffusion_metadata_present: true,
+            burned_in_annotation: Some("NO".into()),
+            ..Default::default()
+        }));
+        assert_eq!(diffusion.decision, ClassificationDecision::Held);
+        assert_eq!(diffusion.kind, "diffusion_scientific_metadata_incomplete");
+
+        let asl = classify_header(&group(DicomHeader {
+            modality: Some("MR".into()),
+            sequence_name: Some("pcasl".into()),
+            asl_technique: Some("PSEUDOCONTINUOUS".into()),
+            public_asl_metadata_present: true,
+            burned_in_annotation: Some("NO".into()),
+            ..Default::default()
+        }));
+        assert_eq!(asl.decision, ClassificationDecision::Held);
+        assert_eq!(asl.kind, "asl_scientific_metadata_incomplete");
+    }
+
+    #[test]
+    fn diffusion_and_asl_with_complete_contracts_are_held_as_ambiguous() {
+        let classification = classify_header(&group(DicomHeader {
+            modality: Some("MR".into()),
+            sequence_name: Some("ep2d_diff_pcasl".into()),
+            diffusion_b_value: Some(1_000.0),
+            public_diffusion_metadata_present: true,
+            public_diffusion_semantic_evidence: true,
+            diffusion_metadata_contract_verified: true,
+            asl_technique: Some("PSEUDOCONTINUOUS".into()),
+            public_asl_metadata_present: true,
+            asl_metadata_contract_verified: true,
+            burned_in_annotation: Some("NO".into()),
+            ..Default::default()
+        }));
+
         assert_eq!(classification.decision, ClassificationDecision::Held);
+        assert_eq!(
+            classification.kind,
+            "ambiguous_diffusion_and_asl_scientific_context"
+        );
+        assert_eq!(
+            classification.evidence[0].code,
+            "diffusion_and_asl_scientific_context_conflict"
+        );
+    }
+
+    #[test]
+    fn non_asl_perfusion_is_archived_without_an_asl_label_contract() {
+        for sequence_name in ["ep2d_DSC_perfusion", "T1_DCE_perfusion"] {
+            let classification = classify_header(&group(DicomHeader {
+                modality: Some("MR".into()),
+                sequence_name: Some(sequence_name.into()),
+                burned_in_annotation: Some("NO".into()),
+                ..Default::default()
+            }));
+            assert_eq!(classification.decision, ClassificationDecision::Accepted);
+            assert_eq!(classification.kind, "perfusion");
+            assert!(
+                classification
+                    .evidence
+                    .iter()
+                    .any(|item| { item.code == "perfusion_detected" && item.effect == "supports" })
+            );
+            assert!(
+                !classification
+                    .evidence
+                    .iter()
+                    .any(|item| item.code == "asl_scientific_metadata_contract_verified")
+            );
+        }
+    }
+
+    #[test]
+    fn derived_diffusion_products_do_not_require_acquired_diffusion_metadata() {
+        for derived_term in ["ADC", "FA", "TRACEW"] {
+            let classification = classify_header(&group(DicomHeader {
+                modality: Some("MR".into()),
+                image_type: vec!["DERIVED".into(), "SECONDARY".into(), derived_term.into()],
+                sequence_name: Some(format!("derived_{derived_term}")),
+                burned_in_annotation: Some("NO".into()),
+                ..Default::default()
+            }));
+            assert_eq!(classification.decision, ClassificationDecision::Accepted);
+            assert_eq!(classification.kind, "derived_mr");
+            assert!(
+                !classification
+                    .evidence
+                    .iter()
+                    .any(|item| { item.code == "diffusion_scientific_metadata_contract_verified" })
+            );
+        }
+    }
+
+    #[test]
+    fn mixed_original_diffusion_still_requires_acquired_metadata() {
+        let classification = classify_header(&group(DicomHeader {
+            modality: Some("MR".into()),
+            image_type: vec!["ORIGINAL".into(), "MIXED".into(), "ADC".into()],
+            sequence_name: Some("diffusion_adc_mixed".into()),
+            burned_in_annotation: Some("NO".into()),
+            ..Default::default()
+        }));
+        assert_eq!(classification.decision, ClassificationDecision::Held);
+        assert_eq!(
+            classification.kind,
+            "diffusion_scientific_metadata_incomplete"
+        );
     }
 
     #[test]
@@ -909,6 +1166,24 @@ mod tests {
     }
 
     #[test]
+    fn private_b0_none_metadata_does_not_reclassify_functional_epi_as_diffusion() {
+        let classification = classify_header(&group(DicomHeader {
+            modality: Some("MR".into()),
+            scanning_sequence: vec!["EP".into()],
+            repetition_time_ms: Some(800.0),
+            echo_time_ms: Some(30.0),
+            number_of_temporal_positions: Some(120),
+            reviewed_private_diffusion_metadata_present: true,
+            diffusion_metadata_contract_verified: true,
+            reviewed_private_diffusion_semantic_evidence: false,
+            burned_in_annotation: Some("NO".into()),
+            ..Default::default()
+        }));
+        assert_eq!(classification.decision, ClassificationDecision::Accepted);
+        assert_eq!(classification.kind, "functional_epi");
+    }
+
+    #[test]
     fn two_position_short_functional_epi_is_accepted() {
         let classification = classify_header(&group(DicomHeader {
             modality: Some("MR".into()),
@@ -924,7 +1199,7 @@ mod tests {
     }
 
     #[test]
-    fn every_accepted_instance_requires_consistent_tr_and_valid_te() {
+    fn functional_route_requires_consistent_tr_and_valid_te_without_blocking_archive() {
         let header = DicomHeader {
             modality: Some("MR".into()),
             image_type: vec!["ORIGINAL".into(), "PRIMARY".into(), "BOLD".into()],
@@ -943,16 +1218,29 @@ mod tests {
             timing_instance(Some(2_000.0), Some(30.0)),
             timing_instance(Some(2_000.0), None),
         ];
-        assert_eq!(classify_header(&missing).kind, "missing_echo_time");
+        let missing = classify_header(&missing);
+        assert_eq!(missing.decision, ClassificationDecision::Accepted);
+        assert_eq!(missing.kind, "other_mr");
+        assert!(
+            missing
+                .evidence
+                .iter()
+                .any(|item| item.code == "missing_te_in_series_instance")
+        );
 
         let mut inconsistent_tr = group(header.clone());
         inconsistent_tr.instances = vec![
             timing_instance(Some(2_000.0), Some(30.0)),
             timing_instance(Some(2_000.01), Some(30.0)),
         ];
-        assert_eq!(
-            classify_header(&inconsistent_tr).kind,
-            "inconsistent_repetition_time"
+        let inconsistent_tr = classify_header(&inconsistent_tr);
+        assert_eq!(inconsistent_tr.decision, ClassificationDecision::Accepted);
+        assert_eq!(inconsistent_tr.kind, "other_mr");
+        assert!(
+            inconsistent_tr
+                .evidence
+                .iter()
+                .any(|item| item.code == "tr_inconsistent_across_series_instances")
         );
 
         let mut multi_echo = group(header);
@@ -967,7 +1255,7 @@ mod tests {
     }
 
     #[test]
-    fn protocol_label_alone_cannot_accept_a_series_removed_from_uploaded_headers() {
+    fn protocol_label_alone_cannot_route_a_series_to_functional_processing() {
         let classification = classify_header(&group(DicomHeader {
             modality: Some("MR".into()),
             image_type: vec!["ORIGINAL".into(), "PRIMARY".into()],
@@ -979,7 +1267,8 @@ mod tests {
             burned_in_annotation: Some("NO".into()),
             ..Default::default()
         }));
-        assert_eq!(classification.decision, ClassificationDecision::Held);
+        assert_eq!(classification.decision, ClassificationDecision::Accepted);
+        assert_eq!(classification.kind, "other_mr");
         assert!(
             classification
                 .evidence
@@ -1160,5 +1449,22 @@ mod tests {
         let classification = classify_header(&series);
         assert_eq!(classification.decision, ClassificationDecision::Held);
         assert_eq!(classification.kind, "burned_in_annotation");
+    }
+
+    #[test]
+    fn repeated_position_detection_scales_to_the_series_instance_limit() {
+        let count = crate::dicom::MAX_DICOM_INSTANCES_PER_SERIES;
+        assert!(repeated_positions(
+            (0..count).map(|index| Some([(index % (count / 2)) as i64, 0, 0])),
+            count,
+        ));
+        assert!(!repeated_positions(
+            (0..count).map(|index| Some([index as i64, 0, 0])),
+            count,
+        ));
+        assert!(!repeated_positions(
+            (0..count).map(|index| (index != count - 1).then_some([index as i64, 0, 0])),
+            count,
+        ));
     }
 }

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-import copy
+from concurrent.futures import ThreadPoolExecutor
 import io
 from pathlib import Path
 from types import SimpleNamespace
@@ -28,9 +28,10 @@ from scaling_neuro_processor.errors import (
     CapacityFailure,
     InvalidArchive,
     InvalidJob,
+    LeaseLost,
     ProcessorError,
 )
-from scaling_neuro_processor.models import DicomInput, Download, Job
+from scaling_neuro_processor.models import DicomInput, Download, Job, SERIES_KINDS
 from scaling_neuro_processor.pipeline import (
     CONVERSION_WORKING_SET_FACTOR,
     prepare_dicom_job,
@@ -40,9 +41,10 @@ from tests.helpers import (
     ARCHIVE_ID,
     SERIES_ID,
     SUBJECT_ID,
-    archive_manifest,
+    archive_manifest_v2,
     canonical_json,
     make_dicom,
+    make_structural_dicom,
 )
 
 
@@ -91,18 +93,49 @@ class ProcessorContractTests(unittest.TestCase):
             "functional_protocol_label",
             "functional_tr_range",
             "multiple_temporal_positions",
+            "functional_epi_confirmed",
+            "diffusion_detected",
+            "diffusion_scientific_metadata_contract_verified",
+            "asl_or_perfusion_detected",
+            "asl_scientific_metadata_contract_verified",
+            "perfusion_detected",
+            "fieldmap_detected",
+            "sbref_detected",
+            "localizer_detected",
+            "structural_t1w_detected",
+            "structural_t2w_detected",
+            "structural_detected",
+            "derived_or_secondary",
+            "supported_mr_image",
+            "missing_tr_in_series_instance",
+            "missing_te_in_series_instance",
+            "tr_out_of_range_in_series_instance",
+            "te_out_of_range_in_series_instance",
+            "tr_inconsistent_across_series_instances",
+            "philips_private_metadata_dropped_public_pixel_scaling_retained",
         }
         self.assertEqual(CLASSIFICATION_EVIDENCE, expected)
-        dicom = make_dicom(self.root / "evidence.dcm")
-        base = archive_manifest(dicom)
+        dicom = make_structural_dicom(self.root / "evidence.dcm")
+        limiting_codes = {
+            "missing_tr_in_series_instance",
+            "missing_te_in_series_instance",
+            "tr_out_of_range_in_series_instance",
+            "te_out_of_range_in_series_instance",
+            "tr_inconsistent_across_series_instances",
+            "philips_private_metadata_dropped_public_pixel_scaling_retained",
+        }
         for code in sorted(expected):
             with self.subTest(code=code):
-                manifest = copy.deepcopy(base)
+                manifest = archive_manifest_v2(dicom)
                 manifest["classification"]["evidence"] = [
                     {
                         "code": code,
                         "source": "dicom_header",
-                        "effect": "supports",
+                        "effect": (
+                            "limits_processing"
+                            if code in limiting_codes
+                            else "supports"
+                        ),
                     }
                 ]
                 result = validate_manifest(
@@ -110,10 +143,87 @@ class ProcessorContractTests(unittest.TestCase):
                     expected_series_archive_id=ARCHIVE_ID,
                     expected_series_id=SERIES_ID,
                     expected_dicom_count=1,
+                    expected_series_kind="structural_t1w",
+                    expected_processing_route="archive-verify-v1",
+                    expected_pixel_data_policy="scanner-native-not-defaced",
                 )
                 self.assertEqual(
                     result.value["classification"]["evidence"][0]["code"], code
                 )
+
+    def test_v2_manifest_accepts_only_bounded_all_mr_series_kinds(self) -> None:
+        dicom = make_structural_dicom(self.root / "structural.dcm")
+        evidence_by_kind = {
+            "functional_epi": "functional_epi_confirmed",
+            "structural_t1w": "structural_t1w_detected",
+            "structural_t2w": "structural_t2w_detected",
+            "structural_other": "structural_detected",
+            "diffusion": "diffusion_detected",
+            "asl_perfusion": "asl_or_perfusion_detected",
+            "perfusion": "perfusion_detected",
+            "fieldmap": "fieldmap_detected",
+            "sbref": "sbref_detected",
+            "localizer": "localizer_detected",
+            "derived_mr": "derived_or_secondary",
+            "other_mr": "supported_mr_image",
+        }
+        self.assertEqual(set(evidence_by_kind), set(SERIES_KINDS))
+        for kind, evidence in evidence_by_kind.items():
+            with self.subTest(kind=kind):
+                route = (
+                    "functional-epi-v1"
+                    if kind == "functional_epi"
+                    else "archive-verify-v1"
+                )
+                manifest = archive_manifest_v2(
+                    dicom,
+                    series_kind=kind,
+                    processing_route=route,
+                    evidence_code=evidence,
+                )
+                result = validate_manifest(
+                    canonical_json(manifest),
+                    expected_series_archive_id=ARCHIVE_ID,
+                    expected_series_id=SERIES_ID,
+                    expected_dicom_count=1,
+                    expected_series_kind=kind,
+                    expected_processing_route=route,
+                    expected_pixel_data_policy="scanner-native-not-defaced",
+                )
+                self.assertEqual(result.series_kind, kind)
+
+    def test_processor_claim_parses_v2_route_and_rejects_mismatch(self) -> None:
+        claim = {
+            "schema_version": "1.0.0",
+            "job_id": "job-v2-route",
+            "upload_id": "upload-v2-route",
+            "bundle_id": ARCHIVE_ID,
+            "series_archive_id": ARCHIVE_ID,
+            "series_id": SERIES_ID,
+            "series_kind": "diffusion",
+            "processing_route": "archive-verify-v1",
+            "pixel_data_policy": "scanner-native-not-defaced",
+            "attempt": 1,
+            "lease_token": "lease-token",
+            "lease_expires_at": "2030-01-01T00:00:00Z",
+            "input_format": "dicom-series-v1",
+            "input": {
+                "format": "dicom-tar-zstd",
+                "dicom_count": 1,
+                "url": "http://127.0.0.1/archive",
+                "size_bytes": 32,
+                "sha256": "a" * 64,
+            },
+        }
+        parsed = Job.from_json(claim)
+        self.assertIsInstance(parsed.input, DicomInput)
+        assert isinstance(parsed.input, DicomInput)
+        self.assertEqual(parsed.input.series_kind, "diffusion")
+        self.assertEqual(parsed.input.processing_route, "archive-verify-v1")
+
+        claim["processing_route"] = "functional-epi-v1"
+        with self.assertRaises(InvalidJob):
+            Job.from_json(claim)
 
     def test_processor_claim_accepts_500000_instances_and_rejects_500001(self) -> None:
         claim = {
@@ -180,7 +290,7 @@ class ProcessorContractTests(unittest.TestCase):
 
     def test_archive_resource_contract_has_exact_release_limits(self) -> None:
         self.assertEqual(MAX_DICOM_INSTANCES, 500_000)
-        self.assertEqual(MAX_DICOM_BYTES, 256 * MIB)
+        self.assertEqual(MAX_DICOM_BYTES, 64 * GIB)
         self.assertEqual(MAX_MANIFEST_BYTES, 128 * MIB)
         self.assertEqual(self.config.max_archive_uncompressed_bytes, 64 * GIB)
         self.assertEqual(self.config.archive_expansion_floor_bytes, 64 * MIB)
@@ -245,7 +355,7 @@ class ProcessorContractTests(unittest.TestCase):
         cases = (
             (
                 "dicom-member-too-large",
-                _canonical_tar_header("dicom/000001.dcm", 256 * MIB + 1),
+                _canonical_tar_header("dicom/000001.dcm", 64 * GIB + 1),
                 "ARCHIVE_DICOM_SIZE_INVALID",
             ),
             (
@@ -328,6 +438,63 @@ class ProcessorContractTests(unittest.TestCase):
         self.assertTrue(raised.exception.retryable)
         self.assertFalse((self.root / "mid-extraction-capacity").exists())
 
+    def test_lease_loss_kills_zstd_and_removes_partial_stage(self) -> None:
+        archive = self.root / "lease-loss.tar.zst"
+        archive.write_bytes(b"x" * 32)
+        destination = self.root / "lease-loss"
+        active = Event()
+        active.set()
+        read_started = Event()
+        process_killed = Event()
+
+        class BlockingStdout:
+            def read(self, _size: int = -1) -> bytes:
+                read_started.set()
+                process_killed.wait(timeout=2)
+                return b""
+
+            def close(self) -> None:
+                return None
+
+        process = Mock()
+        process.stdout = BlockingStdout()
+        process.poll.return_value = None
+        process.kill.side_effect = process_killed.set
+        process.wait.return_value = -9
+
+        with (
+            patch(
+                "scaling_neuro_processor.archive.shutil.disk_usage",
+                return_value=_usage(self.config.disk_reserve_bytes + GIB),
+            ),
+            patch(
+                "scaling_neuro_processor.archive.os.statvfs",
+                return_value=_statvfs(1_000_000),
+            ),
+            patch(
+                "scaling_neuro_processor.archive.subprocess.Popen",
+                return_value=process,
+            ),
+            ThreadPoolExecutor(max_workers=1) as executor,
+        ):
+            future = executor.submit(
+                extract_archive,
+                self.config,
+                archive,
+                destination,
+                expected_series_archive_id=ARCHIVE_ID,
+                expected_series_id=SERIES_ID,
+                expected_dicom_count=1,
+                lease_active=active,
+            )
+            self.assertTrue(read_started.wait(timeout=1))
+            active.clear()
+            with self.assertRaises(LeaseLost):
+                future.result(timeout=3)
+
+        process.kill.assert_called()
+        self.assertFalse(destination.exists())
+
     def test_filesystem_write_error_is_retryable_and_removes_partial_stage(
         self,
     ) -> None:
@@ -397,8 +564,8 @@ class ProcessorContractTests(unittest.TestCase):
             input=descriptor,
         )
         transport = Mock()
-        transport.download.side_effect = lambda _descriptor, path: path.write_bytes(
-            b"x" * 32
+        transport.download.side_effect = (
+            lambda _descriptor, path, _lease_active: path.write_bytes(b"x" * 32)
         )
         active = Event()
         active.set()
@@ -406,6 +573,7 @@ class ProcessorContractTests(unittest.TestCase):
             value={"dicom_instance_count": 1},
             sha256="b" * 64,
             extracted_bytes=100,
+            functional_epi_headers_confirmed=True,
         )
         reserve = self.config.disk_reserve_bytes
         with (

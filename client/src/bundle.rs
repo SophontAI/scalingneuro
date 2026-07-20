@@ -302,6 +302,9 @@ pub fn create_bundle(request: BundleRequest<'_>) -> Result<ManifestBundle> {
         subject_id,
         session_id,
         protocol_group_id,
+        series_kind: classification.kind.clone(),
+        processing_route: String::new(),
+        pixel_data_policy: String::new(),
         nifti: Some(ManifestObject {
             relative_key: format!("{bundle_id}/{nifti_filename}"),
             local_path: nifti_path.to_string_lossy().into_owned(),

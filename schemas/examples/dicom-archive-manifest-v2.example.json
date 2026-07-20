@@ -1,0 +1,65 @@
+{
+  "schema_version": "2.0.0",
+  "series_archive_id": "8d3b6a88f4bc7d7e0f122345",
+  "series_id": "4e6b098d125ef730af122345",
+  "subject_id": "a4b73d9e6f12a2b011223344",
+  "session_id": "b9e5cf2f5a74a3f811223344",
+  "protocol_group_id": "cc2d5fa34ca8e913af122345",
+  "modality": "mr",
+  "series_kind": "structural_t1w",
+  "processing_route": "archive-verify-v1",
+  "pixel_data_policy": "scanner-native-not-defaced",
+  "dicom_instance_count": 1,
+  "writer_contract": {
+    "name": "neuro-sync",
+    "version": "2.0.0"
+  },
+  "deidentification": {
+    "policy_id": "scaling-neuro.dicom-deidentification",
+    "policy_version": "2.0.0",
+    "method": "scaling-neuro-recursive-allowlist-v2",
+    "recursive": true,
+    "private_text_removed": true,
+    "unknown_private_removed": true,
+    "uids_remapped": true,
+    "pixel_data_retained": true,
+    "defacing_performed": false,
+    "recognizable_visual_features": "may_be_present",
+    "burned_in_annotation_status": "verified_no"
+  },
+  "source": {
+    "dicom_count": 1,
+    "manufacturer": "Future Scanner Works",
+    "model": "FutureMR Research 9000",
+    "software_versions": ["R1.2"],
+    "magnetic_field_strength": 3,
+    "scanning_sequence": ["GR"],
+    "mr_acquisition_type": "3D",
+    "image_type": ["ORIGINAL", "PRIMARY", "M", "ND", "NORM"]
+  },
+  "classification": {
+    "decision": "accepted",
+    "kind": "structural_t1w",
+    "confidence": 0.98,
+    "evidence": [
+      {
+        "code": "structural_t1w_evidence",
+        "source": "dicom_header",
+        "effect": "supports"
+      },
+      {
+        "code": "missing_tr_in_series_instance",
+        "source": "dicom_header",
+        "effect": "limits_processing"
+      }
+    ]
+  },
+  "instances": [
+    {
+      "path": "dicom/000001.dcm",
+      "size_bytes": 524288,
+      "sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+      "sop_instance_uid": "2.25.123456789"
+    }
+  ]
+}

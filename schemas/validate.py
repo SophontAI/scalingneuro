@@ -33,8 +33,12 @@ EXAMPLE_SCHEMAS = {
     "upload-part-response-v1.example.json": "upload-part-response-v1.schema.json",
     "archive-manifest-v1.example.json": "archive-manifest-v1.schema.json",
     "dicom-upload-init-v1.example.json": "dicom-upload-init-v1.schema.json",
+    "dicom-upload-session-checkpointed-v1.example.json": "dicom-upload-session-v1.schema.json",
     "dicom-upload-session-v1.example.json": "dicom-upload-session-v1.schema.json",
+    "dicom-upload-status-already-received-v1.example.json": "dicom-upload-status-v1.schema.json",
     "dicom-upload-status-v1.example.json": "dicom-upload-status-v1.schema.json",
+    "device-policy-v1.example.json": "device-policy-v1.schema.json",
+    "dicom-archive-manifest-v2.example.json": "dicom-archive-manifest-v2.schema.json",
 }
 
 
@@ -51,7 +55,7 @@ def read_json(path: Path) -> dict[str, Any]:
 def public_schemas() -> tuple[dict[Path, dict[str, Any]], Registry[Any]]:
     schemas: dict[Path, dict[str, Any]] = {}
     resources: list[tuple[str, Resource[Any]]] = []
-    for path in sorted(ROOT.glob("*-v1.schema.json")):
+    for path in sorted(ROOT.glob("*-v*.schema.json")):
         schema = read_json(path)
         Draft202012Validator.check_schema(schema)
         schema_id = schema.get("$id")
@@ -443,6 +447,8 @@ def validate_dicom_count_boundaries(
         raise ValueError("dicom upload schema accepts more than 500000 instances")
 
     local_schema_path = ROOT / "local-manifest-v1.schema.json"
+    if "maxItems" in schemas[local_schema_path]["properties"]["bundles"]:
+        raise ValueError("local manifest imposes a false whole-folder series limit")
     local_validator = Draft202012Validator(
         schemas[local_schema_path], registry=registry, format_checker=FormatChecker()
     )

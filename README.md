@@ -1,6 +1,6 @@
 # Scaling Neuro
 
-Scaling Neuro is a privacy-first path from a scanner export to a reusable functional-MRI archive. In the `0.3.1` beta, a researcher points one terminal command at a completed DICOM folder; `neuro-sync` selects functional EPI using vendor-neutral standard DICOM evidence, rewrites it locally under a default-deny DICOM de-identification policy, uploads resumable per-series archives to Cloudflare R2, and returns a durable receipt. Pinned conversion and scientific validation then run asynchronously on the Sophont cluster.
+Scaling Neuro is a terminal-first path from a scanner export to a reusable MR research archive. In the `0.4.0` beta, a researcher points one command at a completed DICOM folder; `neuro-sync` archives every supported MR Image series that passes local integrity and metadata-deidentification gates, uploads resumable per-series objects to Cloudflare R2, and returns a durable receipt. Sophont then independently verifies every archive. Confirmed functional EPI additionally receives pinned conversion and scientific QC; structural, diffusion, field-map, reference, localizer, and other MR remain verified scanner-native source archives.
 
 It is open to any lab. Registration records the lab and creates a revocable identity for one workstation; the same lab may register any number of workstations. Scaling Neuro is a research transfer system, not a clinical device or a substitute for consent, IRB, or data-use review.
 
@@ -30,7 +30,7 @@ If the process or network stops, rerun the identical folder command. The folder 
 
 ## What is preserved
 
-The canonical ingest object is one deterministic `dicom.tar.zst` per accepted functional-EPI series. It contains newly written DICOM Part 10 instances plus a canonical manifest. The source directory is read-only and unchanged.
+The canonical ingest object is one deterministic `dicom.tar.zst` per accepted MR Image series. It contains newly written DICOM Part 10 instances plus a canonical manifest. The source directory is read-only and unchanged.
 
 For each uploaded instance, `neuro-sync`:
 
@@ -43,36 +43,38 @@ For each uploaded instance, `neuro-sync`:
 
 The archive manifest records pseudonymous subject/session/series/protocol identities, classifier evidence, policy/version provenance, an ordered instance inventory, and SHA-256 hashes. It never contains source paths, filenames, source UIDs, or free-text descriptions.
 
-This is not a claim that unchanged scanner DICOM is anonymous. The executable behavior is documented in [the DICOM de-identification policy](docs/dicom-deidentification-policy.md), informed by DICOM PS3.15. Unsupported privacy conditions fail closed.
+This is not a claim that scanner-native pixels are anonymous. Header de-identification does not remove recognizable facial anatomy from high-resolution head images: the current client does not deface, crop, mask, or alter Pixel Data. The terminal policy requires explicit institutional authorization for governed storage of native MR pixels, and every manifest records that recognizable visual features may be present. The executable behavior is documented in [the DICOM metadata policy](docs/dicom-deidentification-policy.md), informed by DICOM PS3.15.
 
-Structural MRI, diffusion, ASL, field maps, SBRefs, localizers, derived images, and ambiguous series stay local. Structural scans remain out of scope until a separate validated face-privacy path exists.
+## All-MR intake and EPI routing
 
-## Functional-EPI selection
+Intake is evidence-based and independent of scanner manufacturer, model, or software version. Supported classic, Enhanced, and Legacy Converted Enhanced MR Image series are uploaded when their identities, Pixel Data boundaries, sizes, and metadata-privacy gates pass. Functional EPI, structural T1/T2, diffusion, ASL/perfusion, field maps, SBRefs, localizers, derived MR, and other MR receive explicit purpose codes. Secondary Capture, non-image DICOM documents, non-MR objects, malformed series, overlays/graphics, declared burned-in annotation, and unsupported privacy conditions stay local with code-only reasons.
 
-Selection is evidence-based and independent of scanner manufacturer, model, or software version. An accepted series must be MR, original/primary, satisfy the active burned-in-annotation policy, and have standard echo-planar evidence plus a repeated temporal structure and consistent plausible TR/TE. Exclusion evidence wins over inclusion evidence. The threshold is intentionally high (`>= 0.90`), and uncertain data is held locally with a code-only reason.
+Enhanced multi-frame support is standards-bounded rather than a blanket sequence allowlist. Current Enhanced MR and Legacy Converted Enhanced MR have separate mandatory functional-group contracts; both require explicit `BurnedInAnnotation = NO`. A bounded `SourceImageSequence` containing only standard SOP Class UIDs and pseudonymized SOP Instance UIDs is preserved. Concatenations, nonempty Acquisition Context or Legacy converted-attribute containers, richer conversion/derivation provenance, Real World Value Mapping/LUT semantics, and unreviewed optional functional-group macros currently fail closed instead of being partially rewritten.
 
-Classic MR, Enhanced MR, and Legacy Converted Enhanced MR from any manufacturer can enter through the same standard-DICOM route. Unknown or missing equipment provenance is omitted rather than treated as an eligibility failure. Known safe scanner provenance and standard acquisition metadata are retained; unknown and malformed private metadata is dropped. The one vendor-specific intake condition is scientific rather than commercial: Siemens mosaic Pixel Data requires a successfully rebuilt numeric-only CSA image header because that private geometry is necessary to interpret the mosaic. A scanner can therefore be accepted for durable source ingest before its derived conversion has a fixture-certified equivalence claim; processing/QC records that later outcome separately. The exact measured conversion matrix remains in [Vendor QA](docs/vendor-qa.md).
+Purpose controls processing, not receipt. Only a series with strong standard echo-planar and temporal evidence enters `functional-epi-v1`; the server repeats that classification before conversion. All other accepted MR enters `archive-verify-v1` and never reaches the EPI converter. Safe, bounded equipment provenance is retained without a manufacturer/model allowlist; missing or privacy-unsafe provenance is omitted rather than becoming an eligibility failure. Known safe standard acquisition metadata is retained; unknown and malformed private metadata is dropped. Siemens mosaic Pixel Data still requires a successfully rebuilt numeric-only CSA image header because that geometry is needed to interpret the mosaic. The exact measured conversion matrix remains in [Vendor QA](docs/vendor-qa.md).
 
 ## Architecture
 
 ```mermaid
 flowchart LR
-  A["neuro-sync folder"] --> B["Discover and classify EPI"]
-  B --> C["Rewrite and audit DICOM locally"]
+  A["neuro-sync folder"] --> B["Discover every supported MR Image series"]
+  B --> C["Rewrite and audit DICOM metadata locally"]
   C --> D["Deterministic series archive"]
   D --> E["Checksum-bound resumable upload"]
   E --> F["Durable R2 receipt"]
-  F --> G["D1 processing queue"]
-  G --> H["Sophont Slurm consumer"]
-  H --> I["Pinned dcm2niix and scientific QC"]
-  I --> J["Derived NIfTI, sidecar, processing manifest"]
+  F --> G["One verification job per series"]
+  G --> H["Sophont archive and privacy audit"]
+  H --> I{ "Functional EPI?" }
+  I -->|yes| J["Pinned dcm2niix and scientific QC"]
+  I -->|no| K["Verified scanner-native source archive"]
+  J --> L["Derived NIfTI, sidecar, processing manifest"]
 ```
 
-The client never receives a reusable R2 credential. The Worker creates a multipart object and issues a short-lived `UploadPart` URL bound to an exact key, multipart ID, part number, content length, and SHA-256 header. Returned ETags are checkpointed locally. Completion performs only multipart completion plus authoritative R2 `HEAD`; it does not read gigabytes through a Worker request.
+The client never receives a reusable R2 credential. The Worker creates a multipart object and issues a short-lived `UploadPart` URL bound to an exact key, multipart ID, part number, content length, and SHA-256 header. Returned ETags are checkpointed locally. After each series transfer, the Worker completes that multipart object and verifies its authoritative R2 `HEAD` before the client removes its local staging archive. This provisional object creates no receipt or processing job. Only after the final whole-folder stability check does a second metadata-only call atomically create the scientific receipt and queue work. Provisional objects are retained for 90 days, so a multi-terabyte folder is not coupled to R2's seven-day multipart lifetime.
 
-Receipt and scientific processing are separate states. A successful upload means the locally privacy-cleared DICOM archive is durable and queued. A cluster consumer later receives scoped GET/PUT capabilities, verifies the whole archive and every member, repeats the privacy and purpose audit, runs pinned `dcm2niix`, validates a native-space 4D functional NIfTI and minimized sidecar, publishes deterministic derived outputs, and commits the catalog under a lease. A stale processor cannot publish after losing that lease. A terminal server finding that the input violates the privacy, archive-boundary, or functional-EPI contract deletes that source object and leaves an auditable tombstone; converter or scientific-compatibility failures retain the de-identified source for review.
+Receipt and server verification are separate states. A successful upload means the locally metadata-deidentified DICOM archive is durable and queued. A cluster consumer later receives a scoped GET capability, verifies the whole archive and every member, repeats the metadata-privacy and routing audit, and completes non-EPI work as `archive verified`. For functional EPI it additionally runs pinned `dcm2niix`, validates a native-space 4D NIfTI and minimized sidecar, publishes deterministic derived outputs, and commits the catalog under a lease. A stale processor cannot publish after losing that lease. A terminal server finding that the input violates privacy, archive boundaries, hashes, or routing deletes that source object and leaves an auditable tombstone; converter/scientific compatibility failures retain the governed source for review.
 
-Stable site/project/series-archive identity makes creation and completion idempotent. Raw series archives may be up to 64 GiB; larger folders are transparently divided into receipt sessions of at most eight series and 250 GiB so multipart finalization stays within Cloudflare's strictest request limits. This is invisible to the researcher and does not change archive identity. If two authenticated devices in the same managed site/project upload the same eligible series concurrently, the exact winner is reused and the losing prefix is purged; a semantic mismatch or withdrawal tombstone is never treated as a duplicate success. Open self-service workstation registrations are intentionally independent privacy domains, so any number of machines from one lab can register without sharing pseudonym keys or trusting self-asserted lab names. Public workstations have no cumulative upload allowance; bounded receipt sessions, object sizes, and multipart requests remain enforced as operational safety limits.
+Stable site/project/series-archive identity makes creation and completion idempotent. Raw series archives may be up to 64 GiB; the production client uses one durable receipt per series, so an interrupted upload or independently proven integrity repair resumes exactly that scientific unit without coupling it to neighboring series. Larger folders are streamed through those singleton receipts one series at a time. If two authenticated devices in the same managed site/project upload the same eligible series concurrently, the exact winner is reused and the losing prefix is purged; a semantic mismatch or withdrawal tombstone is never treated as a duplicate success. Open self-service workstation registrations are intentionally independent privacy domains, so any number of machines from one lab can register without sharing pseudonym keys or trusting self-asserted lab names. Public workstations have no cumulative upload allowance; bounded object sizes and multipart requests remain enforced as operational safety limits.
 
 ## Command line
 
@@ -82,11 +84,19 @@ neuro-sync /path/to/dicom-export
 
 # Optional explicit setup for managed workstations.
 neuro-sync register --email researcher@example.edu --name "Researcher Name" \
-  --institution "Example University" --lab "Example Neuroimaging Lab" --accept-policy
+  --institution "Example University" --lab "Example Neuroimaging Lab" \
+  --accept-policy-version open-mri-1.0.0
 
-# Explicit form and non-interactive authorization.
+# Explicit form and non-interactive authorization. Both flags are required
+# because 0.4 uploads scanner-native, non-defaced MR pixels.
 neuro-sync upload /path/to/dicom-export
-neuro-sync upload /path/to/dicom-export --confirm-authorized
+neuro-sync upload /path/to/dicom-export --confirm-authorized \
+  --confirm-native-pixels-authorized
+
+# Required only when accepting a newly advertised policy non-interactively:
+neuro-sync upload /path/to/dicom-export --confirm-authorized \
+  --confirm-native-pixels-authorized \
+  --accept-policy-version open-mri-1.0.0
 
 # Classify, rewrite, audit, and archive locally without contacting the service.
 neuro-sync upload /path/to/dicom-export --dry-run
@@ -143,7 +153,7 @@ Never place participant scans or populated secret files in this repository. DICO
 
 ## Production
 
-Production is published as one source-aligned unit. A `main` push deploys only when the latest non-prerelease client tag points to that exact commit and its version matches the client source. A new release stays a private GitHub draft while the workflow builds every platform package and applies migrations. It then deploys the new Worker/site with byte-for-byte verified copies of the currently public downloads, proves that exact preserved client can still register, proves the newly built candidate client and non-PHI fixture through production and Sophont, and only afterward cuts over the new index, installers, and packages. Any post-deploy failure rolls Pages back to the production deployment captured before phase one; only a fully verified release is made public. Production requires D1 `DB`, R2 `ARCHIVE`, and these secrets:
+Production is published as one source-aligned unit. A `main` push deploys only when the latest non-prerelease client tag points to that exact commit and its version matches the client source. A new release stays a private GitHub draft while the workflow builds every platform package and applies migrations. It then deploys the new Worker/site with byte-for-byte verified copies of the currently public downloads, proves that exact preserved client can still register, proves the newly built candidate client and non-PHI fixture through production and Sophont, and only afterward cuts over the new index, installers, and packages. Because D1 migrations and accepted all-MR state are forward-only, any post-phase-one failure redeploys the forward-compatible candidate backend with the byte-for-byte preserved public downloads; it never restores a pre-v2 Worker over migrated state. A failure before the public-download capture or first deployment leaves production untouched. Only a fully verified release is made public. Production requires D1 `DB`, R2 `ARCHIVE`, and these secrets:
 
 - `ADMIN_API_TOKEN`
 - `SITE_KEY_ENCRYPTION_KEY_B64`
@@ -164,11 +174,12 @@ Client packages are built from the current `main` commit for universal macOS, Wi
 - Run clean-machine installation, interruption, automatic continuation, and receipt tests on each promised OS and representative institution-managed workstations.
 - Independently inspect every release’s stored rewritten DICOM, derived sidecar/manifest, metadata retention, PHI absence, native geometry, hashes, withdrawal, and cleanup.
 - Add governed discovery/access, compatibility dashboards, and downstream training caches without weakening the immutable source archive.
-- Keep structural MRI on a separate route until local defacing and quantitative brain-preservation QC are validated.
+- Validate a separate derived structural defacing route with quantitative brain-preservation and face-reidentification QC before any anatomy is eligible for broader release.
 
 ## Contracts
 
-- [EPI ingest and identity](docs/epi-ingestion-contract.md)
+- [MR ingest and identity](docs/mr-ingestion-contract.md)
+- [Functional EPI processing](docs/epi-ingestion-contract.md)
 - [DICOM de-identification](docs/dicom-deidentification-policy.md)
 - [Artifacts and APIs](docs/artifact-and-api-contracts.md)
 - [Terminal onboarding](docs/collaborator-onboarding.md)

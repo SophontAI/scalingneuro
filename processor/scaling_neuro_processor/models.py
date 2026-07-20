@@ -9,11 +9,33 @@ from .errors import InvalidJob
 
 
 SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
+CLIENT_VERSION_RE = re.compile(
+    r"^(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)"
+    r"(?:-[A-Za-z0-9.-]+)?(?:\+[A-Za-z0-9.-]+)?$"
+)
 PSEUDONYM_RE = re.compile(r"^[0-9a-f]{24}$")
 SAFE_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
 HEADER_RE = re.compile(r"^[!#$%&'*+.^_`|~0-9A-Za-z-]{1,128}$")
 MAX_OBJECT_BYTES = 256 * 1024**3
 MAX_DICOM_INSTANCES = 500_000
+SERIES_KINDS = frozenset(
+    {
+        "functional_epi",
+        "structural_t1w",
+        "structural_t2w",
+        "structural_other",
+        "diffusion",
+        "asl_perfusion",
+        "perfusion",
+        "fieldmap",
+        "sbref",
+        "localizer",
+        "derived_mr",
+        "other_mr",
+    }
+)
+PROCESSING_ROUTES = frozenset({"functional-epi-v1", "archive-verify-v1"})
+PIXEL_DATA_POLICY = "scanner-native-not-defaced"
 
 
 def _mapping(value: Any) -> Mapping[str, Any]:
@@ -115,6 +137,9 @@ class DicomInput:
     archive: Download
     format: str
     dicom_count: int
+    series_kind: str = "functional_epi"
+    processing_route: str = "functional-epi-v1"
+    pixel_data_policy: str = PIXEL_DATA_POLICY
 
 
 @dataclass(frozen=True)
@@ -134,6 +159,7 @@ class Job:
     lease_expires_at: str
     input_format: str
     input: DicomInput | NiftiInput
+    client_version: str | None = None
 
     @classmethod
     def from_json(cls, value: Any) -> "Job":
@@ -158,10 +184,43 @@ class Job:
             archive = Download.from_json(descriptor)
             if archive.size_bytes > 64 * 1024**3:
                 raise InvalidJob()
+
+            # New all-MR jobs carry their scientific routing contract. Accept
+            # either placement during the Worker rollout, but never accept a
+            # conflicting duplicate or a partially specified contract. A job
+            # with none of the fields is the legacy functional-EPI contract.
+            contract: dict[str, Any] = {}
+            for name in ("series_kind", "processing_route", "pixel_data_policy"):
+                values = [source[name] for source in (obj, raw_input) if name in source]
+                if len(values) == 2 and values[0] != values[1]:
+                    raise InvalidJob()
+                contract[name] = values[0] if values else None
+            present = [value is not None for value in contract.values()]
+            if any(present) and not all(present):
+                raise InvalidJob()
+            if all(present):
+                series_kind = _string(contract["series_kind"], maximum=64)
+                processing_route = _string(contract["processing_route"], maximum=32)
+                pixel_data_policy = _string(contract["pixel_data_policy"], maximum=64)
+                if (
+                    series_kind not in SERIES_KINDS
+                    or processing_route not in PROCESSING_ROUTES
+                    or pixel_data_policy != PIXEL_DATA_POLICY
+                    or (series_kind == "functional_epi")
+                    != (processing_route == "functional-epi-v1")
+                ):
+                    raise InvalidJob()
+            else:
+                series_kind = "functional_epi"
+                processing_route = "functional-epi-v1"
+                pixel_data_policy = PIXEL_DATA_POLICY
             parsed_input: DicomInput | NiftiInput = DicomInput(
                 archive=archive,
                 format=archive_format,
                 dicom_count=count,
+                series_kind=series_kind,
+                processing_route=processing_route,
+                pixel_data_policy=pixel_data_policy,
             )
         elif input_format == "nifti-v1":
             nifti = Download.from_json(raw_input.get("nifti"))
@@ -202,6 +261,15 @@ class Job:
         series_id = _string(obj.get("series_id"), maximum=24)
         if not PSEUDONYM_RE.fullmatch(series_id):
             raise InvalidJob()
+        client_version = (
+            _string(obj.get("client_version"), maximum=64)
+            if obj.get("client_version") is not None
+            else None
+        )
+        if client_version is not None and not CLIENT_VERSION_RE.fullmatch(
+            client_version
+        ):
+            raise InvalidJob()
         return cls(
             job_id=_string(obj.get("job_id"), identifier=True, maximum=128),
             upload_id=_string(obj.get("upload_id"), identifier=True, maximum=128),
@@ -212,6 +280,7 @@ class Job:
             lease_expires_at=lease_expires_at,
             input_format=input_format,
             input=parsed_input,
+            client_version=client_version,
         )
 
 

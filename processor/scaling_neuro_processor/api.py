@@ -3,12 +3,12 @@ from __future__ import annotations
 import json
 import random
 import time
-from typing import Any, Callable
+from typing import Any, Callable, Literal
 from urllib.error import HTTPError, URLError
 from urllib.parse import quote
 from urllib.request import HTTPRedirectHandler, Request, build_opener
 
-from . import __version__
+from . import PIPELINE_VERSION, __version__
 from .config import Config
 from .errors import ApiFailure, InvalidJob, LeaseLost
 from .models import Job, OutputFile, PutGrant
@@ -124,6 +124,14 @@ class ControlPlane:
         }
         if self.config.claim_input_format is not None:
             payload["claim_input_format"] = self.config.claim_input_format
+        if self.config.controller_source_sha256 is not None:
+            payload.update(
+                {
+                    "processor_version": __version__,
+                    "pipeline_version": PIPELINE_VERSION,
+                    "controller_source_sha256": self.config.controller_source_sha256,
+                }
+            )
         value = self._request(
             "POST",
             "/v1/processor/jobs/claim",
@@ -169,22 +177,26 @@ class ControlPlane:
         outputs: list[OutputFile],
         validation: dict[str, Any],
         *,
-        dcm2niix_version: str,
+        dcm2niix_version: str | None = None,
     ) -> None:
+        payload: dict[str, Any] = {
+            "lease_token": job.lease_token,
+            "processor_version": __version__,
+            "outputs": [output.descriptor() for output in outputs],
+            "validation": validation,
+        }
+        if dcm2niix_version is not None:
+            payload["dcm2niix_version"] = dcm2niix_version
         self._request(
             "POST",
             f"/v1/processor/jobs/{quote(job.job_id, safe='')}/complete",
-            {
-                "lease_token": job.lease_token,
-                "processor_version": __version__,
-                "dcm2niix_version": dcm2niix_version,
-                "outputs": [output.descriptor() for output in outputs],
-                "validation": validation,
-            },
+            payload,
         )
 
-    def fail(self, job: Job, *, retryable: bool, error_code: str) -> None:
-        self._request(
+    def fail(
+        self, job: Job, *, retryable: bool, error_code: str
+    ) -> Literal["queued", "failed"]:
+        value = self._request(
             "POST",
             f"/v1/processor/jobs/{quote(job.job_id, safe='')}/fail",
             {
@@ -194,3 +206,10 @@ class ControlPlane:
                 "error_message": error_code[:128],
             },
         )
+        if (
+            not isinstance(value, dict)
+            or value.get("job_id") != job.job_id
+            or value.get("status") not in {"queued", "failed"}
+        ):
+            raise ApiFailure("FAIL_RESPONSE_INVALID")
+        return value["status"]

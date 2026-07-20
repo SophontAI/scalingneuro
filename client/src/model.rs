@@ -212,6 +212,10 @@ pub struct LocalManifest {
     pub consent_policy_version: String,
     pub client_version: String,
     #[serde(default)]
+    pub classifier_contract_version: String,
+    #[serde(default)]
+    pub archive_contract_version: String,
+    #[serde(default)]
     pub metadata_policy: MetadataPolicy,
     pub created_at: String,
     pub source_summary: SourceSummary,
@@ -225,6 +229,12 @@ pub struct ManifestBundle {
     pub subject_id: String,
     pub session_id: String,
     pub protocol_group_id: String,
+    #[serde(default)]
+    pub series_kind: String,
+    #[serde(default)]
+    pub processing_route: String,
+    #[serde(default)]
+    pub pixel_data_policy: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub nifti: Option<ManifestObject>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -284,6 +294,12 @@ pub struct ReportBundle {
     pub subject_id: String,
     pub session_id: String,
     pub protocol_group_id: String,
+    #[serde(default)]
+    pub series_kind: String,
+    #[serde(default)]
+    pub processing_route: String,
+    #[serde(default)]
+    pub pixel_data_policy: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub nifti: Option<ReportObject>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -333,6 +349,9 @@ impl From<&ManifestBundle> for ReportBundle {
             subject_id: bundle.subject_id.clone(),
             session_id: bundle.session_id.clone(),
             protocol_group_id: bundle.protocol_group_id.clone(),
+            series_kind: bundle.series_kind.clone(),
+            processing_route: bundle.processing_route.clone(),
+            pixel_data_policy: bundle.pixel_data_policy.clone(),
             nifti: bundle.nifti.as_ref().map(ReportObject::from),
             metadata: bundle.metadata.as_ref().map(ReportObject::from),
             archive: bundle.archive.as_ref().map(|archive| ReportArchiveObject {
@@ -369,6 +388,8 @@ pub struct RunReport {
     pub project_name: String,
     #[serde(default)]
     pub consent_policy_version: String,
+    #[serde(default)]
+    pub client_version: String,
     pub started_at: String,
     pub completed_at: Option<String>,
     pub source_summary: SourceSummary,
@@ -418,6 +439,9 @@ mod tests {
             subject_id: "cccccccccccccccccccccccc".into(),
             session_id: "dddddddddddddddddddddddd".into(),
             protocol_group_id: "eeeeeeeeeeeeeeeeeeeeeeee".into(),
+            series_kind: "functional_epi".into(),
+            processing_route: "functional-epi-v1".into(),
+            pixel_data_policy: "scanner-native-not-defaced".into(),
             nifti: Some(ManifestObject {
                 relative_key: "bundle/scan.nii.gz".into(),
                 local_path: "/private/source/workspace/scan.nii.gz".into(),
@@ -456,6 +480,7 @@ mod tests {
             project_id: "project".into(),
             project_name: "Project".into(),
             consent_policy_version: "pilot-2026-07".into(),
+            client_version: crate::CLIENT_VERSION.into(),
             started_at: "2026-07-12T00:00:00Z".into(),
             completed_at: Some("2026-07-12T00:01:00Z".into()),
             source_summary: SourceSummary::default(),

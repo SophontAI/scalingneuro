@@ -22,7 +22,7 @@ if [[ $# -lt 1 || $# -gt 3 ]]; then
 fi
 
 processor_source=$1
-install_root=${2:-/data/paul/scaling-neuro/native/releases/0.1.1}
+install_root=${2:-/data/paul/scaling-neuro/native/releases/0.2.0}
 python_bin=${3:-python3.12}
 
 exec "$processor_source/scripts/install-native-on-compute.sh" \

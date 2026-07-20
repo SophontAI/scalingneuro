@@ -24,7 +24,7 @@ RUN curl -fsSLo source.tar.gz "https://github.com/rordenlab/dcm2niix/archive/ref
 FROM python:3.12.11-slim-bookworm
 
 LABEL org.opencontainers.image.title="Scaling Neuro processor" \
-      org.opencontainers.image.version="0.1.1" \
+      org.opencontainers.image.version="0.2.0" \
       org.opencontainers.image.source="https://github.com/SophontAI/scalingneuro"
 
 RUN apt-get update \

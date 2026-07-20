@@ -9,7 +9,7 @@ from typing import Any
 
 from . import DCM2NIIX_VERSION, PIPELINE_VERSION, __version__
 from .api import ControlPlane
-from .archive import extract_archive
+from .archive import ArchiveManifest, SEMVER_RE, extract_archive
 from .config import Config
 from .converter import NORMALIZED_ARGUMENTS, convert
 from .errors import CapacityFailure, InvalidArchive, InvalidJob, InvalidNifti, LeaseLost
@@ -26,7 +26,7 @@ from .nifti import deterministic_gzip, inspect_gzip_nifti, sanitize_nifti
 from .transport import ObjectTransport, sha256_file
 
 
-RESULT_SCHEMA = "scaling-neuro.local-result.v2"
+RESULT_SCHEMA = "scaling-neuro.local-result.v3"
 CONVERSION_WORKING_SET_FACTOR = 2
 
 
@@ -45,6 +45,19 @@ def _require_free_space(path: Path, required_bytes: int, reserve_bytes: int) -> 
         raise CapacityFailure()
 
 
+def _archive_client_version(job: Job, manifest: ArchiveManifest) -> str:
+    legacy = manifest.value.get("client")
+    if isinstance(legacy, dict):
+        value = legacy.get("version")
+        if isinstance(value, str) and SEMVER_RE.fullmatch(value):
+            if job.client_version is not None and job.client_version != value:
+                raise InvalidArchive("ARCHIVE_CLIENT_PROVENANCE_MISMATCH")
+            return value
+    if job.client_version is not None:
+        return job.client_version
+    raise InvalidArchive("ARCHIVE_CLIENT_PROVENANCE_MISSING")
+
+
 def _save_result(
     job_root: Path,
     job: Job,
@@ -56,9 +69,26 @@ def _save_result(
         "schema_version": RESULT_SCHEMA,
         "processor_version": __version__,
         "pipeline_version": PIPELINE_VERSION,
-        "dcm2niix_version": DCM2NIIX_VERSION,
+        "dcm2niix_version": (
+            DCM2NIIX_VERSION
+            if isinstance(job.input, DicomInput) and outputs
+            else None
+        ),
         "series_archive_id": job.series_archive_id,
         "series_id": job.series_id,
+        "series_kind": (
+            job.input.series_kind
+            if isinstance(job.input, DicomInput)
+            else "legacy_nifti"
+        ),
+        "processing_route": (
+            job.input.processing_route
+            if isinstance(job.input, DicomInput)
+            else "legacy-nifti-v1"
+        ),
+        "pixel_data_policy": (
+            job.input.pixel_data_policy if isinstance(job.input, DicomInput) else None
+        ),
         "input_sha256": input_sha256,
         "outputs": [
             {
@@ -89,6 +119,9 @@ def _load_result(
             "dcm2niix_version",
             "series_archive_id",
             "series_id",
+            "series_kind",
+            "processing_route",
+            "pixel_data_policy",
             "input_sha256",
             "outputs",
             "validation",
@@ -97,9 +130,25 @@ def _load_result(
                 value.get("schema_version") != RESULT_SCHEMA,
                 value.get("processor_version") != __version__,
                 value.get("pipeline_version") != PIPELINE_VERSION,
-                value.get("dcm2niix_version") != DCM2NIIX_VERSION,
                 value.get("series_archive_id") != job.series_archive_id,
                 value.get("series_id") != job.series_id,
+                not isinstance(job.input, DicomInput),
+                value.get("series_kind")
+                != (
+                    job.input.series_kind if isinstance(job.input, DicomInput) else None
+                ),
+                value.get("processing_route")
+                != (
+                    job.input.processing_route
+                    if isinstance(job.input, DicomInput)
+                    else None
+                ),
+                value.get("pixel_data_policy")
+                != (
+                    job.input.pixel_data_policy
+                    if isinstance(job.input, DicomInput)
+                    else None
+                ),
                 value.get("input_sha256") != input_sha256,
             )
         ):
@@ -114,15 +163,36 @@ def _load_result(
                 "archive_sha256_verified",
                 "dicom_count",
                 "dicom_parse_succeeded",
+                "dicom_privacy_audit_succeeded",
                 "functional_epi_confirmed",
             }
-            or validation
-            != {
+            or any(
+                validation.get(key) != expected
+                for key, expected in {
                 "archive_sha256_verified": True,
                 "dicom_count": expected_dicom_count,
                 "dicom_parse_succeeded": True,
-                "functional_epi_confirmed": True,
-            }
+                "dicom_privacy_audit_succeeded": True,
+                }.items()
+            )
+            or not isinstance(validation.get("functional_epi_confirmed"), bool)
+        ):
+            return None
+        functional_confirmed = validation["functional_epi_confirmed"]
+        if not functional_confirmed:
+            if raw_outputs != [] or value.get("dcm2niix_version") is not None:
+                return None
+            if (
+                isinstance(job.input, DicomInput)
+                and job.input.processing_route
+                not in {"archive-verify-v1", "functional-epi-v1"}
+            ):
+                return None
+            return [], validation
+        if (
+            not isinstance(job.input, DicomInput)
+            or job.input.processing_route != "functional-epi-v1"
+            or value.get("dcm2niix_version") != DCM2NIIX_VERSION
         ):
             return None
         outputs: list[OutputFile] = []
@@ -240,7 +310,7 @@ def prepare_dicom_job(
     transport: ObjectTransport,
     lease_active: Event,
 ) -> tuple[list[OutputFile], dict[str, Any]]:
-    job_root = config.job_root(job.job_id)
+    job_root = config.job_root(job.job_id, job.attempt, job.lease_token)
     job_root.mkdir(parents=True, exist_ok=True, mode=0o700)
     cached = _load_result(
         job_root, job, descriptor.archive.sha256, descriptor.dicom_count
@@ -254,7 +324,7 @@ def prepare_dicom_job(
         config.disk_reserve_bytes,
     )
     try:
-        transport.download(descriptor.archive, archive_path)
+        transport.download(descriptor.archive, archive_path, lease_active)
     except InvalidJob as exc:
         raise InvalidArchive("ARCHIVE_DOWNLOAD_INTEGRITY_MISMATCH") from exc
     _assert_lease(lease_active)
@@ -272,14 +342,41 @@ def prepare_dicom_job(
         expected_series_archive_id=job.series_archive_id,
         expected_series_id=job.series_id,
         expected_dicom_count=descriptor.dicom_count,
+        expected_series_kind=descriptor.series_kind,
+        expected_processing_route=descriptor.processing_route,
+        expected_pixel_data_policy=descriptor.pixel_data_policy,
+        lease_active=lease_active,
     )
     _assert_lease(lease_active)
+    validation = {
+        "archive_sha256_verified": True,
+        "dicom_count": manifest.dicom_count,
+        "dicom_parse_succeeded": True,
+        "dicom_privacy_audit_succeeded": True,
+        "functional_epi_confirmed": (
+            descriptor.processing_route == "functional-epi-v1"
+            and manifest.functional_epi_headers_confirmed
+        ),
+    }
+    if descriptor.processing_route == "archive-verify-v1":
+        outputs: list[OutputFile] = []
+        _save_result(job_root, job, descriptor.archive.sha256, outputs, validation)
+        return outputs, validation
+    if not manifest.functional_epi_headers_confirmed:
+        outputs = []
+        _save_result(job_root, job, descriptor.archive.sha256, outputs, validation)
+        return outputs, validation
     _require_free_space(
         job_root,
         manifest.extracted_bytes * CONVERSION_WORKING_SET_FACTOR,
         config.disk_reserve_bytes,
     )
-    conversion = convert(config, stage / "input" / "dicom", stage / "converted")
+    conversion = convert(
+        config,
+        stage / "input" / "dicom",
+        stage / "converted",
+        lease_active,
+    )
     sanitize_nifti(conversion.nifti)
     nifti_path = outputs_dir / "bold.nii.gz"
     facts, nifti_size, nifti_sha = deterministic_gzip(conversion.nifti, nifti_path)
@@ -288,6 +385,7 @@ def prepare_dicom_job(
         manifest,
         converter_sidecar,
         facts,
+        client_version=_archive_client_version(job, manifest),
         nifti_filename=nifti_path.name,
         nifti_size=nifti_size,
         nifti_sha256=nifti_sha,
@@ -303,7 +401,11 @@ def prepare_dicom_job(
         and 0 < image["te_seconds"] <= 2
     )
     if not functional_epi_confirmed:
-        raise InvalidNifti("FUNCTIONAL_EPI_NOT_CONFIRMED")
+        _clean(outputs_dir)
+        outputs = []
+        validation["functional_epi_confirmed"] = False
+        _save_result(job_root, job, descriptor.archive.sha256, outputs, validation)
+        return outputs, validation
     sidecar_path = outputs_dir / "bold.json"
     write_canonical_json(sidecar_path, sidecar_value)
     nifti_output = output_file(
@@ -325,12 +427,7 @@ def prepare_dicom_job(
         "processing_manifest", processing_path, "application/json"
     )
     outputs = [nifti_output, sidecar_output, processing_output]
-    validation = {
-        "archive_sha256_verified": True,
-        "dicom_count": manifest.dicom_count,
-        "dicom_parse_succeeded": True,
-        "functional_epi_confirmed": functional_epi_confirmed,
-    }
+    validation["functional_epi_confirmed"] = functional_epi_confirmed
     _save_result(job_root, job, descriptor.archive.sha256, outputs, validation)
     return outputs, validation
 
@@ -342,12 +439,12 @@ def process_legacy_job(
     transport: ObjectTransport,
     lease_active: Event,
 ) -> dict[str, Any]:
-    job_root = config.job_root(job.job_id)
+    job_root = config.job_root(job.job_id, job.attempt, job.lease_token)
     job_root.mkdir(parents=True, exist_ok=True, mode=0o700)
     nifti_path = job_root / "legacy.nii.gz"
     sidecar_path = job_root / "legacy.json"
-    transport.download(descriptor.nifti, nifti_path)
-    transport.download(descriptor.sidecar, sidecar_path)
+    transport.download(descriptor.nifti, nifti_path, lease_active)
+    transport.download(descriptor.sidecar, sidecar_path, lease_active)
     _assert_lease(lease_active)
     assert descriptor.nifti.uncompressed_sha256 is not None
     facts = inspect_gzip_nifti(nifti_path, descriptor.nifti.uncompressed_sha256)
@@ -390,16 +487,29 @@ def process_job(
             config, job, job.input, transport, lease_active
         )
         _assert_lease(lease_active)
-        grants = api.output_grants(job, outputs)
-        for output in outputs:
-            _assert_lease(lease_active)
-            transport.upload(output, grants[output.kind])
+        if outputs:
+            grants = api.output_grants(job, outputs)
+            for output in outputs:
+                _assert_lease(lease_active)
+                transport.upload(output, grants[output.kind], lease_active)
         _assert_lease(lease_active)
-        api.complete(job, outputs, validation, dcm2niix_version=DCM2NIIX_VERSION)
+        api.complete(
+            job,
+            outputs,
+            validation,
+            dcm2niix_version=(
+                DCM2NIIX_VERSION
+                if outputs and validation.get("functional_epi_confirmed") is True
+                else None
+            ),
+        )
     elif isinstance(job.input, NiftiInput):
         validation = process_legacy_job(config, job, job.input, transport, lease_active)
         _assert_lease(lease_active)
         api.complete(job, [], validation, dcm2niix_version=DCM2NIIX_VERSION)
     else:
         raise InvalidJob()
-    shutil.rmtree(config.job_root(job.job_id), ignore_errors=True)
+    shutil.rmtree(
+        config.job_root(job.job_id, job.attempt, job.lease_token),
+        ignore_errors=True,
+    )

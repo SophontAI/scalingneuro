@@ -1,0 +1,213 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://scalingneuro.com/schemas/dicom-archive-manifest-v2.schema.json",
+  "title": "Scaling Neuro internal MR DICOM archive manifest v2",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "series_archive_id",
+    "series_id",
+    "subject_id",
+    "session_id",
+    "protocol_group_id",
+    "modality",
+    "series_kind",
+    "processing_route",
+    "pixel_data_policy",
+    "dicom_instance_count",
+    "writer_contract",
+    "deidentification",
+    "source",
+    "classification",
+    "instances"
+  ],
+  "properties": {
+    "schema_version": { "const": "2.0.0" },
+    "series_archive_id": { "$ref": "https://scalingneuro.com/schemas/common-v1.schema.json#/$defs/pseudonymId" },
+    "series_id": { "$ref": "https://scalingneuro.com/schemas/common-v1.schema.json#/$defs/pseudonymId" },
+    "subject_id": { "$ref": "https://scalingneuro.com/schemas/common-v1.schema.json#/$defs/pseudonymId" },
+    "session_id": { "$ref": "https://scalingneuro.com/schemas/common-v1.schema.json#/$defs/pseudonymId" },
+    "protocol_group_id": { "$ref": "https://scalingneuro.com/schemas/common-v1.schema.json#/$defs/pseudonymId" },
+    "modality": { "const": "mr" },
+    "series_kind": { "$ref": "#/$defs/seriesKind" },
+    "processing_route": { "enum": ["functional-epi-v1", "archive-verify-v1"] },
+    "pixel_data_policy": { "const": "scanner-native-not-defaced" },
+    "dicom_instance_count": { "type": "integer", "minimum": 1, "maximum": 500000 },
+    "writer_contract": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "version"],
+      "properties": {
+        "name": { "const": "neuro-sync" },
+        "version": { "const": "2.0.0" }
+      }
+    },
+    "deidentification": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "policy_id",
+        "policy_version",
+        "method",
+        "recursive",
+        "private_text_removed",
+        "unknown_private_removed",
+        "uids_remapped",
+        "pixel_data_retained",
+        "defacing_performed",
+        "recognizable_visual_features",
+        "burned_in_annotation_status"
+      ],
+      "properties": {
+        "policy_id": { "const": "scaling-neuro.dicom-deidentification" },
+        "policy_version": { "const": "2.0.0" },
+        "method": { "const": "scaling-neuro-recursive-allowlist-v2" },
+        "recursive": { "const": true },
+        "private_text_removed": { "const": true },
+        "unknown_private_removed": { "const": true },
+        "uids_remapped": { "const": true },
+        "pixel_data_retained": { "const": true },
+        "defacing_performed": { "const": false },
+        "recognizable_visual_features": { "const": "may_be_present" },
+        "burned_in_annotation_status": { "enum": ["verified_no", "not_declared"] },
+        "safe_private_exceptions": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "enum": [
+              "siemens_csa_image_header_numeric_v1",
+              "dicom_ps3.15_siemens_mr_header_diffusion",
+              "dicom_ps3.15_philips_diffusion",
+              "dicom_ps3.15_philips_phase_number",
+              "dicom_ps3.15_ge_diffusion_b_value",
+              "uih_image_private_header_grid_slice_count_numeric_v1",
+              "uih_image_private_header_diffusion_numeric_v1",
+              "philips_mr_imaging_dd_001_diffusion_gradient_vector_numeric_v1",
+              "philips_mr_imaging_dd_005_diffusion_indices_numeric_v1",
+              "philips_mr_imaging_dd_005_asl_label_code_v1",
+              "ge_gems_acqu_01_diffusion_gradient_vector_numeric_v1",
+              "ge_gems_parm_01_asl_technique_duration_v1",
+              "dicom_ps3.15_philips_scale_intercept_slope",
+              "dicom_ps3.15_philips_number_of_slices",
+              "dicom_ps3.15_philips_water_fat_shift",
+              "dicom_ps3.15_philips_per_frame_scale_slope"
+            ]
+          }
+        },
+        "metadata_transformations": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 5,
+          "uniqueItems": true,
+          "items": {
+            "enum": [
+              "replaced_unknown_classic_image_type_components_with_other",
+              "suppressed_redundant_philips_dynamic_trigger_time",
+              "emptied_asl_technique_description",
+              "redacted_asl_crusher_description",
+              "emptied_asl_bolus_cutoff_technique"
+            ]
+          }
+        }
+      }
+    },
+    "source": { "$ref": "#/$defs/source" },
+    "classification": { "$ref": "https://scalingneuro.com/schemas/common-v1.schema.json#/$defs/classification" },
+    "instances": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 500000,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["path", "size_bytes", "sha256", "sop_instance_uid"],
+        "properties": {
+          "path": { "type": "string", "pattern": "^dicom/[0-9]{6}\\.dcm$" },
+          "size_bytes": { "type": "integer", "minimum": 1, "maximum": 68719476736 },
+          "sha256": { "$ref": "https://scalingneuro.com/schemas/common-v1.schema.json#/$defs/sha256" },
+          "sop_instance_uid": { "type": "string", "maxLength": 64, "pattern": "^[0-9]+(?:\\.[0-9]+)+$" }
+        }
+      }
+    }
+  },
+  "allOf": [
+    {
+      "if": { "properties": { "series_kind": { "const": "functional_epi" } }, "required": ["series_kind"] },
+      "then": { "properties": { "processing_route": { "const": "functional-epi-v1" } } },
+      "else": { "properties": { "processing_route": { "const": "archive-verify-v1" } } }
+    }
+  ],
+  "$defs": {
+    "seriesKind": {
+      "enum": [
+        "functional_epi",
+        "structural_t1w",
+        "structural_t2w",
+        "structural_other",
+        "diffusion",
+        "asl_perfusion",
+        "perfusion",
+        "fieldmap",
+        "sbref",
+        "localizer",
+        "derived_mr",
+        "other_mr"
+      ]
+    },
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["dicom_count"],
+      "properties": {
+        "dicom_count": { "type": "integer", "minimum": 1, "maximum": 500000 },
+        "manufacturer": { "$ref": "#/$defs/safeEquipmentText" },
+        "model": { "$ref": "#/$defs/safeEquipmentText" },
+        "patient_position": { "enum": ["HFP", "HFS", "HFDR", "HFDL", "FFDR", "FFDL", "FFP", "FFS"] },
+        "software_versions": { "type": "array", "uniqueItems": true, "maxItems": 16, "items": { "$ref": "#/$defs/safeEquipmentText" } },
+        "magnetic_field_strength": { "type": "number", "minimum": 0.01, "maximum": 15 },
+        "receive_coil_name": { "type": "string", "minLength": 1, "maxLength": 96 },
+        "transmit_coil_name": { "type": "string", "minLength": 1, "maxLength": 96 },
+        "sequence_name": { "type": "string", "minLength": 1, "maxLength": 64 },
+        "scanning_sequence": { "type": "array", "uniqueItems": true, "maxItems": 5, "items": { "enum": ["SE", "IR", "GR", "EP", "RM"] } },
+        "sequence_variant": { "type": "array", "uniqueItems": true, "maxItems": 8, "items": { "enum": ["SK", "MTC", "SS", "TRSS", "SP", "MP", "OSP", "NONE"] } },
+        "scan_options": { "type": "array", "uniqueItems": true, "maxItems": 9, "items": { "enum": ["PER", "RG", "CG", "PPG", "FC", "PFF", "PFP", "SP", "FS"] } },
+        "mr_acquisition_type": { "enum": ["2D", "3D"] },
+        "image_type": {
+          "type": "array",
+          "uniqueItems": true,
+          "maxItems": 48,
+          "items": {
+            "enum": [
+              "ORIGINAL", "DERIVED", "PRIMARY", "SECONDARY",
+              "M", "MAGNITUDE", "P", "PHASE", "R", "REAL", "I", "IMAGINARY",
+              "MIXED", "ND", "NORM", "MOSAIC", "GRID", "VFRAME", "DIS2D", "FMRI", "BOLD", "EPI",
+              "T1", "T1W", "T2", "T2W", "T2_STAR", "T2STAR", "FLAIR",
+              "DIFFUSION", "DWI", "ADC", "TRACEW", "FA", "DTI", "ASL", "PERFUSION",
+              "FIELD_MAP", "FIELDMAP", "PHASEDIFF", "SBREF", "LOCALIZER", "SCOUT",
+              "SURVEY", "REF", "REFERENCE", "NONE"
+            ]
+          }
+        },
+        "series_number": { "type": "integer", "minimum": 0, "maximum": 2147483647 },
+        "acquisition_number": { "type": "integer", "minimum": 0, "maximum": 2147483647 }
+      }
+    },
+    "safeEquipmentText": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 64,
+      "pattern": "^[A-Za-z0-9](?:[A-Za-z0-9 .,_+&()/\\-]*[A-Za-z0-9.,_+&()/\\-])?$",
+      "allOf": [
+        { "pattern": "[A-Za-z]" },
+        { "not": { "pattern": "\\.\\." } },
+        { "not": { "pattern": " / " } },
+        { "not": { "pattern": "://" } },
+        { "not": { "pattern": "^[A-Za-z]:" } },
+        { "not": { "pattern": "  " } },
+        { "not": { "pattern": "(^|[^A-Za-z0-9])([Ee][Mm][Aa][Ii][Ll]|[Nn][Aa][Mm][Ee]|[Mm][Rr][Nn]|[Pp][Aa][Tt][Ii][Ee][Nn][Tt]|[Pp][Aa][Rr][Tt][Ii][Cc][Ii][Pp][Aa][Nn][Tt]|[Ss][Uu][Bb][Jj][Ee][Cc][Tt]|[Bb][Ii][Rr][Tt][Hh]|[Dd][Oo][Bb]|[Ss][Ss][Nn]|[Aa][Cc][Cc][Ee][Ss][Ss][Ii][Oo][Nn])[A-Za-z0-9]*" } },
+        { "not": { "pattern": "(^|[^A-Za-z0-9])[0-9]{7,}([^A-Za-z0-9]|$)" } }
+      ]
+    }
+  }
+}

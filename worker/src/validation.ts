@@ -27,6 +27,20 @@ const MAX_DICOM_UPLOAD_BYTES = 250 * 1024 ** 3;
 const MAX_COMPLETION_OBJECTS = Math.max(MAX_BUNDLES * 2, MAX_DICOM_SERIES);
 const PROCESSOR_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,95}$/u;
 const ERROR_CODE = /^[A-Z0-9][A-Z0-9_]{0,63}$/u;
+const DICOM_SERIES_KINDS = new Set([
+  "functional_epi",
+  "structural_t1w",
+  "structural_t2w",
+  "structural_other",
+  "diffusion",
+  "asl_perfusion",
+  "perfusion",
+  "fieldmap",
+  "sbref",
+  "localizer",
+  "derived_mr",
+  "other_mr",
+]);
 
 export interface EnrollRequest {
   invite_code: string;
@@ -88,6 +102,9 @@ export interface DicomSeriesDescriptor {
   session_id: string;
   protocol_group_id: string;
   dicom_count: number;
+  series_kind?: string;
+  processing_route?: "functional-epi-v1" | "archive-verify-v1";
+  pixel_data_policy?: "scanner-native-not-defaced";
   archive: DicomArchiveDescriptor;
 }
 
@@ -125,6 +142,9 @@ export interface ProcessorClaimRequest {
   processor_id: string;
   lease_seconds: number;
   claim_input_format?: "dicom-series-v1" | "nifti-v1";
+  processor_version?: string;
+  pipeline_version?: string;
+  controller_source_sha256?: string;
 }
 
 export type ProcessorOutputKind =
@@ -154,7 +174,12 @@ export interface DicomProcessorValidation {
   archive_sha256_verified: boolean;
   dicom_count: number;
   dicom_parse_succeeded: boolean;
+  dicom_privacy_audit_succeeded?: boolean;
   functional_epi_confirmed: boolean;
+}
+
+export interface PublicPolicyAcceptanceRequest {
+  accepted_consent_policy_version: string;
 }
 
 export interface NiftiProcessorValidation {
@@ -169,7 +194,7 @@ export interface NiftiProcessorValidation {
 export interface ProcessorCompleteRequest {
   lease_token: string;
   processor_version: string;
-  dcm2niix_version: string;
+  dcm2niix_version?: string;
   outputs: ProcessorOutputDescriptor[];
   validation: DicomProcessorValidation | NiftiProcessorValidation;
 }
@@ -603,7 +628,7 @@ export function parseCreateDicomUploadRequest(
         "dicom_count",
         "archive",
       ],
-      [],
+      ["series_kind", "processing_route", "pixel_data_policy"],
       label,
     );
     const archiveInput = record(item.archive, `${label}.archive`);
@@ -636,6 +661,35 @@ export function parseCreateDicomUploadRequest(
     archiveIds.add(seriesArchiveId);
     seriesIds.add(seriesId);
     relativeKeys.add(relativeKey);
+    let processingRoute: DicomSeriesDescriptor["processing_route"];
+    if (item.processing_route !== undefined) {
+      if (
+        item.processing_route !== "functional-epi-v1" &&
+        item.processing_route !== "archive-verify-v1"
+      ) {
+        invalid(`${label}.processing_route is invalid`);
+      }
+      processingRoute = item.processing_route;
+    }
+    let pixelDataPolicy: DicomSeriesDescriptor["pixel_data_policy"];
+    if (item.pixel_data_policy !== undefined) {
+      if (item.pixel_data_policy !== "scanner-native-not-defaced") {
+        invalid(
+          `${label}.pixel_data_policy must be scanner-native-not-defaced`,
+        );
+      }
+      pixelDataPolicy = item.pixel_data_policy;
+    }
+    const seriesKind =
+      item.series_kind === undefined
+        ? undefined
+        : text(item.series_kind, `${label}.series_kind`, {
+            max: 64,
+            pattern: /^[a-z][a-z0-9_]{0,63}$/u,
+          });
+    if (seriesKind !== undefined && !DICOM_SERIES_KINDS.has(seriesKind)) {
+      invalid(`${label}.series_kind is invalid`);
+    }
     return {
       series_archive_id: seriesArchiveId,
       series_id: seriesId,
@@ -651,6 +705,13 @@ export function parseCreateDicomUploadRequest(
         1,
         MAX_DICOM_INSTANCES_PER_SERIES,
       ),
+      ...(seriesKind === undefined ? {} : { series_kind: seriesKind }),
+      ...(processingRoute === undefined
+        ? {}
+        : { processing_route: processingRoute }),
+      ...(pixelDataPolicy === undefined
+        ? {}
+        : { pixel_data_policy: pixelDataPolicy }),
       archive: {
         format: "dicom-tar-zstd",
         relative_key: relativeKey,
@@ -851,7 +912,12 @@ export function parseProcessorClaimRequest(
   exactKeys(
     input,
     ["processor_id", "lease_seconds"],
-    ["claim_input_format"],
+    [
+      "claim_input_format",
+      "processor_version",
+      "pipeline_version",
+      "controller_source_sha256",
+    ],
     "request",
   );
   if (
@@ -860,6 +926,17 @@ export function parseProcessorClaimRequest(
     input.claim_input_format !== "nifti-v1"
   ) {
     invalid("claim_input_format must be dicom-series-v1 or nifti-v1");
+  }
+  const attestationFields = [
+    input.processor_version,
+    input.pipeline_version,
+    input.controller_source_sha256,
+  ];
+  if (
+    attestationFields.some((value) => value !== undefined) &&
+    !attestationFields.every((value) => value !== undefined)
+  ) {
+    invalid("processor readiness attestation must be complete");
   }
   return {
     processor_id: text(input.processor_id, "processor_id", {
@@ -870,6 +947,25 @@ export function parseProcessorClaimRequest(
     ...(input.claim_input_format === undefined
       ? {}
       : { claim_input_format: input.claim_input_format }),
+    ...(input.processor_version === undefined
+      ? {}
+      : {
+          processor_version: text(
+            input.processor_version,
+            "processor_version",
+            { max: 64, pattern: CLIENT_VERSION },
+          ),
+          pipeline_version: text(
+            input.pipeline_version,
+            "pipeline_version",
+            { max: 64, pattern: VERSION },
+          ),
+          controller_source_sha256: text(
+            input.controller_source_sha256,
+            "controller_source_sha256",
+            { max: 64, pattern: SHA256 },
+          ),
+        }),
   };
 }
 
@@ -904,11 +1000,10 @@ export function parseProcessorCompleteRequest(
     [
       "lease_token",
       "processor_version",
-      "dcm2niix_version",
       "outputs",
       "validation",
     ],
-    [],
+    ["dcm2niix_version"],
     "request",
   );
   const validation = record(input.validation, "validation");
@@ -922,7 +1017,7 @@ export function parseProcessorCompleteRequest(
         "dicom_parse_succeeded",
         "functional_epi_confirmed",
       ],
-      [],
+      ["dicom_privacy_audit_succeeded"],
       "validation",
     );
     parsedValidation = {
@@ -940,6 +1035,14 @@ export function parseProcessorCompleteRequest(
         validation.dicom_parse_succeeded,
         "validation.dicom_parse_succeeded",
       ),
+      ...(validation.dicom_privacy_audit_succeeded === undefined
+        ? {}
+        : {
+            dicom_privacy_audit_succeeded: boolean(
+              validation.dicom_privacy_audit_succeeded,
+              "validation.dicom_privacy_audit_succeeded",
+            ),
+          }),
       functional_epi_confirmed: boolean(
         validation.functional_epi_confirmed,
         "validation.functional_epi_confirmed",
@@ -989,12 +1092,31 @@ export function parseProcessorCompleteRequest(
       max: 64,
       pattern: VERSION,
     }),
-    dcm2niix_version: text(input.dcm2niix_version, "dcm2niix_version", {
-      max: 64,
-      pattern: VERSION,
-    }),
+    ...(input.dcm2niix_version === undefined
+      ? {}
+      : {
+          dcm2niix_version: text(
+            input.dcm2niix_version,
+            "dcm2niix_version",
+            { max: 64, pattern: VERSION },
+          ),
+        }),
     outputs: processorOutputs(input.outputs, "outputs", 0),
     validation: parsedValidation,
+  };
+}
+
+export function parsePublicPolicyAcceptanceRequest(
+  value: unknown,
+): PublicPolicyAcceptanceRequest {
+  const input = record(value, "request");
+  exactKeys(input, ["accepted_consent_policy_version"], [], "request");
+  return {
+    accepted_consent_policy_version: text(
+      input.accepted_consent_policy_version,
+      "accepted_consent_policy_version",
+      { max: 64, pattern: VERSION },
+    ),
   };
 }
 
@@ -1008,13 +1130,21 @@ export function parseProcessorFailRequest(
     [],
     "request",
   );
+  const errorCode = text(input.error_code, "error_code", {
+    max: 64,
+    pattern: ERROR_CODE,
+  });
+  // This code is an internal Worker conclusion reached only after the final
+  // retryable full-object digest mismatch. Accepting it from a processor would
+  // let one report bypass the independent redownload threshold and trigger a
+  // destructive source purge.
+  if (errorCode === "STORED_OBJECT_SHA256_MISMATCH") {
+    invalid("error_code is reserved for control-plane integrity reconciliation");
+  }
   return {
     lease_token: leaseToken(input.lease_token),
     retryable: boolean(input.retryable, "retryable"),
-    error_code: text(input.error_code, "error_code", {
-      max: 64,
-      pattern: ERROR_CODE,
-    }),
+    error_code: errorCode,
     error_message: humanLabel(input.error_message, "error_message", 512),
   };
 }

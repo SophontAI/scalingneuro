@@ -12,11 +12,10 @@ from .archive import (
     ArchiveManifest,
     CANONICAL_COIL_RE,
     PSEUDONYM_RE,
-    SCANNER_MODELS,
     SEMVER_RE,
-    SOFTWARE_VERSION_RE,
 )
 from .converter import NORMALIZED_ARGUMENTS
+from .dicom_privacy import safe_scanner_text
 from .errors import InvalidNifti
 from .models import OutputFile
 from .nifti import NiftiFacts
@@ -256,20 +255,21 @@ def _canonical_sequence(value: Any) -> str | None:
 def canonical_source_metadata(source: dict[str, Any]) -> dict[str, Any]:
     """Project the raw inventory onto the public default-deny sidecar.
 
-    Novel safe equipment values remain in the immutable DICOM manifest, but
-    are omitted here until the public policy gains a canonical value. Novelty
-    therefore never makes a valid scan fail processing.
+    Vendor names are normalized to broad families when recognized. Safe model
+    and software identity text is retained verbatim so new scanners do not
+    require a server release before their provenance can be represented.
     """
     result: dict[str, Any] = {"dicom_count": source["dicom_count"]}
     manufacturer = _canonical_manufacturer(source.get("manufacturer"))
     if manufacturer is not None:
         result["manufacturer"] = manufacturer
-    if source.get("model") in SCANNER_MODELS:
-        result["model"] = source["model"]
+    model = source.get("model")
+    if isinstance(model, str) and safe_scanner_text(model):
+        result["model"] = model
     versions = [
         value
         for value in source.get("software_versions", [])
-        if isinstance(value, str) and SOFTWARE_VERSION_RE.fullmatch(value)
+        if isinstance(value, str) and safe_scanner_text(value)
     ]
     if versions:
         result["software_versions"] = sorted(set(versions))[:16]
@@ -299,6 +299,7 @@ def build_sidecar(
     converter_sidecar: dict[str, Any],
     facts: NiftiFacts,
     *,
+    client_version: str,
     nifti_filename: str,
     nifti_size: int,
     nifti_sha256: str,
@@ -324,7 +325,7 @@ def build_sidecar(
             }
         },
         "conversion": {
-            "client_version": source["client"]["version"],
+            "client_version": client_version,
             "converter": "dcm2niix",
             "converter_version": DCM2NIIX_VERSION,
             "arguments": NORMALIZED_ARGUMENTS,
@@ -469,7 +470,9 @@ def _validate_public_source(value: Any) -> int:
         "Bruker",
     }:
         raise InvalidNifti("LEGACY_SIDECAR_INVALID")
-    if "model" in source and source["model"] not in SCANNER_MODELS:
+    if "model" in source and (
+        not isinstance(source["model"], str) or not safe_scanner_text(source["model"])
+    ):
         raise InvalidNifti("LEGACY_SIDECAR_INVALID")
     if "software_versions" in source:
         versions = source["software_versions"]
@@ -477,7 +480,7 @@ def _validate_public_source(value: Any) -> int:
             not isinstance(versions, list)
             or not 1 <= len(versions) <= 16
             or any(
-                not isinstance(item, str) or not SOFTWARE_VERSION_RE.fullmatch(item)
+                not isinstance(item, str) or not safe_scanner_text(item)
                 for item in versions
             )
             or len(set(versions)) != len(versions)

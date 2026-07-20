@@ -26,6 +26,10 @@ def parser() -> argparse.ArgumentParser:
     )
     value.add_argument("--processor-id", default=default_processor_id())
     value.add_argument(
+        "--controller-source-sha256",
+        help="installed controller source digest recorded in the release manifest",
+    )
+    value.add_argument(
         "--claim-input-format",
         choices=("dicom-series-v1", "nifti-v1"),
         help="claim only the exact selected input format",
@@ -44,7 +48,7 @@ def parser() -> argparse.ArgumentParser:
         "--object-transfer-timeout-seconds",
         type=int,
         default=3600,
-        help="socket timeout for large object downloads and uploads",
+        help="hard wall-clock deadline for each large object download or upload",
     )
     value.add_argument("--idle-seconds", type=float, default=15)
     value.add_argument("--idle-exit-after", type=int, default=300)
@@ -90,6 +94,7 @@ def main(argv: list[str] | None = None) -> int:
             token=read_token(args.token_file),
             work_root=args.work_root,
             processor_id=args.processor_id,
+            controller_source_sha256=args.controller_source_sha256,
             claim_input_format=args.claim_input_format,
             dcm2niix_bin=args.dcm2niix_bin,
             native_tools_slurm_image=args.native_tools_slurm_image,

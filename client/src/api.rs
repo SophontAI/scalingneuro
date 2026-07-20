@@ -107,6 +107,22 @@ pub struct RegisterRequest {
     pub accepted_consent_policy_version: String,
 }
 
+#[derive(Clone, Debug, Serialize)]
+pub struct AcceptDevicePolicyRequest {
+    pub accepted_consent_policy_version: String,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+pub struct AcceptDevicePolicyResponse {
+    pub status: String,
+    pub device_id: String,
+    pub site_id: String,
+    pub project_id: String,
+    #[serde(default)]
+    pub project_name: Option<String>,
+    pub consent_policy_version: String,
+}
+
 #[derive(Clone, Deserialize)]
 pub struct EnrollResponse {
     #[serde(alias = "enrollmentId")]
@@ -152,6 +168,9 @@ pub struct DicomSeriesUploadRequest {
     pub subject_id: String,
     pub session_id: String,
     pub protocol_group_id: String,
+    pub series_kind: String,
+    pub processing_route: String,
+    pub pixel_data_policy: String,
     pub dicom_count: u64,
     pub archive: DicomArchiveUploadRequest,
 }
@@ -341,6 +360,14 @@ pub struct ProcessingProgress {
     pub failed_series: u32,
     #[serde(default)]
     pub purged_series: u32,
+    #[serde(default)]
+    pub repairable_series: u32,
+    #[serde(default)]
+    pub functional_epi_series: u32,
+    #[serde(default)]
+    pub archive_only_series: u32,
+    #[serde(default)]
+    pub archive_verified_series: u32,
     pub total_series: u32,
     pub updated_at: String,
 }
@@ -411,6 +438,21 @@ impl IngestApi {
             .await
     }
 
+    pub async fn accept_device_policy(
+        &self,
+        accepted_consent_policy_version: &str,
+    ) -> Result<AcceptDevicePolicyResponse> {
+        let request = AcceptDevicePolicyRequest {
+            accepted_consent_policy_version: accepted_consent_policy_version.into(),
+        };
+        self.send_idempotent(|| {
+            Ok(self
+                .authorized(self.client.post(self.url("/v1/device/policy")))?
+                .json(&request))
+        })
+        .await
+    }
+
     pub async fn create_upload(
         &self,
         bundles: &[ManifestBundle],
@@ -444,12 +486,25 @@ impl IngestApi {
             if !bundle.is_dicom_archive() {
                 anyhow::bail!("DICOM receipt request mixed incompatible bundle formats");
             }
+            if !crate::archive::supported_series_kind(&bundle.series_kind)
+                || bundle.classification.decision != crate::model::ClassificationDecision::Accepted
+                || bundle.classification.kind != bundle.series_kind
+                || bundle.processing_route
+                    != crate::archive::processing_route_for_kind(&bundle.series_kind)
+                || bundle.pixel_data_policy
+                    != crate::archive::SCANNER_NATIVE_NOT_DEFACED_PIXEL_POLICY
+            {
+                anyhow::bail!("DICOM receipt request has an invalid MR routing contract");
+            }
             series.push(DicomSeriesUploadRequest {
                 series_archive_id: bundle.bundle_id.clone(),
                 series_id: bundle.series_id.clone(),
                 subject_id: bundle.subject_id.clone(),
                 session_id: bundle.session_id.clone(),
                 protocol_group_id: bundle.protocol_group_id.clone(),
+                series_kind: bundle.series_kind.clone(),
+                processing_route: bundle.processing_route.clone(),
+                pixel_data_policy: bundle.pixel_data_policy.clone(),
                 dicom_count: archive.dicom_instance_count,
                 archive: DicomArchiveUploadRequest {
                     relative_key: archive.object.relative_key.clone(),
@@ -570,8 +625,35 @@ impl IngestApi {
         upload_id: &str,
         objects: Vec<CompletedObject>,
     ) -> Result<UploadStatus> {
-        self.complete_upload_for(UploadRoute::Dicom, upload_id, objects, false)
-            .await
+        let request = CompleteUploadRequest { objects };
+        self.send_idempotent(|| {
+            Ok(self
+                .authorized(self.client.post(self.url(&format!(
+                    "{}/{upload_id}/complete",
+                    UploadRoute::Dicom.base()
+                ))))?
+                .timeout(Duration::from_secs(60))
+                .json(&request))
+        })
+        .await
+    }
+
+    pub async fn checkpoint_dicom_upload(
+        &self,
+        upload_id: &str,
+        objects: Vec<CompletedObject>,
+    ) -> Result<UploadStatus> {
+        let request = CompleteUploadRequest { objects };
+        self.send_idempotent(|| {
+            Ok(self
+                .authorized(self.client.post(self.url(&format!(
+                    "{}/{upload_id}/checkpoint",
+                    UploadRoute::Dicom.base()
+                ))))?
+                .timeout(Duration::from_secs(60))
+                .json(&request))
+        })
+        .await
     }
 
     async fn complete_upload_for(
@@ -785,6 +867,19 @@ mod tests {
     };
 
     #[test]
+    fn policy_acceptance_response_keeps_older_worker_compatibility() {
+        let response: AcceptDevicePolicyResponse = serde_json::from_value(serde_json::json!({
+            "status": "accepted",
+            "device_id": "device",
+            "site_id": "site",
+            "project_id": "project",
+            "consent_policy_version": "open-mri-1.0.0"
+        }))
+        .unwrap();
+        assert!(response.project_name.is_none());
+    }
+
+    #[test]
     fn worker_payload_never_contains_local_path() {
         let bundle = ManifestBundle {
             bundle_id: "bundle".into(),
@@ -792,6 +887,9 @@ mod tests {
             subject_id: "subject".into(),
             session_id: "session".into(),
             protocol_group_id: "abababababababababababab".into(),
+            series_kind: "functional_epi".into(),
+            processing_route: "functional-epi-v1".into(),
+            pixel_data_policy: "scanner-native-not-defaced".into(),
             nifti: Some(ManifestObject {
                 relative_key: "bundle/a.nii.gz".into(),
                 local_path: "/private/phi/a".into(),
@@ -898,6 +996,36 @@ mod tests {
         let current = current.verification.unwrap();
         assert_eq!(current.phase.as_deref(), Some("validating_scans"));
         assert_eq!(current.finalized_series, Some(8));
+    }
+
+    #[test]
+    fn processing_progress_accepts_and_serializes_mixed_route_counters() {
+        let status: UploadStatus = serde_json::from_value(serde_json::json!({
+            "upload_id": "11111111-1111-4111-8111-111111111111",
+            "status": "committed",
+            "processing": {
+                "status": "processing",
+                "queued_series": 0,
+                "processing_series": 1,
+                "processed_series": 1,
+                "failed_series": 0,
+                "purged_series": 0,
+                "functional_epi_series": 1,
+                "archive_only_series": 1,
+                "archive_verified_series": 1,
+                "total_series": 2,
+                "updated_at": "2026-07-19T00:00:00Z"
+            }
+        }))
+        .unwrap();
+        let processing = status.processing.unwrap();
+        assert_eq!(processing.functional_epi_series, 1);
+        assert_eq!(processing.archive_only_series, 1);
+        assert_eq!(processing.archive_verified_series, 1);
+        let json = serde_json::to_value(processing).unwrap();
+        assert_eq!(json["functional_epi_series"], 1);
+        assert_eq!(json["archive_only_series"], 1);
+        assert_eq!(json["archive_verified_series"], 1);
     }
 
     #[test]
