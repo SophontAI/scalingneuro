@@ -182,6 +182,8 @@ svg { display: block; }
 .step-no { margin: 0 0 16px; font-family: var(--mono); font-size: 10px; letter-spacing: .14em; text-transform: uppercase; color: var(--accent); }
 .step h3 { font-size: 1.35rem; margin-bottom: 8px; }
 .step p { margin: 0; font-size: .92rem; line-height: 1.55; color: var(--ink-2); }
+.pipeline-boundary { max-width: 880px; margin: 40px 0 0; padding: 18px 20px; border-left: 3px solid var(--accent); background: var(--paper-2); color: var(--muted); font-size: 14px; line-height: 1.65; }
+.pipeline-boundary strong { color: var(--ink); }
 
 /* ---------- contribute ---------- */
 .contribute .section-head { max-width: 840px; }
@@ -202,6 +204,10 @@ svg { display: block; }
 .term-pane.is-active { display: block; }
 .c-com { color: #7c8499; } .c-p { color: var(--accent-soft); } .c-ok { color: #93c6af; }
 .c-hi { color: #c9a8d9; } .c-dim { color: var(--dark-mut); } .c-kw { color: var(--accent-soft); }
+.route-summary { display: grid; grid-template-columns: 1fr 1fr; gap: 1px; max-width: 880px; margin-top: 24px; overflow: hidden; border: 1px solid var(--dark-rule); border-radius: 10px; background: var(--dark-rule); }
+.route-summary div { padding: 20px; background: var(--dark-2); }
+.route-summary span { display: block; margin-bottom: 8px; color: var(--accent-soft); font-family: var(--mono); font-size: 10px; letter-spacing: .12em; text-transform: uppercase; }
+.route-summary strong { display: block; color: var(--dark-text); font-family: var(--sans); font-size: 14px; font-weight: 400; line-height: 1.6; }
 
 .contribute-actions { display: flex; gap: 14px; flex-wrap: wrap; margin: 36px 0 22px; }
 .contribute-actions .btn-primary { min-width: 300px; }
@@ -298,6 +304,7 @@ svg { display: block; }
   .hero .lede { margin-left: 0; }
   .hero-cta { justify-content: flex-start; }
   .steps { grid-template-columns: 1fr; }
+  .route-summary { grid-template-columns: 1fr; }
   .grant-steps { grid-template-columns: 1fr; gap: 8px; text-align: left; }
   .grant-steps i { transform: rotate(90deg); transform-origin: center; justify-self: start; }
   .contribute-actions .btn-primary { min-width: 0; width: 100%; }

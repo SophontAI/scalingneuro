@@ -3,13 +3,13 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Scaling Neuro: An Open Data Commons for Brain Foundation Models</title>
-  <meta name="description" content="An open, researcher-led pipeline for syncing approved scanner-native MR DICOM, with local metadata de-identification and reproducible server verification." />
+  <title>Scaling Neuro: Governed MRI Infrastructure for Brain Foundation Models</title>
+  <meta name="description" content="A researcher-led pipeline for preserving approved scanner-native MR DICOM with local metadata de-identification, durable source archives, and reproducible server verification." />
   <meta name="theme-color" content="#faf9f6" />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=EB+Garamond:ital,wght@0,400;0,500;0,600;1,400;1,500&amp;family=JetBrains+Mono:wght@400;500&amp;display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="styles.css?v=20" />
+  <link rel="stylesheet" href="styles.css?v=21" />
   <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
 </head>
 <body>
@@ -34,11 +34,11 @@
     <!-- ============ HERO ============ -->
     <section class="hero" id="top">
       <div class="wrap hero-inner stagger">
-        <p class="eyebrow reveal">Academic-led infrastructure for open neuroimaging</p>
+        <p class="eyebrow reveal">Academic-led infrastructure for reusable neuroimaging</p>
         <h1 class="display reveal">Brain models need <em>scale</em>. The scans already exist.</h1>
         <p class="lede reveal">
           AI models trained on brain scans improve predictably as the training data grows.
-          Scaling Neuro gives academic labs a simple, institution-governed way to pool the fMRI they already collect into one shared open commons.
+          Scaling Neuro gives academic labs one terminal command to preserve approved MRI as privacy-reviewed, provenance-rich research data—the governed foundation for future shared datasets and brain models.
         </p>
         <div class="hero-cta reveal">
           <a class="btn btn-primary" href="downloads/">Install neuro-sync</a>
@@ -107,14 +107,14 @@
       <div class="wrap grants-grid">
         <div class="stagger">
           <p class="eyebrow reveal">For NIH- and NSF-funded studies</p>
-          <h2 class="h-sec reveal">Make required data sharing automatic.</h2>
+          <h2 class="h-sec reveal">Make responsible data sharing easier to execute.</h2>
         </div>
         <div class="grants-copy stagger">
-          <p class="body-copy reveal">Since 2023, NIH has required a Data Management and Sharing Plan with every new award, and NSF sets similar expectations. Scaling Neuro turns that obligation into a byproduct of scanning: approved fMRI is prepared for repository deposit and progress reporting, with privacy checks, provenance, and hashes already in place.</p>
-          <div class="grant-steps reveal" aria-label="Approved fMRI becomes repository-ready data and a grant reporting record">
-            <span>Approved fMRI</span><i aria-hidden="true">→</i><span>Repository-ready</span><i aria-hidden="true">→</i><span>Grant reporting</span>
+          <p class="body-copy reveal">Since 2023, NIH has required a Data Management and Sharing Plan with every new award, and NSF sets similar expectations. Scaling Neuro captures institution-approved MR at the source and creates a verifiable archive record—privacy checks, provenance, hashes, and processing status—for later repository preparation and progress reporting.</p>
+          <div class="grant-steps reveal" aria-label="Approved MRI becomes a verified archive that supports repository preparation">
+            <span>Approved MRI</span><i aria-hidden="true">→</i><span>Verified archive</span><i aria-hidden="true">→</i><span>Repository preparation</span>
           </div>
-          <p class="fine-print reveal">Each institution’s approved plan and named repository determine compliance.</p>
+          <p class="fine-print reveal">Scaling Neuro supports—but does not replace—participant consent, institutional review, an approved sharing plan, or a repository’s submission process.</p>
         </div>
       </div>
     </section>
@@ -124,19 +124,19 @@
       <div class="wrap">
         <div class="section-head stagger">
           <p class="eyebrow reveal">How it works</p>
-          <h2 class="h-sec reveal">One approved folder becomes one reliable contribution.</h2>
+          <h2 class="h-sec reveal">One folder. One durable archive pipeline.</h2>
           <p class="lede reveal">
-            Share approved scans, not unpublished study annotations. No labels, manual curation, or cloud setup;
-            each contribution remains attributable to its lab and policy context.
+            The lab decides what is authorized. neuro-sync then discovers, protects, and preserves every supported MR Image series without changing the source folder or requiring labels, BIDS curation, or cloud setup.
           </p>
         </div>
         <div class="steps stagger">
-          <div class="step reveal"><p class="step-no">01 · Consent</p><h3>Approve</h3><p>Only approved projects enter.</p></div>
-          <div class="step reveal"><p class="step-no">02 · Capture</p><h3>Read</h3><p>Inventory the selected export without changing it.</p></div>
-          <div class="step reveal"><p class="step-no">03 · Gate</p><h3>Include</h3><p>Keep every supported MR Image series; hold only unsafe or unsupported objects.</p></div>
-          <div class="step reveal"><p class="step-no">04 · Preserve</p><h3>Protect</h3><p>Rewrite identifying metadata while retaining scanner-native pixels and acquisition context.</p></div>
-          <div class="step reveal"><p class="step-no">05 · Commons</p><h3>Verify</h3><p>Audit every archive on the cluster; derive NIfTI only for confirmed functional EPI.</p></div>
+          <div class="step reveal"><p class="step-no">01 · Authority</p><h3>Approve</h3><p>The lab confirms the folder and scanner-native pixels are institutionally authorized.</p></div>
+          <div class="step reveal"><p class="step-no">02 · Discovery</p><h3>Inventory</h3><p>Read the export without changing it; group every supported MR Image series.</p></div>
+          <div class="step reveal"><p class="step-no">03 · Privacy</p><h3>Protect</h3><p>Remove identifying metadata locally while preserving exact Pixel Data and acquisition context.</p></div>
+          <div class="step reveal"><p class="step-no">04 · Receipt</p><h3>Archive</h3><p>Upload one resumable series archive at a time to R2; a durable receipt ends workstation work.</p></div>
+          <div class="step reveal"><p class="step-no">05 · Cluster</p><h3>Verify</h3><p>Re-audit every archive on Sophont; derive validated NIfTI only for confirmed functional EPI.</p></div>
         </div>
+        <p class="pipeline-boundary reveal"><strong>Current processing boundary:</strong> this release converts and validates functional EPI in native space. It does not yet perform motion correction, distortion correction, registration, normalization, BIDS curation, or structural defacing.</p>
       </div>
     </section>
 
@@ -147,7 +147,7 @@
           <p class="eyebrow reveal">Self-service beta</p>
           <h2 class="display-sec reveal">Point it at one folder. Make eligible scans count.</h2>
           <p class="lede reveal">
-            Keep the scanner workflow. Install once, then run neuro-sync whenever an export folder is ready.
+            Keep the scanner workflow. Install once, then run neuro-sync whenever an authorized export folder is ready.
             It finds every supported MR Image series, removes identifying DICOM metadata locally, and uploads each series with resumable checksums.
             The workstation is done when transfer receives its durable receipt; independent verification and EPI-only derivation continue on the research cluster.
           </p>
@@ -177,7 +177,7 @@
 <span class="c-ok">✓</span> One-minute lab registration in the terminal; no browser needed
 <span class="c-ok">✓</span> Private, revocable identity for <span class="c-hi">this workstation</span>
 <span class="c-ok">✓</span> Confirm every eligible series and native, non-defaced pixel is approved
-<span class="c-ok">✓</span> Discover all MR → de-identify metadata → upload → verify
+<span class="c-ok">✓</span> Discover supported MR → de-identify metadata → archive → queue verification
 <span class="c-ok">✓</span> Interrupted? Rerun this same folder command; completed work is reused</code></pre>
             <pre class="term-pane" id="pane-run" data-pane="run" role="tabpanel" aria-labelledby="tab-run"><code><span class="c-com"># representative output after the one-time terminal registration</span>
 <span class="c-p">$</span> neuro-sync ./new_session_dicoms
@@ -197,12 +197,19 @@ Check later with: neuro-sync status &lt;run-id&gt;</code></pre>
 <span class="c-kw">identity</span> names, IDs, dates, paths, free text, and unsafe private data never upload
 <span class="c-kw">linkage</span>  site-scoped HMAC subject/session/series pseudonyms only
 <span class="c-kw">proof</span>    recursive de-identification audit, per-file hashes, and archive hash
+<span class="c-kw">archive</span>  one privacy-cleared DICOM series at a time remains durable in R2
 <span class="c-kw">verify</span>   every archive is independently parsed and privacy-audited on Sophont
-<span class="c-kw">derive</span>   pinned conversion and QC run only for confirmed functional EPI
+<span class="c-kw">derive</span>   pinned native-space NIfTI conversion and QC run only for confirmed EPI
+<span class="c-kw">scratch</span>  Sophont downloads one series at a time, then deletes temporary working files
 <span class="c-kw">faces</span>    native structural/head pixels may retain recognizable anatomy
 <span class="c-kw">hold</span>     unsafe, malformed, and unsupported DICOM objects stay local
-<span class="c-kw">access</span>   device credentials can only upload parts to a server-created session</code></pre>
+<span class="c-kw">access</span>   the client never receives reusable R2 credentials</code></pre>
           </div>
+        </div>
+
+        <div class="route-summary reveal" aria-label="What server processing produces today">
+          <div><span>Confirmed functional EPI</span><strong>Verified DICOM source + native-space NIfTI, minimized sidecar, and processing manifest</strong></div>
+          <div><span>All other accepted MR</span><strong>Verified scanner-native DICOM source archive; no derived file yet</strong></div>
         </div>
 
         <div class="contribute-actions reveal">
@@ -222,7 +229,7 @@ Check later with: neuro-sync status &lt;run-id&gt;</code></pre>
         </div>
         <p class="foot-legal">
           © 2026 Scaling Neuro Initiative · governed MR contribution beta · working name<br/>
-          Scanner-native source archives are not automatically public; eligible derivatives may enter separately documented governed research datasets
+          Scanner-native source archives are governed and not automatically public; eligible derivatives may enter separately documented research datasets
         </p>
       </div>
     </footer>
