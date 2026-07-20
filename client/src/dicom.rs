@@ -2523,14 +2523,14 @@ fn enhanced_public_diffusion_signatures(
 ) -> Option<Vec<DiffusionSignature>> {
     let (origins, shared_item, per_frame_items) = enhanced_frame_origins(object)?;
     let mut signatures = Vec::new();
-    if let Some(shared_item) = shared_item
-        && shared_item.element(Tag(0x0018, 0x9117)).is_ok()
-    {
-        push_unique_diffusion_signature(
-            &mut signatures,
-            public_diffusion_macro_signature(shared_item)?,
-        );
-        return Some(signatures);
+    if let Some(shared_item) = shared_item {
+        if shared_item.element(Tag(0x0018, 0x9117)).is_ok() {
+            push_unique_diffusion_signature(
+                &mut signatures,
+                public_diffusion_macro_signature(shared_item)?,
+            );
+            return Some(signatures);
+        }
     }
     for (item, origin) in per_frame_items.iter().zip(origins) {
         if origin == FrameOrigin::Original {
@@ -2682,29 +2682,36 @@ fn public_asl_metadata_contract(object: &dicom_object::InMemDicomObject) -> AslC
                 }
             }
             MrSopStorageKind::Enhanced => {
-                if let Ok(shared) = object.element(Tag(0x5200, 0x9229))
-                    && let Some(items) = shared.value().items()
-                    && items.len() == 1
-                    && items[0].element(Tag(0x0018, 0x9251)).is_ok()
-                {
-                    if !collect_direct_asl_contexts(&items[0], &mut contexts) {
-                        return AslContract {
-                            present,
-                            valid: false,
-                            contexts,
-                        };
+                let mut collected_shared = false;
+                if let Ok(shared) = object.element(Tag(0x5200, 0x9229)) {
+                    if let Some(items) = shared.value().items() {
+                        if items.len() == 1 && items[0].element(Tag(0x0018, 0x9251)).is_ok() {
+                            collected_shared = true;
+                            if !collect_direct_asl_contexts(&items[0], &mut contexts) {
+                                return AslContract {
+                                    present,
+                                    valid: false,
+                                    contexts,
+                                };
+                            }
+                        }
                     }
-                } else if let Ok(per_frame) = object.element(Tag(0x5200, 0x9230))
-                    && let Some(items) = per_frame.value().items()
-                    && !items
-                        .iter()
-                        .all(|item| collect_direct_asl_contexts(item, &mut contexts))
-                {
-                    return AslContract {
-                        present,
-                        valid: false,
-                        contexts,
-                    };
+                }
+                if !collected_shared {
+                    if let Ok(per_frame) = object.element(Tag(0x5200, 0x9230)) {
+                        if let Some(items) = per_frame.value().items() {
+                            if !items
+                                .iter()
+                                .all(|item| collect_direct_asl_contexts(item, &mut contexts))
+                            {
+                                return AslContract {
+                                    present,
+                                    valid: false,
+                                    contexts,
+                                };
+                            }
+                        }
+                    }
                 }
             }
             MrSopStorageKind::Other => {}
