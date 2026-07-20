@@ -24,8 +24,10 @@ jobs:
     steps:
       - name: Check out source
         uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
 
-      - name: Require a release matching this source
+      - name: Classify release or website-only deployment
         id: release_alignment
         env:
           GH_TOKEN: ${{ github.token }}
@@ -40,16 +42,65 @@ jobs:
           if [[ -n "$release_tag" ]]; then
             release_sha=$(gh api "repos/${GITHUB_REPOSITORY}/commits/${release_tag}" --jq '.sha')
           fi
+
+          deploy=false
+          deployment_mode=deferred
           if [[ -n "$source_version" &&
                 "$source_version" == "$release_version" &&
                 "$release_sha" == "$GITHUB_SHA" ]]; then
-            echo "deploy=true" >> "$GITHUB_OUTPUT"
-            echo "release_tag=$release_tag" >> "$GITHUB_OUTPUT"
+            deploy=true
+            deployment_mode=release
             echo "Deploying source and packages from exact release $release_tag ($release_sha)."
+          elif [[ -n "$source_version" &&
+                  "$source_version" == "$release_version" &&
+                  -n "$release_sha" ]] &&
+               git merge-base --is-ancestor "$release_sha" "$GITHUB_SHA"; then
+            changed_count=0
+            changed_paths_log=""
+            non_site_count=0
+            non_site_paths_log=""
+            while IFS= read -r path; do
+              [[ -n "$path" ]] || continue
+              changed_count=$((changed_count + 1))
+              changed_paths_log="${changed_paths_log}${path}"$'\n'
+              case "$path" in
+                .github/workflows/deploy-production.yml|\
+                404.html|\
+                app.js|\
+                downloads/index.html|\
+                favicon.svg|\
+                index.html|\
+                styles.css|\
+                docs/contribution-policy.html|\
+                docs/dicom-deidentification-policy.md)
+                  ;;
+                *)
+                  non_site_count=$((non_site_count + 1))
+                  non_site_paths_log="${non_site_paths_log}${path}"$'\n'
+                  ;;
+              esac
+            done < <(git diff --name-only "$release_sha" "$GITHUB_SHA")
+
+            if (( changed_count > 0 && non_site_count == 0 )); then
+              deploy=true
+              deployment_mode=website-only
+              echo "Deploying website-only changes on top of stable client release $release_tag ($release_sha)."
+              printf 'Website paths:\n%s' "$changed_paths_log"
+            else
+              echo "Deferring production because changes since $release_tag include release-coupled paths:"
+              printf '%s' "$non_site_paths_log"
+            fi
           else
-            echo "deploy=false" >> "$GITHUB_OUTPUT"
-            echo "Deferring production: source $GITHUB_SHA/client $source_version does not exactly match latest stable release ${release_tag:-none}/${release_sha:-none}."
-            echo "The client release workflow will publish the code, migration, site, and packages atomically."
+            echo "Deferring production: source client $source_version does not match descendant website changes from latest stable release ${release_tag:-none}/${release_sha:-none}."
+          fi
+
+          {
+            echo "deploy=$deploy"
+            echo "deployment_mode=$deployment_mode"
+            echo "release_tag=$release_tag"
+          } >> "$GITHUB_OUTPUT"
+          if [[ "$deploy" != true ]]; then
+            echo "Client, Worker, processor, schema, and migration changes remain gated on the atomic client release workflow."
           fi
 
       - name: Set up Node
