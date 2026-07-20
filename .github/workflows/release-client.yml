@@ -814,24 +814,71 @@ jobs:
           gitHubToken: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Verify phase one and unchanged public site and release bytes
+        env:
+          EXPECTED_VERSION: ${{ needs.metadata.outputs.version }}
         shell: bash
+        timeout-minutes: 15
         run: |
           set -euo pipefail
+          phase_probe_dir="$RUNNER_TEMP/neuro-sync-phase-one-probes"
+          rm -rf "$phase_probe_dir"
+          mkdir -p "$phase_probe_dir"
           source_converged=false
-          for attempt in $(seq 1 20); do
-            health=$(curl --fail --silent --show-error --max-time 15 \
-              "https://scalingneuro.com/health?phase=one&commit=$GITHUB_SHA&attempt=$attempt" || true)
-            source_version=$(curl --fail --silent --show-error --max-time 15 \
-              "https://scalingneuro.com/version.json?phase=one&commit=$GITHUB_SHA&attempt=$attempt" || true)
-            if jq --exit-status '.status == "ok"' <<<"$health" >/dev/null 2>&1 &&
+          consecutive_candidate_observations=0
+          for attempt in $(seq 1 30); do
+            health_file="$phase_probe_dir/health.json"
+            version_file="$phase_probe_dir/version.json"
+            contribution_file="$phase_probe_dir/contribution.json"
+            : > "$health_file"
+            : > "$version_file"
+            : > "$contribution_file"
+            curl --fail --silent --show-error --max-time 10 \
+              --header 'cache-control: no-cache' \
+              --header 'pragma: no-cache' \
+              --output "$health_file" \
+              "https://scalingneuro.com/health?phase=one&commit=$GITHUB_SHA&attempt=$attempt" &
+            health_pid=$!
+            curl --fail --silent --show-error --max-time 10 \
+              --header 'cache-control: no-cache' \
+              --header 'pragma: no-cache' \
+              --output "$version_file" \
+              "https://scalingneuro.com/version.json?phase=one&commit=$GITHUB_SHA&attempt=$attempt" &
+            version_pid=$!
+            curl --fail --silent --show-error --max-time 10 \
+              --header 'cache-control: no-cache' \
+              --header 'pragma: no-cache' \
+              --header "User-Agent: neuro-sync/${EXPECTED_VERSION}" \
+              --output "$contribution_file" \
+              "https://scalingneuro.com/v1/contribution?phase=one&commit=$GITHUB_SHA&attempt=$attempt" &
+            contribution_pid=$!
+            probe_status=0
+            wait "$health_pid" || probe_status=1
+            wait "$version_pid" || probe_status=1
+            wait "$contribution_pid" || probe_status=1
+            health=$(<"$health_file")
+            source_version=$(<"$version_file")
+            candidate_contribution=$(<"$contribution_file")
+            if (( probe_status == 0 )) &&
+               jq --exit-status --arg version "$EXPECTED_VERSION" '
+                 .status == "ok" and .version == $version
+               ' <<<"$health" >/dev/null 2>&1 &&
                jq --exit-status \
                  --arg sha "$GITHUB_SHA" \
                  --arg static "${{ steps.preserve_current_release.outputs.production_commit }}" '
                    .commit == $sha and .static_commit == $static and
                    .deployment_phase == "backend-validation"
-                 ' <<<"$source_version" >/dev/null 2>&1; then
-              source_converged=true
-              break
+                 ' <<<"$source_version" >/dev/null 2>&1 &&
+               jq --exit-status '
+                 .consent_policy_version == "open-mri-1.0.0" and
+                 .project_name == "Scaling Neuro public MRI contribution"
+               ' <<<"$candidate_contribution" >/dev/null 2>&1; then
+              consecutive_candidate_observations=$((consecutive_candidate_observations + 1))
+              if (( consecutive_candidate_observations >= 3 )); then
+                source_converged=true
+                break
+              fi
+            else
+              consecutive_candidate_observations=0
             fi
             sleep 5
           done
@@ -954,11 +1001,6 @@ jobs:
           client=$(find "$smoke_root" -type f -name neuro-sync -perm -u+x -print -quit)
           test -n "$client"
           [[ "$($client --version)" == "neuro-sync ${EXPECTED_VERSION}" ]]
-          candidate_policy=$(curl -fsS https://scalingneuro.com/v1/contribution \
-            -H "User-Agent: neuro-sync/${EXPECTED_VERSION}" | \
-            jq -er '.consent_policy_version | select(type == "string")')
-          [[ "$candidate_policy" == "open-mri-1.0.0" ]]
-
           transition_state="$RUNNER_TEMP/neuro-sync-transition-state"
           transition_policy=$(<"$RUNNER_TEMP/neuro-sync-transition-policy")
           jq --exit-status --arg policy "$transition_policy" \
@@ -968,7 +1010,8 @@ jobs:
             transition_empty="$smoke_root/transition-empty-folder"
             mkdir -p "$transition_empty"
             export NEURO_SYNC_STATE_DIR="$transition_state"
-            transition_upgrade_output=$("$client" upload "$transition_empty" \
+            transition_upgrade_output=$(./scripts/retry-release-candidate.sh \
+              policy-upgrade "$client" upload "$transition_empty" \
               --confirm-authorized \
               --confirm-native-pixels-authorized \
               --accept-policy-version open-mri-1.0.0)
@@ -988,7 +1031,8 @@ jobs:
           [[ "$(find "$mixed_fixture" -type f -name '*.dcm' | wc -l | tr -d ' ')" == 11 ]]
 
           export NEURO_SYNC_STATE_DIR="$smoke_root/state"
-          candidate_registration_output=$("$client" register \
+          candidate_registration_output=$(./scripts/retry-release-candidate.sh \
+            registration "$client" register \
             --email "release-qa+${EXPECTED_VERSION}@scalingneuro.com" \
             --name "Scaling Neuro Release QA" \
             --institution "Scaling Neuro" \
@@ -998,25 +1042,40 @@ jobs:
           printf '%s\n' "$candidate_registration_output"
           grep -Fq 'contribution policy: open-mri-1.0.0' \
             <<<"$candidate_registration_output"
-          "$client" upload "$mixed_fixture" \
+          first_upload_output=$(./scripts/retry-release-candidate.sh \
+            upload "$client" upload "$mixed_fixture" \
             --confirm-authorized \
-            --confirm-native-pixels-authorized
+            --confirm-native-pixels-authorized \
+            --accept-policy-version open-mri-1.0.0)
+          printf '%s\n' "$first_upload_output"
 
           first_status="$smoke_root/first-status.json"
-          "$client" status --json > "$first_status"
-          run_id=$(jq -r '.id' "$first_status")
-          jq --exit-status '
-            .status == "complete" and
-            .summary.accepted == 2 and
-            .summary.held == 0 and
-            .summary.excluded == 0 and
-            .dicom.receipt_received_series == 2 and
-            .dicom.processing_total_series == 2 and
-            .dicom.functional_epi_series == 1 and
-            .dicom.archive_only_series == 1 and
-            .dicom.failed_series == 0 and
-            .dicom.purged_series == 0
-          ' "$first_status" >/dev/null
+          first_status_converged=false
+          for _ in $(seq 1 24); do
+            if "$client" status --json > "$first_status" &&
+               jq --exit-status '
+                 .status == "complete" and
+                 .summary.accepted == 2 and
+                 .summary.held == 0 and
+                 .summary.excluded == 0 and
+                 .dicom.receipt_received_series == 2 and
+                 .dicom.processing_total_series == 2 and
+                 .dicom.functional_epi_series == 1 and
+                 .dicom.archive_only_series == 1 and
+                 .dicom.failed_series == 0 and
+                 .dicom.purged_series == 0
+               ' "$first_status" >/dev/null 2>&1; then
+              first_status_converged=true
+              break
+            fi
+            sleep 5
+          done
+          if [[ "$first_status_converged" != true ]]; then
+            echo "Candidate upload status did not converge to the all-MR contract" >&2
+            jq '{id,status,summary,dicom}' "$first_status" >&2 || true
+            exit 1
+          fi
+          run_id=$(jq -er '.id' "$first_status")
 
           processed=false
           for _ in $(seq 1 90); do
@@ -1044,27 +1103,43 @@ jobs:
             exit 1
           fi
 
-          "$client" upload "$mixed_fixture" \
+          replay_upload_output=$(./scripts/retry-release-candidate.sh \
+            upload "$client" upload "$mixed_fixture" \
             --confirm-authorized \
-            --confirm-native-pixels-authorized
-          "$client" status --json > "$smoke_root/replay-status.json"
-          jq --exit-status --arg run_id "$run_id" '
-            .id == $run_id and .status == "complete" and
-            .summary.accepted == 2 and
-            .summary.held == 0 and
-            .summary.excluded == 0 and
-            .dicom.status == "processed" and
-            .dicom.receipt_received_series == 2 and
-            .dicom.processed_series == 2 and
-            .dicom.processing_total_series == 2 and
-            .dicom.queued_series == 0 and
-            .dicom.processing_series == 0 and
-            .dicom.functional_epi_series == 1 and
-            .dicom.archive_only_series == 1 and
-            .dicom.archive_verified_series == 1 and
-            .dicom.failed_series == 0 and
-            .dicom.purged_series == 0
-          ' "$smoke_root/replay-status.json" >/dev/null
+            --confirm-native-pixels-authorized \
+            --accept-policy-version open-mri-1.0.0)
+          printf '%s\n' "$replay_upload_output"
+          replay_status="$smoke_root/replay-status.json"
+          replay_status_converged=false
+          for _ in $(seq 1 24); do
+            if "$client" status --json > "$replay_status" &&
+               jq --exit-status --arg run_id "$run_id" '
+                 .id == $run_id and .status == "complete" and
+                 .summary.accepted == 2 and
+                 .summary.held == 0 and
+                 .summary.excluded == 0 and
+                 .dicom.status == "processed" and
+                 .dicom.receipt_received_series == 2 and
+                 .dicom.processed_series == 2 and
+                 .dicom.processing_total_series == 2 and
+                 .dicom.queued_series == 0 and
+                 .dicom.processing_series == 0 and
+                 .dicom.functional_epi_series == 1 and
+                 .dicom.archive_only_series == 1 and
+                 .dicom.archive_verified_series == 1 and
+                 .dicom.failed_series == 0 and
+                 .dicom.purged_series == 0
+               ' "$replay_status" >/dev/null 2>&1; then
+              replay_status_converged=true
+              break
+            fi
+            sleep 5
+          done
+          if [[ "$replay_status_converged" != true ]]; then
+            echo "Idempotent replay status did not converge to the all-MR contract" >&2
+            jq '{id,status,summary,dicom}' "$replay_status" >&2 || true
+            exit 1
+          fi
 
       - name: Download new public Pages release bundle
         uses: actions/download-artifact@v4

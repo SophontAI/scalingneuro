@@ -857,9 +857,9 @@ mod tests {
     use super::*;
     use crate::model::{Classification, ClassificationDecision, ManifestObject, QcResult};
     use axum::{
-        Router,
-        http::{Response as HttpResponse, StatusCode, header::LOCATION},
-        routing::{any, post},
+        Json, Router,
+        http::{HeaderMap, Response as HttpResponse, StatusCode, header::LOCATION},
+        routing::{any, get, post},
     };
     use std::sync::{
         Arc,
@@ -877,6 +877,38 @@ mod tests {
         }))
         .unwrap();
         assert!(response.project_name.is_none());
+    }
+
+    #[tokio::test]
+    async fn contribution_info_sends_exact_client_user_agent() {
+        let app = Router::new().route(
+            "/v1/contribution",
+            get(|headers: HeaderMap| async move {
+                assert_eq!(
+                    headers
+                        .get(reqwest::header::USER_AGENT)
+                        .and_then(|value| value.to_str().ok()),
+                    Some(concat!("neuro-sync/", env!("CARGO_PKG_VERSION")))
+                );
+                Json(serde_json::json!({
+                    "registration_open": true,
+                    "project_name": "Scaling Neuro public MRI contribution",
+                    "consent_policy_version": "open-mri-1.0.0",
+                    "policy_url": "https://scalingneuro.com/docs/contribution-policy",
+                    "self_service_quota_bytes": null,
+                    "minimum_client_version": "0.2.8"
+                }))
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+
+        let api = IngestApi::unauthenticated(&format!("http://{address}")).unwrap();
+        let contribution = api.contribution_info().await.unwrap();
+
+        assert_eq!(contribution.consent_policy_version, "open-mri-1.0.0");
+        server.abort();
     }
 
     #[test]

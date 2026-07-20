@@ -4,9 +4,12 @@ set -euo pipefail
 ROOT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 WORKFLOW=$ROOT_DIR/.github/workflows/release-client.yml
 SITE_BRIDGE=$ROOT_DIR/scripts/production-site.sh
+RETRY_HELPER=$ROOT_DIR/scripts/retry-release-candidate.sh
 
 [[ -x "$SITE_BRIDGE" ]]
+[[ -x "$RETRY_HELPER" ]]
 bash -n "$SITE_BRIDGE"
+bash -n "$RETRY_HELPER"
 grep -qF 'deployment_phase: "backend-validation"' "$SITE_BRIDGE"
 grep -qF 'static_commit: $static_commit' "$SITE_BRIDGE"
 
@@ -103,18 +106,59 @@ grep -qF '> "$RUNNER_TEMP/neuro-sync-transition-policy"' "$WORKFLOW"
 grep -qF 'release-transition+${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}@scalingneuro.com' "$WORKFLOW"
 grep -qF 'command: pages deploy dist-phase-one --project-name=scalingneuro' "$WORKFLOW"
 grep -qF 'command: pages deploy dist --project-name=scalingneuro' "$WORKFLOW"
+grep -qF '.status == "ok" and .version == $version' "$WORKFLOW"
+grep -qF 'consecutive_candidate_observations=0' "$WORKFLOW"
+grep -qF 'consecutive_candidate_observations=$((consecutive_candidate_observations + 1))' "$WORKFLOW"
+grep -qF 'if (( consecutive_candidate_observations >= 3 )); then' "$WORKFLOW"
+if [[ $(grep -cF 'consecutive_candidate_observations=0' "$WORKFLOW") -ne 2 ]]; then
+  echo "Phase-one convergence must initialize and reset its consecutive-success counter" >&2
+  exit 1
+fi
+grep -qF 'candidate_contribution=$(<"$contribution_file")' "$WORKFLOW"
+grep -qF '.consent_policy_version == "open-mri-1.0.0" and' "$WORKFLOW"
+grep -qF '.project_name == "Scaling Neuro public MRI contribution"' "$WORKFLOW"
+if [[ $(grep -cF -- "--header 'cache-control: no-cache'" "$WORKFLOW") -lt 3 ]]; then
+  echo "Phase-one convergence probes must bypass intermediary caches" >&2
+  exit 1
+fi
+grep -qF 'timeout-minutes: 15' "$WORKFLOW"
+grep -qF 'for attempt in $(seq 1 30); do' "$WORKFLOW"
+grep -qF ': > "$health_file"' "$WORKFLOW"
+grep -qF ': > "$version_file"' "$WORKFLOW"
+grep -qF ': > "$contribution_file"' "$WORKFLOW"
+grep -qF 'wait "$health_pid" || probe_status=1' "$WORKFLOW"
+grep -qF 'wait "$version_pid" || probe_status=1' "$WORKFLOW"
+grep -qF 'wait "$contribution_pid" || probe_status=1' "$WORKFLOW"
 # These are intentionally literal workflow expressions.
 # shellcheck disable=SC2016
 grep -qF '[[ "$($client --version)" == "neuro-sync ${EXPECTED_VERSION}" ]]' "$WORKFLOW"
 grep -qF 'User-Agent: neuro-sync/${EXPECTED_VERSION}' "$WORKFLOW"
-grep -qF '[[ "$candidate_policy" == "open-mri-1.0.0" ]]' "$WORKFLOW"
-grep -qF 'candidate_registration_output=$("$client" register \' "$WORKFLOW"
+if grep -qF 'candidate_policy=$(curl ' "$WORKFLOW"; then
+  echo "Candidate smoke must not retain a one-shot policy probe after convergence" >&2
+  exit 1
+fi
+grep -qF 'candidate_registration_output=$(./scripts/retry-release-candidate.sh \' "$WORKFLOW"
+grep -qF 'registration "$client" register \' "$WORKFLOW"
 grep -qF "contribution policy: open-mri-1.0.0" "$WORKFLOW"
 grep -qF 'transition_policy=$(<"$RUNNER_TEMP/neuro-sync-transition-policy")' "$WORKFLOW"
 grep -qF 'if [[ "$transition_policy" == "open-epi-1.0.0" ]]; then' "$WORKFLOW"
-grep -qF 'transition_upgrade_output=$("$client" upload "$transition_empty" \' "$WORKFLOW"
-if [[ $(grep -cF -- '--accept-policy-version open-mri-1.0.0)' "$WORKFLOW") -ne 2 ]]; then
-  echo "Candidate registration and policy transition must name the exact all-MR policy" >&2
+grep -qF 'transition_upgrade_output=$(./scripts/retry-release-candidate.sh \' "$WORKFLOW"
+grep -qF 'first_upload_output=$(./scripts/retry-release-candidate.sh \' "$WORKFLOW"
+grep -qF 'replay_upload_output=$(./scripts/retry-release-candidate.sh \' "$WORKFLOW"
+grep -qF 'first_status_converged=false' "$WORKFLOW"
+grep -qF 'first_status_converged=true' "$WORKFLOW"
+grep -qF 'replay_status_converged=false' "$WORKFLOW"
+grep -qF 'replay_status_converged=true' "$WORKFLOW"
+if [[ $(grep -cF 'for _ in $(seq 1 24); do' "$WORKFLOW") -ne 2 ]]; then
+  echo "Initial and replay status checks must both tolerate stale API generations" >&2
+  exit 1
+fi
+if [[ $(grep -cF -- '--accept-policy-version open-mri-1.0.0' "$WORKFLOW") -ne 4 ]]; then
+  echo "Candidate registration, policy transition, initial sync, and replay must name the exact all-MR policy" >&2
+  exit 1
+fi
+if [[ $(grep -cF 'export NEURO_SYNC_STATE_DIR="$smoke_root/state"' "$WORKFLOW") -ne 1 ]]; then
+  echo "Candidate retries must retain one state directory across registration and sync" >&2
   exit 1
 fi
 grep -qF 'Contribution policy updated to open-mri-1.0.0.' "$WORKFLOW"
@@ -182,5 +226,106 @@ if [[ $(grep -c 'command: pages deploy ' "$WORKFLOW") -ne 2 ]]; then
   echo "The release must have exactly two production Pages deployments" >&2
   exit 1
 fi
+
+retry_test_root=$(mktemp -d)
+trap 'rm -rf "$retry_test_root"' EXIT
+retry_fixture='set -euo pipefail
+mkdir -p "$NEURO_SYNC_STATE_DIR"
+counter_file="$NEURO_SYNC_STATE_DIR/$SCENARIO.count"
+attempt=0
+if [[ -f "$counter_file" ]]; then
+  attempt=$(<"$counter_file")
+fi
+attempt=$((attempt + 1))
+printf "%s\n" "$attempt" > "$counter_file"
+case "$SCENARIO:$attempt" in
+  stale-get:1)
+    echo "Error: --accept-policy-version names open-mri-1.0.0, but the server requires open-epi-1.0.0; review the current policy and pass that exact version" >&2
+    exit 31
+    ;;
+  stale-post:1)
+    echo "Error: ingest API request failed (CONSENT_POLICY_UPDATE_REQUIRED): Review and accept the current public contribution policy" >&2
+    exit 32
+    ;;
+  stale-route:1|route-wrong-operation:1)
+    echo "Error: ingest API request failed (NOT_FOUND): Route was not found" >&2
+    exit 33
+    ;;
+  stale-upload-contract:1)
+    echo "Error: ingest API request failed (INVALID_REQUEST): series[0] contains unknown field: series_kind" >&2
+    exit 34
+    ;;
+  stale-upload-route:1)
+    echo "Error: ingest API request failed (NOT_FOUND): Route was not found" >&2
+    exit 35
+    ;;
+  unrelated:*)
+    echo "Error: unrelated release failure" >&2
+    exit 23
+    ;;
+  exhausted:*)
+    echo "Error: --accept-policy-version names open-mri-1.0.0, but the server requires open-epi-1.0.0; review the current policy and pass that exact version" >&2
+    exit 17
+    ;;
+esac
+printf "success:%s:%s\n" "$SCENARIO" "$attempt"'
+
+run_retry_success() {
+  local operation=$1
+  local scenario=$2
+  local state_dir="$retry_test_root/$scenario"
+  local output
+  output=$(NEURO_SYNC_STATE_DIR="$state_dir" \
+    SCENARIO="$scenario" \
+    SCALING_NEURO_RELEASE_RETRY_ATTEMPTS=3 \
+    SCALING_NEURO_RELEASE_RETRY_DELAY_SECONDS=0 \
+    "$RETRY_HELPER" "$operation" bash -c "$retry_fixture")
+  [[ "$output" == "success:$scenario:2" ]]
+  [[ "$(<"$state_dir/$scenario.count")" == 2 ]]
+}
+
+run_retry_success registration stale-get
+run_retry_success registration stale-post
+run_retry_success policy-upgrade stale-route
+run_retry_success upload stale-upload-contract
+run_retry_success upload stale-upload-route
+
+unrelated_state="$retry_test_root/unrelated"
+set +e
+unrelated_output=$(NEURO_SYNC_STATE_DIR="$unrelated_state" \
+  SCENARIO=unrelated \
+  SCALING_NEURO_RELEASE_RETRY_ATTEMPTS=3 \
+  SCALING_NEURO_RELEASE_RETRY_DELAY_SECONDS=0 \
+  "$RETRY_HELPER" upload bash -c "$retry_fixture" 2>&1)
+unrelated_status=$?
+set -e
+[[ "$unrelated_status" == 23 ]]
+[[ "$unrelated_output" == *"Error: unrelated release failure"* ]]
+[[ "$(<"$unrelated_state/unrelated.count")" == 1 ]]
+
+wrong_operation_state="$retry_test_root/route-wrong-operation"
+set +e
+NEURO_SYNC_STATE_DIR="$wrong_operation_state" \
+  SCENARIO=route-wrong-operation \
+  SCALING_NEURO_RELEASE_RETRY_ATTEMPTS=3 \
+  SCALING_NEURO_RELEASE_RETRY_DELAY_SECONDS=0 \
+  "$RETRY_HELPER" registration bash -c "$retry_fixture" >/dev/null 2>&1
+wrong_operation_status=$?
+set -e
+[[ "$wrong_operation_status" == 33 ]]
+[[ "$(<"$wrong_operation_state/route-wrong-operation.count")" == 1 ]]
+
+exhausted_state="$retry_test_root/exhausted"
+set +e
+exhausted_output=$(NEURO_SYNC_STATE_DIR="$exhausted_state" \
+  SCENARIO=exhausted \
+  SCALING_NEURO_RELEASE_RETRY_ATTEMPTS=3 \
+  SCALING_NEURO_RELEASE_RETRY_DELAY_SECONDS=0 \
+  "$RETRY_HELPER" upload bash -c "$retry_fixture" 2>&1)
+exhausted_status=$?
+set -e
+[[ "$exhausted_status" == 17 ]]
+[[ "$exhausted_output" == *"Error: --accept-policy-version names open-mri-1.0.0"* ]]
+[[ "$(<"$exhausted_state/exhausted.count")" == 3 ]]
 
 echo "release cutover ordering tests passed"
