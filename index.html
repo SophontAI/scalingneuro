@@ -27,7 +27,7 @@
       <a href="#pipeline">How it works</a>
       <a href="#contribute">Contribute</a>
     </nav>
-    <a class="btn btn-primary nav-cta" href="downloads/">Install neuro-sync</a>
+    <a class="btn btn-primary nav-cta" href="#contribute">Install neuro-sync</a>
   </header>
 
   <main id="main-content">
@@ -41,7 +41,7 @@
           Scaling Neuro gives academic labs one terminal command to preserve approved MRI as privacy-reviewed, provenance-rich research data—the governed foundation for future shared datasets and brain models.
         </p>
         <div class="hero-cta reveal">
-          <a class="btn btn-primary" href="downloads/">Install neuro-sync</a>
+          <a class="btn btn-primary" href="#contribute">Install neuro-sync</a>
           <a class="text-link" href="#pipeline">See how it works <span aria-hidden="true">→</span></a>
         </div>
         <p class="provenance reveal">From the researchers behind
@@ -123,19 +123,19 @@
       <div class="wrap">
         <div class="section-head stagger">
           <p class="eyebrow reveal">How it works</p>
-          <h2 class="h-sec reveal">One folder. One durable archive pipeline.</h2>
+          <h2 class="h-sec reveal">From scanner export to a governed research archive.</h2>
           <p class="lede reveal">
-            The lab decides what is authorized. neuro-sync then discovers, protects, and preserves every supported MR Image series without changing the source folder or requiring labels, BIDS curation, or cloud setup.
+            The lab authorizes a folder. neuro-sync protects identifying metadata on the workstation, privately archives each MR series, and lets Sophont verify the source and prepare eligible derivatives.
           </p>
         </div>
         <div class="steps stagger">
-          <div class="step reveal"><p class="step-no">01 · Authority</p><h3>Approve</h3><p>The lab confirms the folder and scanner-native pixels are institutionally authorized.</p></div>
-          <div class="step reveal"><p class="step-no">02 · Discovery</p><h3>Inventory</h3><p>Read the export without changing it; group every supported MR Image series.</p></div>
-          <div class="step reveal"><p class="step-no">03 · Privacy</p><h3>Protect</h3><p>Remove identifying metadata locally while preserving exact Pixel Data and acquisition context.</p></div>
-          <div class="step reveal"><p class="step-no">04 · Receipt</p><h3>Archive</h3><p>Upload one resumable series archive at a time to R2; a durable receipt ends workstation work.</p></div>
-          <div class="step reveal"><p class="step-no">05 · Cluster</p><h3>Verify</h3><p>Re-audit every archive on Sophont; derive validated NIfTI only for confirmed functional EPI.</p></div>
+          <div class="step reveal"><p class="step-no">01 · Authority</p><h3>Authorize</h3><p>Confirm institutional approval for the folder, including native head pixels that may contain recognizable anatomy.</p></div>
+          <div class="step reveal"><p class="step-no">02 · Workstation</p><h3>Protect</h3><p>Read the export without changing it; remove direct identifiers locally while preserving exact Pixel Data and useful acquisition context.</p></div>
+          <div class="step reveal"><p class="step-no">03 · Private archive</p><h3>Sync</h3><p>Upload each MR series to governed R2 storage with automatic resumption. A durable receipt ends workstation work.</p></div>
+          <div class="step reveal"><p class="step-no">04 · Secure processing</p><h3>Verify</h3><p>Re-parse and privacy-audit every archive on Sophont, one series at a time, then delete temporary working files.</p></div>
+          <div class="step reveal"><p class="step-no">05 · Derivatives</p><h3>Prepare</h3><p>Create validated native-space NIfTI for confirmed EPI. Structural scans remain governed source data until a defacing and QC route is available.</p></div>
         </div>
-        <p class="pipeline-boundary reveal"><strong>Current processing boundary:</strong> this release converts and validates functional EPI in native space. It does not yet perform motion correction, distortion correction, registration, normalization, BIDS curation, or structural defacing.</p>
+        <p class="pipeline-boundary reveal"><strong>Structural privacy boundary:</strong> metadata de-identification does not remove facial anatomy. Secure storage governs access, but recognizable structural/head pixels are not anonymous and are never automatically public. A release-eligible structural derivative will require defacing and quality control.</p>
       </div>
     </section>
 
@@ -143,7 +143,7 @@
     <section class="band band-dark contribute" id="contribute">
       <div class="wrap">
         <div class="section-head stagger">
-          <p class="eyebrow reveal">Self-service beta</p>
+          <p class="eyebrow reveal">Install and contribute</p>
           <h2 class="display-sec reveal">Point it at one folder. Make eligible scans count.</h2>
           <p class="lede reveal">
             Keep the scanner workflow. Install once, then run neuro-sync whenever an authorized export folder is ready.
@@ -164,7 +164,7 @@
           <div class="term-tabs" role="tablist" aria-label="Script walkthrough">
             <button class="term-tab is-active" id="tab-install" data-tab="install" role="tab" aria-selected="true" aria-controls="pane-install">1 · Install</button>
             <button class="term-tab" id="tab-run" data-tab="run" role="tab" aria-selected="false" aria-controls="pane-run" tabindex="-1">2 · Run</button>
-            <button class="term-tab" id="tab-inside" data-tab="inside" role="tab" aria-selected="false" aria-controls="pane-inside" tabindex="-1">What leaves</button>
+            <button class="term-tab" id="tab-inside" data-tab="inside" role="tab" aria-selected="false" aria-controls="pane-inside" tabindex="-1">Privacy and storage</button>
           </div>
           <div class="term-body">
             <pre class="term-pane is-active" id="pane-install" data-pane="install" role="tabpanel" aria-labelledby="tab-install"><code><span class="c-com"># macOS or Linux: installs, verifies, then returns to your shell</span>
@@ -212,10 +212,9 @@ Check later with: neuro-sync status &lt;run-id&gt;</code></pre>
         </div>
 
         <div class="contribute-actions reveal">
-          <a class="btn btn-primary" href="downloads/">Install neuro-sync</a>
-          <button class="btn btn-ghost" id="copyBtn" type="button">Copy install command</button>
+          <button class="btn btn-primary" id="copyBtn" type="button">Copy install command</button>
         </div>
-        <p class="term-foot reveal">Open self-service beta&nbsp;&nbsp;·&nbsp;&nbsp;Universal macOS, Windows x64, Linux x64&nbsp;&nbsp;·&nbsp;&nbsp;Scanner-neutral MR Image intake</p>
+        <p class="term-foot reveal">Terminal-first open beta&nbsp;&nbsp;·&nbsp;&nbsp;macOS, Windows, and Linux&nbsp;&nbsp;·&nbsp;&nbsp;Scanner-neutral MR Image intake</p>
 
       </div>
     </section>
