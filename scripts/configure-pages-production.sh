@@ -11,6 +11,7 @@ endpoint="https://api.cloudflare.com/client/v4/accounts/${CLOUDFLARE_ACCOUNT_ID}
 authorization="Authorization: Bearer ${CLOUDFLARE_API_TOKEN}"
 required_secrets='[
   "ADMIN_API_TOKEN",
+  "CLUSTER_LAUNCH_HMAC_KEY",
   "PROCESSOR_API_TOKEN",
   "SITE_KEY_ENCRYPTION_KEY_B64",
   "R2_PARENT_SECRET_ACCESS_KEY"
@@ -23,6 +24,7 @@ jq --exit-status '
   ([.d1_databases[] | select(.binding == "DB")] | length) == 1 and
   ([.r2_buckets[] | select(.binding == "ARCHIVE")] | length) == 1 and
   (.vars | keys | sort) == [
+    "CLUSTER_LAUNCH_URL",
     "CREDENTIAL_TTL_SECONDS",
     "R2_ACCOUNT_ID",
     "R2_BUCKET_NAME",
@@ -38,6 +40,7 @@ expected_r2_access_key=$(jq --raw-output '.vars.R2_PARENT_ACCESS_KEY_ID' "$wrang
 expected_r2_bucket_var=$(jq --raw-output '.vars.R2_BUCKET_NAME' "$wrangler_config")
 expected_credential_ttl=$(jq --raw-output '.vars.CREDENTIAL_TTL_SECONDS' "$wrangler_config")
 expected_upload_ttl=$(jq --raw-output '.vars.UPLOAD_TTL_SECONDS' "$wrangler_config")
+expected_cluster_launch_url=$(jq --raw-output '.vars.CLUSTER_LAUNCH_URL' "$wrangler_config")
 
 if [[ "$expected_r2_account" != "$CLOUDFLARE_ACCOUNT_ID" ]]; then
   echo "R2_ACCOUNT_ID in $wrangler_config does not match CLOUDFLARE_ACCOUNT_ID" >&2
@@ -120,6 +123,7 @@ payload=$(jq --compact-output \
   --arg r2_access_key "$expected_r2_access_key" \
   --arg credential_ttl "$expected_credential_ttl" \
   --arg upload_ttl "$expected_upload_ttl" \
+  --arg cluster_launch_url "$expected_cluster_launch_url" \
   --argjson required "$required_secrets" '
   def null_entries_except($object; $excluded):
     (($object // {}) | to_entries
@@ -156,6 +160,7 @@ payload=$(jq --compact-output \
             R2_ACCOUNT_ID: {type: "plain_text", value: $r2_account},
             R2_PARENT_ACCESS_KEY_ID: {type: "plain_text", value: $r2_access_key},
             R2_BUCKET_NAME: {type: "plain_text", value: $r2_bucket},
+            CLUSTER_LAUNCH_URL: {type: "plain_text", value: $cluster_launch_url},
             CREDENTIAL_TTL_SECONDS: {type: "plain_text", value: $credential_ttl},
             UPLOAD_TTL_SECONDS: {type: "plain_text", value: $upload_ttl}
           }
@@ -196,6 +201,7 @@ if ! jq --exit-status \
   --arg r2_access_key "$expected_r2_access_key" \
   --arg credential_ttl "$expected_credential_ttl" \
   --arg upload_ttl "$expected_upload_ttl" \
+  --arg cluster_launch_url "$expected_cluster_launch_url" \
   --arg production_hash "$production_hash" \
   --arg preview_hash "$preview_hash" \
   --argjson required "$required_secrets" '
@@ -211,6 +217,8 @@ if ! jq --exit-status \
   $production.r2_buckets.ARCHIVE.name == $r2_bucket and
   ($production_env | keys | sort) == [
     "ADMIN_API_TOKEN",
+    "CLUSTER_LAUNCH_HMAC_KEY",
+    "CLUSTER_LAUNCH_URL",
     "CREDENTIAL_TTL_SECONDS",
     "PROCESSOR_API_TOKEN",
     "R2_ACCOUNT_ID",
@@ -223,6 +231,7 @@ if ! jq --exit-status \
   $production_env.R2_ACCOUNT_ID == {type: "plain_text", value: $r2_account} and
   $production_env.R2_PARENT_ACCESS_KEY_ID == {type: "plain_text", value: $r2_access_key} and
   $production_env.R2_BUCKET_NAME == {type: "plain_text", value: $r2_bucket} and
+  $production_env.CLUSTER_LAUNCH_URL == {type: "plain_text", value: $cluster_launch_url} and
   $production_env.CREDENTIAL_TTL_SECONDS == {type: "plain_text", value: $credential_ttl} and
   $production_env.UPLOAD_TTL_SECONDS == {type: "plain_text", value: $upload_ttl} and
   ($required | all(. as $name | $production_env[$name].type == "secret_text")) and

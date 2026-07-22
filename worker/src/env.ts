@@ -8,6 +8,8 @@ export interface Env {
   ADMIN_API_TOKEN: string;
   PROCESSOR_API_TOKEN: string;
   SITE_KEY_ENCRYPTION_KEY_B64: string;
+  CLUSTER_LAUNCH_HMAC_KEY: string;
+  CLUSTER_LAUNCH_URL: string;
   CREDENTIAL_TTL_SECONDS?: string;
   UPLOAD_TTL_SECONDS?: string;
 }

@@ -913,11 +913,6 @@ jobs:
             exit 1
           fi
 
-      - name: Require exact Sophont processor readiness
-        shell: bash
-        timeout-minutes: 12
-        run: ./scripts/verify-processor-readiness.sh https://scalingneuro.com 60 10
-
       - name: Prove the preserved public client can register through phase one
         shell: bash
         run: |

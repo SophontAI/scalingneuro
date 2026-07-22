@@ -39,7 +39,6 @@ candidate_overlay=$(line_for "name: Add versioned downloads and public index")
 preserve=$(line_for "name: Preserve the exact currently published site and release")
 phase_one=$(line_for "name: Deploy backend while retaining current site and downloads")
 phase_one_verify=$(line_for "name: Verify phase one and unchanged public site and release bytes")
-processor_readiness=$(line_for "name: Require exact Sophont processor readiness")
 legacy_registration=$(line_for "name: Prove the preserved public client can register through phase one")
 candidate_smoke=$(line_for "name: Prove candidate terminal client through production and Sophont")
 phase_two=$(line_for "name: Cut over verified collaborator downloads")
@@ -51,8 +50,7 @@ rollback=$(line_for "name: Restore the forward-compatible bridge after any cutov
 assert_before "$base_upload" "$candidate_overlay"
 assert_before "$preserve" "$phase_one"
 assert_before "$phase_one" "$phase_one_verify"
-assert_before "$phase_one_verify" "$processor_readiness"
-assert_before "$processor_readiness" "$legacy_registration"
+assert_before "$phase_one_verify" "$legacy_registration"
 assert_before "$legacy_registration" "$candidate_smoke"
 assert_before "$candidate_smoke" "$phase_two"
 
@@ -89,7 +87,10 @@ if [[ $(grep -cF './scripts/production-site.sh verify dist-phase-one' "$WORKFLOW
   echo "Phase one and recovery must both prove the old static site stayed byte-identical" >&2
   exit 1
 fi
-grep -qF './scripts/verify-processor-readiness.sh https://scalingneuro.com 60 10' "$WORKFLOW"
+if grep -qF 'Require exact Sophont processor readiness' "$WORKFLOW"; then
+  echo "release workflow must allow the upload-triggered processor to be idle" >&2
+  exit 1
+fi
 grep -qF 'public_client --version' "$WORKFLOW"
 grep -qF 'expected_public_policy=open-epi-1.0.0' "$WORKFLOW"
 grep -qF 'expected_public_policy=open-mri-1.0.0' "$WORKFLOW"

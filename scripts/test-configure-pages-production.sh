@@ -60,6 +60,7 @@ r2_account=$(jq --raw-output '.vars.R2_ACCOUNT_ID' "$config")
 r2_access_key=$(jq --raw-output '.vars.R2_PARENT_ACCESS_KEY_ID' "$config")
 credential_ttl=$(jq --raw-output '.vars.CREDENTIAL_TTL_SECONDS' "$config")
 upload_ttl=$(jq --raw-output '.vars.UPLOAD_TTL_SECONDS' "$config")
+cluster_launch_url=$(jq --raw-output '.vars.CLUSTER_LAUNCH_URL' "$config")
 
 jq --null-input \
   --arg d1_id "$d1_id" \
@@ -67,7 +68,8 @@ jq --null-input \
   --arg r2_account "$r2_account" \
   --arg r2_access_key "$r2_access_key" \
   --arg credential_ttl "$credential_ttl" \
-  --arg upload_ttl "$upload_ttl" '
+  --arg upload_ttl "$upload_ttl" \
+  --arg cluster_launch_url "$cluster_launch_url" '
   {
     success: true,
     result: {
@@ -82,9 +84,11 @@ jq --null-input \
             R2_ACCOUNT_ID: {type: "plain_text", value: $r2_account},
             R2_PARENT_ACCESS_KEY_ID: {type: "plain_text", value: $r2_access_key},
             R2_BUCKET_NAME: {type: "plain_text", value: $r2_bucket},
+            CLUSTER_LAUNCH_URL: {type: "plain_text", value: $cluster_launch_url},
             CREDENTIAL_TTL_SECONDS: {type: "plain_text", value: $credential_ttl},
             UPLOAD_TTL_SECONDS: {type: "plain_text", value: $upload_ttl},
             ADMIN_API_TOKEN: {type: "secret_text", value: "ADMIN_SECRET_SENTINEL"},
+            CLUSTER_LAUNCH_HMAC_KEY: {type: "secret_text", value: "CLUSTER_SECRET_SENTINEL"},
             PROCESSOR_API_TOKEN: {type: "secret_text", value: "PROCESSOR_SECRET_SENTINEL"},
             SITE_KEY_ENCRYPTION_KEY_B64: {type: "secret_text", value: "SITE_SECRET_SENTINEL"},
             R2_PARENT_SECRET_ACCESS_KEY: {type: "secret_text", value: "R2_SECRET_SENTINEL"}
@@ -174,7 +178,8 @@ jq --exit-status \
   --arg r2_account "$r2_account" \
   --arg r2_access_key "$r2_access_key" \
   --arg credential_ttl "$credential_ttl" \
-  --arg upload_ttl "$upload_ttl" '
+  --arg upload_ttl "$upload_ttl" \
+  --arg cluster_launch_url "$cluster_launch_url" '
   .deployment_configs.production as $production |
   .deployment_configs.preview as $preview |
   $production.fail_open == false and
@@ -187,10 +192,12 @@ jq --exit-status \
   $production.env_vars.R2_ACCOUNT_ID == {type: "plain_text", value: $r2_account} and
   $production.env_vars.R2_PARENT_ACCESS_KEY_ID == {type: "plain_text", value: $r2_access_key} and
   $production.env_vars.R2_BUCKET_NAME == {type: "plain_text", value: $r2_bucket} and
+  $production.env_vars.CLUSTER_LAUNCH_URL == {type: "plain_text", value: $cluster_launch_url} and
   $production.env_vars.CREDENTIAL_TTL_SECONDS == {type: "plain_text", value: $credential_ttl} and
   $production.env_vars.UPLOAD_TTL_SECONDS == {type: "plain_text", value: $upload_ttl} and
   $production.env_vars.LEGACY == null and
   ($production.env_vars | has("ADMIN_API_TOKEN") | not) and
+  ($production.env_vars | has("CLUSTER_LAUNCH_HMAC_KEY") | not) and
   ($production.env_vars | has("PROCESSOR_API_TOKEN") | not) and
   ($production.env_vars | has("SITE_KEY_ENCRYPTION_KEY_B64") | not) and
   ($production.env_vars | has("R2_PARENT_SECRET_ACCESS_KEY") | not) and
@@ -202,7 +209,7 @@ jq --exit-status \
   $preview.r2_buckets == {ARCHIVE: null}
 ' "$tmp/patch-payload" >/dev/null || fail_test "PATCH payload did not exactly reconcile configuration drift"
 
-if grep -Eq 'ADMIN_SECRET_SENTINEL|PROCESSOR_SECRET_SENTINEL|SITE_SECRET_SENTINEL|R2_SECRET_SENTINEL|PREVIEW_VALUE_SENTINEL|PREVIEW_SECRET_SENTINEL' "$tmp/patch-payload"; then
+if grep -Eq 'ADMIN_SECRET_SENTINEL|CLUSTER_SECRET_SENTINEL|PROCESSOR_SECRET_SENTINEL|SITE_SECRET_SENTINEL|R2_SECRET_SENTINEL|PREVIEW_VALUE_SENTINEL|PREVIEW_SECRET_SENTINEL' "$tmp/patch-payload"; then
   fail_test "PATCH payload leaked a secret or stale preview value"
 fi
 

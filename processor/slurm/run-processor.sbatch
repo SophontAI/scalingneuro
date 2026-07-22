@@ -9,7 +9,7 @@
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=4
 #SBATCH --mem=16G
-#SBATCH --time=0
+#SBATCH --time=1-00:00:00
 #SBATCH --signal=B:USR1@120
 #SBATCH --output=/data/paul/scaling-neuro/logs/%x-%j.out
 #SBATCH --error=/data/paul/scaling-neuro/logs/%x-%j.err
@@ -55,6 +55,6 @@ trap stop_processor USR1 TERM INT
         --token-file /run/secrets/scaling-neuro-processor-token \
         --work-root "$work_root" \
         --processor-id "slurm-${SLURM_JOB_ID}-${SLURM_PROCID:-0}" \
-        --idle-exit-after 0 &
+        --idle-exit-after 300 &
 child_pid=$!
 wait "$child_pid"

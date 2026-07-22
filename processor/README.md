@@ -147,17 +147,28 @@ cd /data/paul/scaling-neuro/source
 
 The compute node must expose Python 3.12, the exact pinned system `zstd`, `mksquashfs`, Slurm, and Pyxis. The installer builds in a unique staging directory, verifies dependency versions, controller-source and SquashFS checksums, and both native-tool versions inside Pyxis, then atomically publishes the versioned directory. Reusing an existing release re-hashes the current source tree, installed controller, and tool image; any mismatch is rejected rather than silently running stale code.
 
-After the install job reports success, start the persistent consumer:
+After the install job reports success, install the upload-triggered launcher on
+the always-on login node. Its private listener accepts only signed, recent
+receipt events through Cloudflare Tunnel. It deduplicates the upload ID and
+submits the native processor only when no processor job is already active:
 
 ```sh
-processor/scripts/submit-native-consumer.sh \
-  /data/paul/scaling-neuro/native/releases/0.2.0 \
-  https://scalingneuro.com \
-  /data/paul/scaling-neuro/processor \
-  /data/paul/scaling-neuro/secrets/processor-token
+sudo install -m 0644 \
+  processor/launcher/scaling-neuro-cluster-launcher.service \
+  /etc/systemd/system/scaling-neuro-cluster-launcher.service
+sudo systemctl daemon-reload
+sudo systemctl enable --now scaling-neuro-cluster-launcher.service
 ```
 
-The job polls continuously (`--idle-exit-after 0`), requests the `c` partition's infinite time limit (`--time=0`), receives a preemption warning two minutes early, and relies on Slurm `--requeue`. The production native launch is deliberately pinned to `--claim-input-format dicom-series-v1`, so the release and public raw-DICOM path cannot be captured by the one-time legacy NIfTI backlog. Multiple identical consumers are safe: the Worker's lease token makes claims exclusive. Scale with additional jobs only when queue depth warrants it.
+The listener itself consumes no `c`-partition allocation. A completed
+`neuro-sync` raw-DICOM receipt wakes one bottom-priority native Slurm job. The
+job receives a preemption warning two minutes early, relies on Slurm
+`--requeue`, and exits after five minutes without a queued claim. Its 24-hour
+wall-clock limit is a safety bound rather than an infinite allocation. The
+production native launch remains pinned to
+`--claim-input-format dicom-series-v1`, so it cannot consume the one-time
+legacy NIfTI backlog. The Worker's lease token and launcher receipt database
+make retries safe.
 
 ### Whole-processor image: reproducible packaging, not parser isolation
 
@@ -169,7 +180,8 @@ Build the image in CI or in a compute/build environment, never on a shared login
   docker://ghcr.io/sophontai/scaling-neuro-processor:0.2.0
 ```
 
-Submit the persistent, bottom-priority consumer:
+The whole-processor image remains available for an explicitly requested,
+one-off bottom-priority consumer:
 
 ```sh
 processor/scripts/submit-consumer.sh \

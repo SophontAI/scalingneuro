@@ -1,0 +1,21 @@
+[Unit]
+Description=Scaling Neuro upload-triggered Sophont launcher
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=paul
+UMask=0077
+ExecStart=/usr/bin/python3 /data/paul/scaling-neuro/source/processor/launcher/server.py --bind 127.0.0.1 --port 8788 --key-file /data/paul/scaling-neuro/secrets/cluster-launch-hmac --launcher /data/paul/scaling-neuro/source/processor/scripts/launch-native-on-upload.sh --state-db /data/paul/scaling-neuro/launcher/receipts.sqlite3
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ReadWritePaths=/data/paul/scaling-neuro/launcher
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+
+[Install]
+WantedBy=multi-user.target

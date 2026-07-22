@@ -1,5 +1,6 @@
 import { AppError } from "./errors";
 import type { Env } from "./env";
+import { ensureClusterLaunch } from "./cluster";
 import {
   claimProcessingJob,
   checkpointDicomUpload,
@@ -341,15 +342,14 @@ export async function fetchHandler(
     }
     const dicomCompleteUploadId = idMatch(dicomCompleteRoute, path);
     if (request.method === "POST" && dicomCompleteUploadId) {
-      return json(
-        await completeDicomUpload(
-          request,
-          env,
-          dicomCompleteUploadId,
-          parseCompleteUploadRequest(await requestJson(request)),
-        ),
-        requestId,
+      const result = await completeDicomUpload(
+        request,
+        env,
+        dicomCompleteUploadId,
+        parseCompleteUploadRequest(await requestJson(request)),
       );
+      await ensureClusterLaunch(env, dicomCompleteUploadId);
+      return json(result, requestId);
     }
     const dicomCheckpointUploadId = idMatch(dicomCheckpointRoute, path);
     if (request.method === "POST" && dicomCheckpointUploadId) {
@@ -377,10 +377,13 @@ export async function fetchHandler(
     }
     const dicomStatusUploadId = idMatch(dicomStatusRoute, path);
     if (request.method === "GET" && dicomStatusUploadId) {
-      return json(
-        await getDicomUploadStatus(request, env, dicomStatusUploadId),
-        requestId,
+      const result = await getDicomUploadStatus(
+        request,
+        env,
+        dicomStatusUploadId,
       );
+      await ensureClusterLaunch(env, dicomStatusUploadId);
+      return json(result, requestId);
     }
 
     const heartbeatJobId = idMatch(processorHeartbeatRoute, path);

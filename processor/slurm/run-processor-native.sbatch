@@ -9,7 +9,7 @@
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=4
 #SBATCH --mem=16G
-#SBATCH --time=0
+#SBATCH --time=1-00:00:00
 #SBATCH --signal=B:USR1@120
 #SBATCH --output=/data/paul/scaling-neuro/logs/%x-%j.out
 #SBATCH --error=/data/paul/scaling-neuro/logs/%x-%j.err
@@ -88,6 +88,6 @@ trap stop_processor USR1 TERM INT
         --native-tools-slurm-image "$native_tools_image" \
         --slurm-srun-bin "$srun_bin" \
         --slurm-job-id "$SLURM_JOB_ID" \
-        --idle-exit-after 0 &
+        --idle-exit-after 300 &
 child_pid=$!
 wait "$child_pid"
