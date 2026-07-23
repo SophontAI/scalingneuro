@@ -19,7 +19,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=EB+Garamond:ital,wght@0,400;0,500;0,600;1,500&amp;family=JetBrains+Mono:wght@400;500&amp;display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="/styles.css?v=24" />
+  <link rel="stylesheet" href="/styles.css?v=25" />
   <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
 </head>
 <body>
@@ -110,13 +110,6 @@
             </div>
             <p>Each cell represents one center-year</p>
           </div>
-          <div class="archive-flow" aria-label="DICOM folder to EPI archive">
-            <div><span>01</span><strong>DICOM folder</strong></div>
-            <i aria-hidden="true">→</i>
-            <div><span>02</span><strong>Functional EPI only</strong></div>
-            <i aria-hidden="true">→</i>
-            <div><span>03</span><strong>Shared archive</strong></div>
-          </div>
         </figure>
       </div>
     </section>
@@ -125,8 +118,7 @@
       <div class="wrap">
         <div class="section-heading">
           <p class="eyebrow">How it works</p>
-          <h2>The scanner export is enough.</h2>
-          <p>There is no conversion pipeline and no prescribed preprocessing stack.</p>
+          <h2>Share approved fMRI from your lab.</h2>
         </div>
         <div class="steps">
           <article class="step">
@@ -211,7 +203,10 @@ Report: ~/.local/share/neuro-sync/reports/...</code></pre>
 <span class="keyword">compute</span>   none; labs preprocess downloaded DICOMs themselves
 <span class="keyword">hold</span>      non-EPI, unsafe, malformed, and ambiguous series stay local</code></pre>
           </div>
-          <button class="copy-button" id="copyBtn" type="button">Copy install command</button>
+          <div class="term-actions">
+            <button class="platform-toggle" id="platformToggle" type="button" aria-pressed="false">Use Windows</button>
+            <button class="copy-button" id="copyBtn" type="button">Copy install command</button>
+          </div>
         </div>
         <p class="term-foot">macOS, Windows, and Linux · functional EPI DICOM sync</p>
       </div>
@@ -284,14 +279,6 @@ shasum -a 256 series.dicom.tar.zst</code></pre>
       </div>
     </section>
 
-    <section class="principles">
-      <div class="wrap principles-grid">
-        <p>Academic-led</p>
-        <p>Functional EPI only</p>
-        <p>Deidentification happens locally</p>
-        <p>Researchers choose the preprocessing</p>
-      </div>
-    </section>
   </main>
 
   <footer class="footer">
@@ -303,6 +290,6 @@ shasum -a 256 series.dicom.tar.zst</code></pre>
   </footer>
 
   <div class="toast" id="toast" role="status" aria-live="polite"></div>
-  <script type="module" src="/app.js?v=19"></script>
+  <script type="module" src="/app.js?v=20"></script>
 </body>
 </html>

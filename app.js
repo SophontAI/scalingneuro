@@ -64,19 +64,44 @@ function showToast(message) {
   toastTimer = window.setTimeout(() => element.classList.remove("show"), 2200);
 }
 
-const installCommand = /Windows/i.test(navigator.userAgent)
-  ? "irm https://scalingneuro.com/install.ps1 | iex"
-  : "curl -fsSL https://scalingneuro.com/install.sh | sh";
+const installCommands = {
+  unix: "curl -fsSL https://scalingneuro.com/install.sh | sh",
+  windows: "irm https://scalingneuro.com/install.ps1 | iex",
+};
 const installCommandElement = $("#installCommand");
 const installPlatform = $("#installPlatform");
-if (installCommandElement) installCommandElement.textContent = installCommand;
-if (installPlatform && /Windows/i.test(navigator.userAgent)) {
-  installPlatform.textContent = "# Windows PowerShell";
+const platformToggle = $("#platformToggle");
+let installPlatformName = /Windows/i.test(navigator.userAgent)
+  ? "windows"
+  : "unix";
+
+function updateInstallPlatform() {
+  const windows = installPlatformName === "windows";
+  if (installCommandElement) {
+    installCommandElement.textContent = installCommands[installPlatformName];
+  }
+  if (installPlatform) {
+    installPlatform.textContent = windows
+      ? "# Windows PowerShell"
+      : "# macOS or Linux";
+  }
+  if (platformToggle) {
+    platformToggle.textContent = windows ? "Use macOS / Linux" : "Use Windows";
+    platformToggle.setAttribute("aria-pressed", String(windows));
+  }
 }
+
+updateInstallPlatform();
+
+platformToggle?.addEventListener("click", () => {
+  installPlatformName =
+    installPlatformName === "windows" ? "unix" : "windows";
+  updateInstallPlatform();
+});
 
 $("#copyBtn")?.addEventListener("click", async () => {
   try {
-    await navigator.clipboard.writeText(installCommand);
+    await navigator.clipboard.writeText(installCommands[installPlatformName]);
     showToast("Install command copied");
   } catch {
     showToast("Copy failed. Select the command above.");
