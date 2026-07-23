@@ -1,1409 +1,177 @@
-name: Release neuro-sync client
+name: Release neuro-sync
 
 on:
-  push:
-    tags:
-      - client-v*
   workflow_dispatch:
     inputs:
       version:
-        description: Client version (must match client/Cargo.toml; leading v is optional)
-        required: false
+        description: Exact client version from client/Cargo.toml
+        required: true
         type: string
-      publish_release:
-        description: Create a GitHub release after building
-        required: true
-        default: false
-        type: boolean
-      prerelease:
-        description: Mark a manually published release as a prerelease
-        required: true
-        default: true
-        type: boolean
 
 permissions:
-  contents: read
+  contents: write
 
 concurrency:
-  group: neuro-sync-release-${{ github.ref }}
+  group: neuro-sync-release
   cancel-in-progress: false
 
 jobs:
-  metadata:
-    name: Verify release version
+  validate:
     runs-on: ubuntu-latest
     outputs:
-      version: ${{ steps.version.outputs.version }}
+      version: ${{ steps.version.outputs.value }}
     steps:
-      - name: Check out source
-        uses: actions/checkout@v6
-
-      - name: Resolve and verify version
-        id: version
-        env:
-          REQUESTED_VERSION: ${{ inputs.version }}
+      - uses: actions/checkout@v6
+      - id: version
         shell: bash
         run: |
           set -euo pipefail
-          test -f client/Cargo.toml
-          crate_version=$(sed -n 's/^version = "\([^"]*\)"/\1/p' client/Cargo.toml | head -1)
-          if [[ -z "$crate_version" ]]; then
-            echo "Unable to read the client crate version" >&2
-            exit 1
-          fi
-
-          if [[ "$GITHUB_REF_TYPE" == "tag" ]]; then
-            version=${GITHUB_REF_NAME#client-v}
-          elif [[ -n "${REQUESTED_VERSION:-}" ]]; then
-            version=${REQUESTED_VERSION#v}
-          else
-            version=$crate_version
-          fi
-
-          if [[ "$version" != "$crate_version" ]]; then
-            echo "Requested version $version does not match client/Cargo.toml $crate_version" >&2
-            exit 1
-          fi
-          if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+([+-][A-Za-z0-9.-]+)?$ ]]; then
-            echo "Invalid semantic version: $version" >&2
-            exit 1
-          fi
-          echo "version=$version" >> "$GITHUB_OUTPUT"
-
-      - name: Require current main for publication
-        if: github.ref_type == 'tag' || inputs.publish_release == true
-        shell: bash
-        run: |
-          set -euo pipefail
-          git fetch --no-tags origin main:refs/remotes/origin/main
-          main_sha=$(git rev-parse origin/main)
-          if [[ "$GITHUB_SHA" != "$main_sha" ]]; then
-            echo "Published releases must use the current main commit ($main_sha), not $GITHUB_SHA" >&2
-            exit 1
-          fi
-
-  verify:
-    name: Release contract and implementation gate
-    needs: metadata
-    runs-on: ubuntu-latest
-    steps:
-      - name: Check out source
-        uses: actions/checkout@v6
-
-      - name: Set up Python
-        uses: actions/setup-python@v6
-        with:
-          python-version: "3.13"
-          cache: pip
-          cache-dependency-path: |
-            schemas/requirements.txt
-            processor/requirements.lock
-            scripts/vendor-dicom-qa-requirements.txt
-
-      - name: Set up Node
-        uses: actions/setup-node@v6
-        with:
-          node-version: "22"
-          cache: npm
-          cache-dependency-path: worker/package-lock.json
-
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+          source_version=$(sed -n 's/^version = "\([^"]*\)"/\1/p' client/Cargo.toml | head -1)
+          [[ "$source_version" == "${{ inputs.version }}" ]]
+          echo "value=$source_version" >> "$GITHUB_OUTPUT"
+      - uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: 1.85.0
           components: rustfmt, clippy
-
-      - name: Cache Rust build
-        uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-node@v6
         with:
-          workspaces: client
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: worker/package-lock.json
+      - run: npm ci --prefix worker
+      - run: cargo fmt --manifest-path client/Cargo.toml --all -- --check
+      - run: cargo clippy --locked --manifest-path client/Cargo.toml --all-targets -- -D warnings
+      - run: cargo test --locked --manifest-path client/Cargo.toml
+      - run: npm run check --prefix worker
 
-      - name: Install locked validators and Worker dependencies
-        run: |
-          python -m pip install --requirement schemas/requirements.txt
-          python -m pip install --require-hashes --requirement processor/requirements.lock
-          python -m pip install --require-hashes --requirement scripts/vendor-dicom-qa-requirements.txt
-          npm ci --prefix worker
-
-      - name: Validate public contracts
-        run: |
-          python schemas/validate.py
-          node schemas/validate-ajv.mjs
-
-      - name: Verify Worker
-        run: |
-          npm run typecheck --prefix worker
-          npm test --prefix worker
-
-      - name: Verify cluster processor
-        run: PYTHONPATH=processor python -m unittest discover -v -s processor/tests
-
-      - name: Verify client
-        run: |
-          cargo fmt --manifest-path client/Cargo.toml --all -- --check
-          cargo clippy --locked --manifest-path client/Cargo.toml --all-targets --all-features -- -D warnings
-          cargo test --locked --manifest-path client/Cargo.toml --all-features
-
-      - name: Verify pinned public scanner matrix
-        shell: bash
-        run: |
-          set -euo pipefail
-          python scripts/test_vendor_dicom_qa.py
-          python scripts/vendor_dicom_qa.py --self-test
-          python scripts/vendor_dicom_qa.py \
-            --work-dir "$RUNNER_TEMP/vendor-dicom-qa"
-
-      - name: Retain vendor compatibility evidence
-        uses: actions/upload-artifact@v4
-        with:
-          name: vendor-dicom-qa-v${{ needs.metadata.outputs.version }}
-          path: |
-            ${{ runner.temp }}/vendor-dicom-qa/vendor-dicom-qa-result.json
-            ${{ runner.temp }}/vendor-dicom-qa/derived-fixtures/siemens/
-            ${{ runner.temp }}/vendor-dicom-qa/derived-fixtures/siemens-structural-t1like/
-          if-no-files-found: error
-
-      - name: Verify terminal installer on Linux
-        run: ./scripts/test-installers.sh
-
-      - name: Verify two-phase production download preservation
-        run: |
-          ./scripts/test-production-downloads.sh
-          ./scripts/test-release-cutover.sh
-
-  linux:
-    name: Linux x86_64 static musl package
-    needs: [metadata, verify]
-    runs-on: ubuntu-24.04
+  build:
+    needs: validate
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            target: x86_64-unknown-linux-musl
+            targets: x86_64-unknown-linux-musl
+            platform: linux-x86_64-musl-static
+            archive: tar
+          - os: macos-14
+            target: aarch64-apple-darwin
+            targets: aarch64-apple-darwin,x86_64-apple-darwin
+            platform: macos-universal
+            archive: zip
+          - os: windows-2025
+            target: x86_64-pc-windows-msvc
+            targets: x86_64-pc-windows-msvc
+            platform: windows-x86_64
+            archive: zip
+    runs-on: ${{ matrix.os }}
     steps:
-      - name: Check out source
-        uses: actions/checkout@v6
-
-      - name: Install musl build and archive dependencies
+      - uses: actions/checkout@v6
+      - name: Install Linux static toolchain
+        if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install --yes binutils file jq musl-tools
-
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+          sudo apt-get install --yes musl-tools
+      - uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: 1.85.0
-          targets: x86_64-unknown-linux-musl
-
-      - name: Cache Rust build
-        uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: client
-
-      - name: Build locked static release binary
+          targets: ${{ matrix.targets }}
+      - name: Build
+        shell: bash
         env:
-          CC_x86_64_unknown_linux_musl: musl-gcc
           CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER: musl-gcc
-          RUSTFLAGS: -C target-feature=+crt-static
-        run: cargo build --locked --release --manifest-path client/Cargo.toml --target x86_64-unknown-linux-musl
-
-      - name: Stage and verify static client
-        env:
-          VERSION: ${{ needs.metadata.outputs.version }}
-        shell: bash
+          RUSTFLAGS: ${{ runner.os == 'Linux' && '-C target-feature=+crt-static' || '' }}
         run: |
           set -euo pipefail
-          package_name="neuro-sync-v${VERSION}-linux-x86_64-musl-static"
-          stage_dir="$RUNNER_TEMP/$package_name"
-          asset_dir="$RUNNER_TEMP/release-assets"
-          mkdir -p "$stage_dir" "$asset_dir"
-          install -m 0755 client/target/x86_64-unknown-linux-musl/release/neuro-sync "$stage_dir/neuro-sync"
-          cp docs/collaborator-onboarding.md "$stage_dir/CONTRIBUTING-SCANS.md"
-          cp LICENSE-MIT LICENSE-APACHE "$stage_dir/"
-
-          ./scripts/verify-static-linux.sh "$stage_dir/neuro-sync" "$VERSION"
-
-          jq -n \
-            --arg client_version "$VERSION" \
-            --arg git_commit "$GITHUB_SHA" \
-            --arg platform "linux-x86_64-musl-static" \
-            '{client_version:$client_version,workstation_processing:"deidentify-and-archive-dicom",git_commit:$git_commit,platform:$platform,runtime:{libc:"musl",linkage:"static",target:"x86_64-unknown-linux-musl"},signed:false}' \
-            > "$stage_dir/RELEASE.json"
-
-          printf '%s\n' \
-            "PACKAGE_NAME=$package_name" \
-            "STAGE_DIR=$stage_dir" \
-            "ASSET_DIR=$asset_dir" >> "$GITHUB_ENV"
-
-      - name: Install Syft
-        uses: anchore/sbom-action/download-syft@v0
-
-      - name: Generate and package SBOMs
-        shell: bash
-        run: |
-          set -euo pipefail
-          syft "dir:${STAGE_DIR}" \
-            -o "spdx-json=${STAGE_DIR}/neuro-sync.spdx.json" \
-            -o "cyclonedx-json=${STAGE_DIR}/neuro-sync.cdx.json"
-          cp "$STAGE_DIR/neuro-sync.spdx.json" "$ASSET_DIR/${PACKAGE_NAME}.spdx.json"
-          cp "$STAGE_DIR/neuro-sync.cdx.json" "$ASSET_DIR/${PACKAGE_NAME}.cdx.json"
-          tar -C "$(dirname "$STAGE_DIR")" -czf "$ASSET_DIR/${PACKAGE_NAME}.tar.gz" "$PACKAGE_NAME"
-
-      - name: Upload static Linux release assets
-        uses: actions/upload-artifact@v4
-        with:
-          name: release-linux-x86_64
-          path: ${{ env.ASSET_DIR }}/*
-          if-no-files-found: error
-
-  macos:
-    name: macOS universal package
-    needs: [metadata, verify]
-    runs-on: macos-14
-    steps:
-      - name: Check out source
-        uses: actions/checkout@v6
-
-      - name: Verify terminal installer on macOS
-        run: ./scripts/test-installers.sh
-
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          toolchain: 1.85.0
-          targets: aarch64-apple-darwin,x86_64-apple-darwin
-
-      - name: Cache Rust build
-        uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: client
-
-      - name: Build both macOS architectures
-        shell: bash
-        run: |
-          set -euo pipefail
-          cargo build --locked --release --manifest-path client/Cargo.toml --target aarch64-apple-darwin
-          cargo build --locked --release --manifest-path client/Cargo.toml --target x86_64-apple-darwin
-
-      - name: Stage, optionally sign, and verify package
-        env:
-          VERSION: ${{ needs.metadata.outputs.version }}
-          APPLE_CERTIFICATE_P12_BASE64: ${{ secrets.APPLE_CERTIFICATE_P12_BASE64 }}
-          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
-          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
-          APPLE_NOTARY_KEY_P8_BASE64: ${{ secrets.APPLE_NOTARY_KEY_P8_BASE64 }}
-          APPLE_NOTARY_KEY_ID: ${{ secrets.APPLE_NOTARY_KEY_ID }}
-          APPLE_NOTARY_ISSUER_ID: ${{ secrets.APPLE_NOTARY_ISSUER_ID }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          stage_dir="$RUNNER_TEMP/neuro-sync-stage-macos"
-          asset_dir="$RUNNER_TEMP/release-assets"
-          mkdir -p "$stage_dir" "$asset_dir"
-          lipo -create \
-            client/target/aarch64-apple-darwin/release/neuro-sync \
-            client/target/x86_64-apple-darwin/release/neuro-sync \
-            -output "$stage_dir/neuro-sync"
-          chmod 0755 "$stage_dir/neuro-sync"
-          lipo "$stage_dir/neuro-sync" -verify_arch arm64 x86_64
-
-          cp docs/collaborator-onboarding.md "$stage_dir/CONTRIBUTING-SCANS.md"
-          cp LICENSE-MIT LICENSE-APACHE "$stage_dir/"
-
-          signed=false
-          if [[ -n "$APPLE_CERTIFICATE_P12_BASE64" && -n "$APPLE_CERTIFICATE_PASSWORD" && -n "$APPLE_SIGNING_IDENTITY" ]]; then
-            certificate_path="$RUNNER_TEMP/apple-signing.p12"
-            keychain_path="$RUNNER_TEMP/neuro-sync-signing.keychain-db"
-            printf '%s\n' \
-              "APPLE_KEYCHAIN_PATH=$keychain_path" \
-              "APPLE_CERTIFICATE_PATH=$certificate_path" >> "$GITHUB_ENV"
-            keychain_password=$(openssl rand -hex 24)
-            printf '%s' "$APPLE_CERTIFICATE_P12_BASE64" | /usr/bin/base64 -D > "$certificate_path"
-            security create-keychain -p "$keychain_password" "$keychain_path"
-            security set-keychain-settings -lut 21600 "$keychain_path"
-            security unlock-keychain -p "$keychain_password" "$keychain_path"
-            security import "$certificate_path" -k "$keychain_path" -P "$APPLE_CERTIFICATE_PASSWORD" -T /usr/bin/codesign
-            security set-key-partition-list -S apple-tool:,apple: -s -k "$keychain_password" "$keychain_path"
-            security list-keychains -d user -s "$keychain_path"
-            codesign --force --options runtime --timestamp --sign "$APPLE_SIGNING_IDENTITY" "$stage_dir/neuro-sync"
-            codesign --verify --strict --verbose=2 "$stage_dir/neuro-sync"
-            signed=true
+          cargo build --locked --release --manifest-path client/Cargo.toml --target "${{ matrix.target }}"
+          if [[ "${{ matrix.platform }}" == "macos-universal" ]]; then
+            cargo build --locked --release --manifest-path client/Cargo.toml --target x86_64-apple-darwin
           fi
-
-          notarize=false
-          if [[ "$signed" == true && -n "$APPLE_NOTARY_KEY_P8_BASE64" && -n "$APPLE_NOTARY_KEY_ID" && -n "$APPLE_NOTARY_ISSUER_ID" ]]; then
-            notarize=true
-            package_name="neuro-sync-v${VERSION}-macos-universal"
-          elif [[ "$signed" == true ]]; then
-            package_name="neuro-sync-v${VERSION}-macos-universal-CODESIGNED-PILOT"
+      - name: Package
+        shell: bash
+        env:
+          VERSION: ${{ needs.validate.outputs.version }}
+          PLATFORM: ${{ matrix.platform }}
+          TARGET: ${{ matrix.target }}
+          ARCHIVE: ${{ matrix.archive }}
+        run: |
+          set -euo pipefail
+          root="neuro-sync-v${VERSION}-${PLATFORM}"
+          mkdir -p "release/$root"
+          if [[ "$PLATFORM" == "macos-universal" ]]; then
+            lipo -create \
+              client/target/aarch64-apple-darwin/release/neuro-sync \
+              client/target/x86_64-apple-darwin/release/neuro-sync \
+              -output "release/$root/neuro-sync"
+            chmod 0755 "release/$root/neuro-sync"
+          elif [[ "$PLATFORM" == windows-* ]]; then
+            cp "client/target/$TARGET/release/neuro-sync.exe" "release/$root/"
           else
-            package_name="neuro-sync-v${VERSION}-macos-universal-UNSIGNED-PILOT"
+            cp "client/target/$TARGET/release/neuro-sync" "release/$root/"
+            chmod 0755 "release/$root/neuro-sync"
           fi
-          final_stage="$RUNNER_TEMP/$package_name"
-          mv "$stage_dir" "$final_stage"
-          jq -n \
-            --arg client_version "$VERSION" \
-            --arg git_commit "$GITHUB_SHA" \
-            --arg platform "macos-universal" \
-            --argjson signed "$signed" \
-            --argjson notarized "$notarize" \
-            '{client_version:$client_version,workstation_processing:"deidentify-and-archive-dicom",git_commit:$git_commit,platform:$platform,signed:$signed,notarized:$notarized}' \
-            > "$final_stage/RELEASE.json"
-
-          printf '%s\n' \
-            "PACKAGE_NAME=$package_name" \
-            "STAGE_DIR=$final_stage" \
-            "ASSET_DIR=$asset_dir" \
-            "NOTARIZE_MACOS=$notarize" \
-            "APPLE_KEYCHAIN_PATH=${keychain_path:-}" \
-            "APPLE_CERTIFICATE_PATH=${certificate_path:-}" >> "$GITHUB_ENV"
-
-      - name: Remove temporary Apple signing material
-        if: always()
-        shell: bash
-        run: |
-          if [[ -n "${APPLE_KEYCHAIN_PATH:-}" && -f "$APPLE_KEYCHAIN_PATH" ]]; then
-            security delete-keychain "$APPLE_KEYCHAIN_PATH" || true
+          cp LICENSE-APACHE LICENSE-MIT "release/$root/"
+          if [[ "$ARCHIVE" == tar ]]; then
+            tar -C release -czf "release/$root.tar.gz" "$root"
+          else
+            (cd release && 7z a -tzip "$root.zip" "$root" >/dev/null)
           fi
-          if [[ -n "${APPLE_CERTIFICATE_PATH:-}" ]]; then
-            rm -f "$APPLE_CERTIFICATE_PATH"
-          fi
-
-      - name: Install Syft
-        uses: anchore/sbom-action/download-syft@v0
-
-      - name: Generate and package SBOMs
-        shell: bash
-        run: |
-          set -euo pipefail
-          syft "dir:${STAGE_DIR}" \
-            -o "spdx-json=${STAGE_DIR}/neuro-sync.spdx.json" \
-            -o "cyclonedx-json=${STAGE_DIR}/neuro-sync.cdx.json"
-          cp "$STAGE_DIR/neuro-sync.spdx.json" "$ASSET_DIR/${PACKAGE_NAME}.spdx.json"
-          cp "$STAGE_DIR/neuro-sync.cdx.json" "$ASSET_DIR/${PACKAGE_NAME}.cdx.json"
-          ditto -c -k --keepParent "$STAGE_DIR" "$ASSET_DIR/${PACKAGE_NAME}.zip"
-
-      - name: Notarize the signed macOS archive
-        if: env.NOTARIZE_MACOS == 'true'
-        env:
-          APPLE_NOTARY_KEY_P8_BASE64: ${{ secrets.APPLE_NOTARY_KEY_P8_BASE64 }}
-          APPLE_NOTARY_KEY_ID: ${{ secrets.APPLE_NOTARY_KEY_ID }}
-          APPLE_NOTARY_ISSUER_ID: ${{ secrets.APPLE_NOTARY_ISSUER_ID }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          key_path="$RUNNER_TEMP/AuthKey_${APPLE_NOTARY_KEY_ID}.p8"
-          result_path="$RUNNER_TEMP/notary-result.json"
-          trap 'rm -f "$key_path" "$result_path"' EXIT
-          printf '%s' "$APPLE_NOTARY_KEY_P8_BASE64" | /usr/bin/base64 -D > "$key_path"
-          xcrun notarytool submit "$ASSET_DIR/${PACKAGE_NAME}.zip" \
-            --key "$key_path" \
-            --key-id "$APPLE_NOTARY_KEY_ID" \
-            --issuer "$APPLE_NOTARY_ISSUER_ID" \
-            --wait \
-            --timeout 60m \
-            --output-format json > "$result_path"
-          jq '{id,status,message}' "$result_path"
-          jq --exit-status '.status == "Accepted"' "$result_path" > /dev/null
-
-      - name: Upload macOS release assets
-        uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         with:
-          name: release-macos-universal
-          path: ${{ env.ASSET_DIR }}/*
+          name: ${{ matrix.platform }}
+          path: release/neuro-sync-v${{ needs.validate.outputs.version }}-${{ matrix.platform }}.*
           if-no-files-found: error
 
-  windows:
-    name: Windows x86_64 package
-    needs: [metadata, verify]
-    runs-on: windows-2025
-    steps:
-      - name: Check out source
-        uses: actions/checkout@v6
-
-      - name: Verify terminal installer on Windows
-        shell: pwsh
-        run: ./scripts/test-installers.ps1
-
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          toolchain: 1.85.0
-
-      - name: Cache Rust build
-        uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: client
-
-      - name: Verify private Windows state ACLs
-        run: cargo test --locked --manifest-path client/Cargo.toml privacy::tests::windows_restrictions_remove_inheritance_and_other_accounts
-
-      - name: Build locked release binary
-        run: cargo build --locked --release --manifest-path client/Cargo.toml
-
-      - name: Stage, optionally sign, and verify package
-        env:
-          VERSION: ${{ needs.metadata.outputs.version }}
-          WINDOWS_CERTIFICATE_PFX_BASE64: ${{ secrets.WINDOWS_CERTIFICATE_PFX_BASE64 }}
-          WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = "Stop"
-          $stageDir = Join-Path $env:RUNNER_TEMP "neuro-sync-stage-windows"
-          $assetDir = Join-Path $env:RUNNER_TEMP "release-assets"
-          New-Item -ItemType Directory -Force -Path $stageDir, $assetDir | Out-Null
-          Copy-Item "client/target/release/neuro-sync.exe" (Join-Path $stageDir "neuro-sync.exe")
-          Copy-Item "docs/collaborator-onboarding.md" (Join-Path $stageDir "CONTRIBUTING-SCANS.md")
-          Copy-Item -Path "LICENSE-MIT", "LICENSE-APACHE" -Destination $stageDir
-
-          $signed = $false
-          if ($env:WINDOWS_CERTIFICATE_PFX_BASE64 -and $env:WINDOWS_CERTIFICATE_PASSWORD) {
-            $certificatePath = Join-Path $env:RUNNER_TEMP "windows-signing.pfx"
-            "WINDOWS_CERTIFICATE_PATH=$certificatePath" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-            [IO.File]::WriteAllBytes(
-              $certificatePath,
-              [Convert]::FromBase64String($env:WINDOWS_CERTIFICATE_PFX_BASE64)
-            )
-            $signtool = Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\bin\*\x64\signtool.exe" |
-              Sort-Object FullName -Descending |
-              Select-Object -First 1
-            if (-not $signtool) { throw "signtool.exe was not found" }
-            Get-ChildItem $stageDir -Recurse -File -Include *.exe,*.dll | ForEach-Object {
-              & $signtool.FullName sign /f $certificatePath /p $env:WINDOWS_CERTIFICATE_PASSWORD /fd SHA256 /td SHA256 /tr http://timestamp.digicert.com $_.FullName
-              if ($LASTEXITCODE -ne 0) { throw "Authenticode signing failed for $($_.Name)" }
-              & $signtool.FullName verify /pa /all $_.FullName
-              if ($LASTEXITCODE -ne 0) { throw "Authenticode verification failed for $($_.Name)" }
-            }
-            $signed = $true
-          }
-
-          if ($signed) {
-            $packageName = "neuro-sync-v$env:VERSION-windows-x86_64"
-          } else {
-            $packageName = "neuro-sync-v$env:VERSION-windows-x86_64-UNSIGNED-PILOT"
-          }
-          $finalStage = Join-Path $env:RUNNER_TEMP $packageName
-          Move-Item $stageDir $finalStage
-          [ordered]@{
-            client_version = $env:VERSION
-            workstation_processing = "deidentify-and-archive-dicom"
-            git_commit = $env:GITHUB_SHA
-            platform = "windows-x86_64"
-            signed = $signed
-          } | ConvertTo-Json -Depth 4 | Set-Content -Encoding utf8NoBOM (Join-Path $finalStage "RELEASE.json")
-
-          "PACKAGE_NAME=$packageName" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-          "STAGE_DIR=$finalStage" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-          "ASSET_DIR=$assetDir" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-          "WINDOWS_CERTIFICATE_PATH=$($certificatePath ?? '')" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-
-      - name: Remove temporary Windows signing material
-        if: always()
-        shell: pwsh
-        run: |
-          if ($env:WINDOWS_CERTIFICATE_PATH) {
-            Remove-Item -Force -ErrorAction SilentlyContinue $env:WINDOWS_CERTIFICATE_PATH
-          }
-
-      - name: Install Syft
-        uses: anchore/sbom-action/download-syft@v0
-
-      - name: Generate and package SBOMs
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = "Stop"
-          syft "dir:$env:STAGE_DIR" -o "spdx-json=$env:STAGE_DIR/neuro-sync.spdx.json" -o "cyclonedx-json=$env:STAGE_DIR/neuro-sync.cdx.json"
-          Copy-Item "$env:STAGE_DIR/neuro-sync.spdx.json" "$env:ASSET_DIR/$env:PACKAGE_NAME.spdx.json"
-          Copy-Item "$env:STAGE_DIR/neuro-sync.cdx.json" "$env:ASSET_DIR/$env:PACKAGE_NAME.cdx.json"
-          Compress-Archive -Path $env:STAGE_DIR -DestinationPath "$env:ASSET_DIR/$env:PACKAGE_NAME.zip"
-
-      - name: Upload Windows release assets
-        uses: actions/upload-artifact@v4
-        with:
-          name: release-windows-x86_64
-          path: ${{ env.ASSET_DIR }}/*
-          if-no-files-found: error
-
-  assemble:
-    name: Checksums and public collaborator downloads
-    needs: [metadata, linux, macos, windows]
+  publish:
+    needs: [validate, build]
     runs-on: ubuntu-latest
-    permissions:
-      contents: write
-    outputs:
-      draft_release_id: ${{ steps.create_draft_release.outputs.id }}
     steps:
-      - name: Check out source
-        uses: actions/checkout@v6
-
-      - name: Download platform assets
-        uses: actions/download-artifact@v4
+      - uses: actions/checkout@v6
+      - uses: actions/download-artifact@v7
         with:
-          pattern: release-*
-          path: release-assets
+          path: release
           merge-multiple: true
-
-      - name: Generate release index and terminal installers
-        env:
-          VERSION: ${{ needs.metadata.outputs.version }}
+      - name: Build release index and verified installers
         shell: bash
+        env:
+          VERSION: ${{ needs.validate.outputs.version }}
         run: |
           set -euo pipefail
-          shopt -s nullglob
-          linux=(release-assets/neuro-sync-v"${VERSION}"-linux-x86_64-musl-static.tar.gz)
-          macos=(release-assets/neuro-sync-v"${VERSION}"-macos-universal*.zip)
-          windows=(release-assets/neuro-sync-v"${VERSION}"-windows-x86_64*.zip)
-          if (( ${#linux[@]} != 1 || ${#macos[@]} != 1 || ${#windows[@]} != 1 )); then
-            echo "Expected exactly one package for each public platform" >&2
-            exit 1
-          fi
-
-          linux_name=$(basename "${linux[0]}")
-          macos_name=$(basename "${macos[0]}")
-          windows_name=$(basename "${windows[0]}")
-          linux_stem=${linux_name%.tar.gz}
-          macos_stem=${macos_name%.zip}
-          windows_stem=${windows_name%.zip}
-          linux_sha=$(sha256sum "${linux[0]}" | cut -d' ' -f1)
-          macos_sha=$(sha256sum "${macos[0]}" | cut -d' ' -f1)
-          windows_sha=$(sha256sum "${windows[0]}" | cut -d' ' -f1)
-          macos_signed=true
-          macos_notarized=true
-          windows_signed=true
-          [[ "$macos_name" != *-UNSIGNED-PILOT.zip ]] || macos_signed=false
-          [[ "$macos_name" != *-PILOT.zip ]] || macos_notarized=false
-          [[ "$windows_name" != *-UNSIGNED-PILOT.zip ]] || windows_signed=false
-
+          mac="neuro-sync-v${VERSION}-macos-universal.zip"
+          linux="neuro-sync-v${VERSION}-linux-x86_64-musl-static.tar.gz"
+          windows="neuro-sync-v${VERSION}-windows-x86_64.zip"
+          mac_sha=$(sha256sum "release/$mac" | cut -d' ' -f1)
+          linux_sha=$(sha256sum "release/$linux" | cut -d' ' -f1)
+          windows_sha=$(sha256sum "release/$windows" | cut -d' ' -f1)
+          ./scripts/render-installers.sh \
+            release "$VERSION" "https://scalingneuro.com/downloads" \
+            "$mac" "$mac_sha" "$linux" "$linux_sha" "$windows" "$windows_sha"
           jq -n \
             --arg version "$VERSION" \
-            --arg linux_name "$linux_name" \
-            --arg linux_sha "$linux_sha" \
-            --arg macos_name "$macos_name" \
-            --arg macos_stem "$macos_stem" \
-            --arg macos_sha "$macos_sha" \
-            --arg windows_name "$windows_name" \
-            --arg windows_stem "$windows_stem" \
-            --arg windows_sha "$windows_sha" \
-            --arg linux_stem "$linux_stem" \
-            --argjson macos_signed "$macos_signed" \
-            --argjson macos_notarized "$macos_notarized" \
-            --argjson windows_signed "$windows_signed" \
+            --arg mac "$mac" --arg mac_sha "$mac_sha" \
+            --arg linux "$linux" --arg linux_sha "$linux_sha" \
+            --arg windows "$windows" --arg windows_sha "$windows_sha" \
             '{
-              schema_version:"1.0.0",
-              version:$version,
-              channel:"open-beta",
-              checksums_url:"/downloads/SHA256SUMS",
-              artifacts:{
-                macos:{url:("/downloads/"+$macos_name),sha256:$macos_sha,signed:$macos_signed,notarized:$macos_notarized,sbom_spdx_url:("/downloads/"+$macos_stem+".spdx.json"),sbom_cyclonedx_url:("/downloads/"+$macos_stem+".cdx.json")},
-                windows:{url:("/downloads/"+$windows_name),sha256:$windows_sha,signed:$windows_signed,sbom_spdx_url:("/downloads/"+$windows_stem+".spdx.json"),sbom_cyclonedx_url:("/downloads/"+$windows_stem+".cdx.json")},
-                linux:{url:("/downloads/"+$linux_name),sha256:$linux_sha,signed:false,architecture:"x86_64",runtime:{libc:"musl",linkage:"static"},sbom_spdx_url:("/downloads/"+$linux_stem+".spdx.json"),sbom_cyclonedx_url:("/downloads/"+$linux_stem+".cdx.json")}
+              schema_version: "2.0.0",
+              version: $version,
+              artifacts: {
+                macos: {url: ("/downloads/" + $mac), sha256: $mac_sha},
+                linux: {url: ("/downloads/" + $linux), sha256: $linux_sha},
+                windows: {url: ("/downloads/" + $windows), sha256: $windows_sha}
+              },
+              installers: {
+                unix: {url: "/install.sh"},
+                windows: {url: "/install.ps1"}
               }
-            }' > release-assets/latest.json
-
-          ./scripts/render-installers.sh \
-            release-assets \
-            "$VERSION" \
-            "https://scalingneuro.com/downloads" \
-            "$macos_name" \
-            "$macos_sha" \
-            "$linux_name" \
-            "$linux_sha" \
-            "$windows_name" \
-            "$windows_sha"
-          unix_installer_sha=$(sha256sum release-assets/install.sh | cut -d' ' -f1)
-          windows_installer_sha=$(sha256sum release-assets/install.ps1 | cut -d' ' -f1)
-          jq \
-            --arg unix_sha "$unix_installer_sha" \
-            --arg windows_sha "$windows_installer_sha" \
-            '.installers = {
-              unix:{url:"/install.sh",sha256:$unix_sha,supports:["macos","linux"]},
-              windows:{url:"/install.ps1",sha256:$windows_sha,supports:["windows"]}
-            }' \
-            release-assets/latest.json > release-assets/latest.with-installers.json
-          mv release-assets/latest.with-installers.json release-assets/latest.json
-
-      - name: Generate top-level checksums
-        shell: bash
-        run: |
-          set -euo pipefail
-          cd release-assets
-          sums=$(mktemp)
-          find . -maxdepth 1 -type f ! -name SHA256SUMS -printf '%f\n' |
-            LC_ALL=C sort |
-            xargs sha256sum > "$sums"
-          mv "$sums" SHA256SUMS
-          sha256sum --check SHA256SUMS
-
-      - name: Enforce Cloudflare Pages file limit
-        shell: bash
-        run: |
-          set -euo pipefail
-          oversized=$(find release-assets -maxdepth 1 -type f -size +26214400c -printf '%f\n')
-          if [[ -n "$oversized" ]]; then
-            echo "Cloudflare Pages rejects files larger than 25 MiB:" >&2
-            echo "$oversized" >&2
-            exit 1
-          fi
-
-      - name: Upload complete release bundle
-        uses: actions/upload-artifact@v4
-        with:
-          name: neuro-sync-v${{ needs.metadata.outputs.version }}-release-assets
-          path: release-assets/*
-          if-no-files-found: error
-
-      - name: Create private draft GitHub release
-        id: create_draft_release
-        if: github.ref_type == 'tag' || inputs.publish_release == true
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: client-v${{ needs.metadata.outputs.version }}
-          name: neuro-sync v${{ needs.metadata.outputs.version }}
-          draft: true
-          prerelease: ${{ github.event_name == 'workflow_dispatch' && inputs.prerelease || contains(needs.metadata.outputs.version, '-') }}
-          fail_on_unmatched_files: true
-          files: release-assets/*
-          body: |
-            Scaling Neuro MR DICOM ingestion client open beta.
-
-            The published terminal installers select the correct package, verify its pinned
-            SHA-256, install without administrator access, and return control to the shell.
-            Researchers start `neuro-sync` when their completed DICOM export path is ready.
-            Registration, policy confirmation, folder entry, upload, and recovery require no
-            browser or graphical Linux runtime. Non-interactive uploads must explicitly pass
-            `--confirm-authorized --confirm-native-pixels-authorized` after the lab has
-            confirmed institutional authorization for the selected scans and for transfer
-            of scanner-native, not-defaced pixels. If the advertised policy changed, the
-            same command must also name it exactly with `--accept-policy-version VERSION`.
-            Structural head images can retain
-            recognizable facial anatomy and are governed raw data, not automatically public.
-            Platform packages are checksum-bound implementation assets selected by the
-            terminal installers. Files labeled UNSIGNED-PILOT or CODESIGNED-PILOT may trigger
-            operating-system trust warnings; institutional controls may still require signed builds.
-
-      - name: Set up Node for Pages Worker build
-        if: github.ref_type == 'tag' || inputs.publish_release == true
-        uses: actions/setup-node@v6
-        with:
-          node-version: "22"
-          cache: npm
-          cache-dependency-path: worker/package-lock.json
-
-      - name: Install locked Worker dependencies
-        if: github.ref_type == 'tag' || inputs.publish_release == true
-        run: npm ci --prefix worker
-
-      - name: Build public site bundle
-        if: github.ref_type == 'tag' || inputs.publish_release == true
-        run: ./scripts/build-site.sh
-
-      - name: Upload backend and site bundle without release cutover
-        if: github.ref_type == 'tag' || inputs.publish_release == true
-        uses: actions/upload-artifact@v4
-        with:
-          name: neuro-sync-v${{ needs.metadata.outputs.version }}-pages-phase-one
-          path: dist/
-          if-no-files-found: error
-
-      - name: Add versioned downloads and public index
-        if: github.ref_type == 'tag' || inputs.publish_release == true
-        shell: bash
-        run: |
-          set -euo pipefail
-          cp release-assets/* dist/downloads/
-          install -m 0755 release-assets/install.sh dist/install.sh
-          install -m 0644 release-assets/install.ps1 dist/install.ps1
-
-      - name: Upload public Pages bundle
-        if: github.ref_type == 'tag' || inputs.publish_release == true
-        uses: actions/upload-artifact@v4
-        with:
-          name: neuro-sync-v${{ needs.metadata.outputs.version }}-pages
-          path: dist/
-          if-no-files-found: error
-
-  publish-pages:
-    name: Publish collaborator downloads and release
-    if: github.ref_type == 'tag' || inputs.publish_release == true
-    needs: [metadata, assemble]
-    runs-on: ubuntu-latest
-    concurrency:
-      group: scalingneuro-production
-      cancel-in-progress: false
-    permissions:
-      contents: write
-      deployments: write
-    environment:
-      name: production
-      url: https://scalingneuro.com/downloads/
-    steps:
-      - name: Check out release source
-        uses: actions/checkout@v6
-
-      - name: Require the current main commit
-        shell: bash
-        run: |
-          set -euo pipefail
-          git fetch --no-tags origin main:refs/remotes/origin/main
-          main_sha=$(git rev-parse origin/main)
-          if [[ "$GITHUB_SHA" != "$main_sha" ]]; then
-            echo "Public downloads must be released from the current main commit ($main_sha), not $GITHUB_SHA" >&2
-            exit 1
-          fi
-
-      - name: Set up Node for migration gate
-        uses: actions/setup-node@v6
-        with:
-          node-version: "22"
-          cache: npm
-          cache-dependency-path: worker/package-lock.json
-
-      - name: Install locked Worker dependencies
-        run: npm ci --prefix worker
-
-      - name: Enforce fail-closed production and isolated previews
-        env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-        run: ./scripts/configure-pages-production.sh
-
-      - name: Apply control-plane migrations
-        env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-        run: npm exec --prefix worker -- wrangler d1 migrations apply scaling-neuro-control --remote --config worker/wrangler.jsonc
-
-      - name: Download candidate backend bundle for phase one
-        uses: actions/download-artifact@v4
-        with:
-          name: neuro-sync-v${{ needs.metadata.outputs.version }}-pages-phase-one
-          path: candidate-phase-one
-
-      - name: Preserve the exact currently published site and release
-        id: preserve_current_release
-        shell: bash
-        run: |
-          set -euo pipefail
-          production_version=$(mktemp)
-          curl --fail --location --silent --show-error --max-time 30 \
-            --header 'cache-control: no-cache' \
-            --output "$production_version" \
-            "https://scalingneuro.com/version.json?phase=one-capture&run=$GITHUB_RUN_ID"
-          production_commit=$(jq -er \
-            '(.static_commit // .commit) |
-             select(type == "string" and test("^[0-9a-f]{40}$"))' \
-            "$production_version")
-          if [[ $(git rev-parse --is-shallow-repository) == true ]]; then
-            git fetch --no-tags --unshallow origin main
-          else
-            git fetch --no-tags origin main
-          fi
-          git cat-file -e "${production_commit}^{commit}"
-          if ! git merge-base --is-ancestor "$production_commit" "$GITHUB_SHA"; then
-            echo "Published site commit is not an ancestor of this release: $production_commit" >&2
-            exit 1
-          fi
-          ./scripts/production-site.sh capture \
-            candidate-phase-one dist-phase-one "$production_commit"
-          ./scripts/production-downloads.sh capture dist-phase-one
-          echo "production_commit=$production_commit" >> "$GITHUB_OUTPUT"
-          echo "captured=true" >> "$GITHUB_OUTPUT"
-
-      - name: Deploy backend while retaining current site and downloads
-        id: phase_one_deploy
-        uses: cloudflare/wrangler-action@v3
-        with:
-          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          command: pages deploy dist-phase-one --project-name=scalingneuro --branch=main --commit-hash=${{ github.sha }}
-          gitHubToken: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Verify phase one and unchanged public site and release bytes
-        env:
-          EXPECTED_VERSION: ${{ needs.metadata.outputs.version }}
-        shell: bash
-        timeout-minutes: 15
-        run: |
-          set -euo pipefail
-          phase_probe_dir="$RUNNER_TEMP/neuro-sync-phase-one-probes"
-          rm -rf "$phase_probe_dir"
-          mkdir -p "$phase_probe_dir"
-          source_converged=false
-          consecutive_candidate_observations=0
-          for attempt in $(seq 1 30); do
-            health_file="$phase_probe_dir/health.json"
-            version_file="$phase_probe_dir/version.json"
-            contribution_file="$phase_probe_dir/contribution.json"
-            : > "$health_file"
-            : > "$version_file"
-            : > "$contribution_file"
-            curl --fail --silent --show-error --max-time 10 \
-              --header 'cache-control: no-cache' \
-              --header 'pragma: no-cache' \
-              --output "$health_file" \
-              "https://scalingneuro.com/health?phase=one&commit=$GITHUB_SHA&attempt=$attempt" &
-            health_pid=$!
-            curl --fail --silent --show-error --max-time 10 \
-              --header 'cache-control: no-cache' \
-              --header 'pragma: no-cache' \
-              --output "$version_file" \
-              "https://scalingneuro.com/version.json?phase=one&commit=$GITHUB_SHA&attempt=$attempt" &
-            version_pid=$!
-            curl --fail --silent --show-error --max-time 10 \
-              --header 'cache-control: no-cache' \
-              --header 'pragma: no-cache' \
-              --header "User-Agent: neuro-sync/${EXPECTED_VERSION}" \
-              --output "$contribution_file" \
-              "https://scalingneuro.com/v1/contribution?phase=one&commit=$GITHUB_SHA&attempt=$attempt" &
-            contribution_pid=$!
-            probe_status=0
-            wait "$health_pid" || probe_status=1
-            wait "$version_pid" || probe_status=1
-            wait "$contribution_pid" || probe_status=1
-            health=$(<"$health_file")
-            source_version=$(<"$version_file")
-            candidate_contribution=$(<"$contribution_file")
-            if (( probe_status == 0 )) &&
-               jq --exit-status --arg version "$EXPECTED_VERSION" '
-                 .status == "ok" and .version == $version
-               ' <<<"$health" >/dev/null 2>&1 &&
-               jq --exit-status \
-                 --arg sha "$GITHUB_SHA" \
-                 --arg static "${{ steps.preserve_current_release.outputs.production_commit }}" '
-                   .commit == $sha and .static_commit == $static and
-                   .deployment_phase == "backend-validation"
-                 ' <<<"$source_version" >/dev/null 2>&1 &&
-               jq --exit-status '
-                 .consent_policy_version == "open-mri-1.0.0" and
-                 .project_name == "Scaling Neuro public MRI contribution"
-               ' <<<"$candidate_contribution" >/dev/null 2>&1; then
-              consecutive_candidate_observations=$((consecutive_candidate_observations + 1))
-              if (( consecutive_candidate_observations >= 3 )); then
-                source_converged=true
-                break
-              fi
-            else
-              consecutive_candidate_observations=0
-            fi
-            sleep 5
-          done
-          if [[ "$source_converged" != true ]]; then
-            echo "Phase-one production API did not converge" >&2
-            exit 1
-          fi
-
-          site_unchanged=false
-          for attempt in $(seq 1 20); do
-            if ./scripts/production-site.sh verify dist-phase-one; then
-              site_unchanged=true
-              break
-            fi
-            sleep 5
-          done
-          if [[ "$site_unchanged" != true ]]; then
-            echo "Phase one changed the previously published static site" >&2
-            exit 1
-          fi
-
-          downloads_unchanged=false
-          for attempt in $(seq 1 20); do
-            if ./scripts/production-downloads.sh verify dist-phase-one; then
-              downloads_unchanged=true
-              break
-            fi
-            sleep 5
-          done
-          if [[ "$downloads_unchanged" != true ]]; then
-            echo "Phase one changed the previously published release bytes" >&2
-            exit 1
-          fi
-
-      - name: Prove the preserved public client can register through phase one
-        shell: bash
-        run: |
-          set -euo pipefail
-          transition_root=$(mktemp -d)
-          trap 'rm -rf "$transition_root"' EXIT
-
-          public_version=$(jq -er '.version | select(type == "string")' \
-            dist-phase-one/downloads/latest.json)
-          public_linux_url=$(jq -er \
-            '.artifacts.linux.url | select(test("^/downloads/[A-Za-z0-9][A-Za-z0-9._+-]*\\.tar\\.gz$"))' \
-            dist-phase-one/downloads/latest.json)
-          public_archive="dist-phase-one/downloads/${public_linux_url##*/}"
-          test -f "$public_archive"
-          tar -xzf "$public_archive" -C "$transition_root"
-          public_client=$(find "$transition_root" -type f -name neuro-sync -perm -u+x -print -quit)
-          test -n "$public_client"
-          [[ "$($public_client --version)" == "neuro-sync ${public_version}" ]]
-
-          if [[ ! "$public_version" =~ ^([0-9]+)\.([0-9]+)\.([0-9]+) ]]; then
-            echo "Published client version is not semantic: $public_version" >&2
-            exit 1
-          fi
-          if (( 10#${BASH_REMATCH[1]} > 0 || 10#${BASH_REMATCH[2]} >= 4 )); then
-            expected_public_policy=open-mri-1.0.0
-            public_policy_acceptance=(
-              --accept-policy-version "$expected_public_policy"
-            )
-          else
-            expected_public_policy=open-epi-1.0.0
-            public_policy_acceptance=(--accept-policy)
-          fi
-          advertised_public_policy=$(curl -fsS https://scalingneuro.com/v1/contribution \
-            -H "User-Agent: neuro-sync/${public_version}" | \
-            jq -er '.consent_policy_version | select(type == "string")')
-          [[ "$advertised_public_policy" == "$expected_public_policy" ]]
-
-          transition_state="$RUNNER_TEMP/neuro-sync-transition-state"
-          rm -rf "$transition_state"
-          export NEURO_SYNC_STATE_DIR="$transition_state"
-          public_registration_output=$("$public_client" register \
-            --email "release-transition+${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}@scalingneuro.com" \
-            --name "Scaling Neuro Transition QA" \
-            --institution "Scaling Neuro" \
-            --lab "Preserved public client compatibility QA" \
-            --device-name "transition-${public_version}-linux" \
-            "${public_policy_acceptance[@]}")
-          printf '%s\n' "$public_registration_output"
-          grep -Fq "contribution policy: ${expected_public_policy}" \
-            <<<"$public_registration_output"
-          printf '%s\n' "$expected_public_policy" \
-            > "$RUNNER_TEMP/neuro-sync-transition-policy"
-
-      - name: Download candidate client and non-PHI scanner fixture
-        uses: actions/download-artifact@v4
-        with:
-          pattern: ${{ format('*v{0}*', needs.metadata.outputs.version) }}
-          path: release-smoke
-
-      - name: Prove candidate terminal client through production and Sophont
-        env:
-          EXPECTED_VERSION: ${{ needs.metadata.outputs.version }}
-        shell: bash
-        timeout-minutes: 30
-        run: |
-          set -euo pipefail
-          smoke_root=$(mktemp -d)
-          trap 'rm -rf "$smoke_root"' EXIT
-
-          linux_archive=$(find release-smoke -type f \
-            -name "neuro-sync-v${EXPECTED_VERSION}-linux-x86_64-musl-static.tar.gz" -print -quit)
-          functional_fixture=$(find release-smoke -type d \
-            -path '*/derived-fixtures/siemens' -print -quit)
-          structural_fixture=$(find release-smoke -type d \
-            -path '*/derived-fixtures/siemens-structural-t1like' -print -quit)
-          if [[ -z "$linux_archive" || -z "$functional_fixture" || -z "$structural_fixture" ]]; then
-            echo "Release smoke assets are incomplete" >&2
-            exit 1
-          fi
-          tar -xzf "$linux_archive" -C "$smoke_root"
-          client=$(find "$smoke_root" -type f -name neuro-sync -perm -u+x -print -quit)
-          test -n "$client"
-          [[ "$($client --version)" == "neuro-sync ${EXPECTED_VERSION}" ]]
-          transition_state="$RUNNER_TEMP/neuro-sync-transition-state"
-          transition_policy=$(<"$RUNNER_TEMP/neuro-sync-transition-policy")
-          jq --exit-status --arg policy "$transition_policy" \
-            '.consent_policy_version == $policy' \
-            "$transition_state/config.json" >/dev/null
-          if [[ "$transition_policy" == "open-epi-1.0.0" ]]; then
-            transition_empty="$smoke_root/transition-empty-folder"
-            mkdir -p "$transition_empty"
-            export NEURO_SYNC_STATE_DIR="$transition_state"
-            transition_upgrade_output=$(./scripts/retry-release-candidate.sh \
-              policy-upgrade "$client" upload "$transition_empty" \
-              --confirm-authorized \
-              --confirm-native-pixels-authorized \
-              --accept-policy-version open-mri-1.0.0)
-            printf '%s\n' "$transition_upgrade_output"
-            grep -Fq 'Contribution policy updated to open-mri-1.0.0.' \
-              <<<"$transition_upgrade_output"
-            jq --exit-status '
-              .consent_policy_version == "open-mri-1.0.0" and
-              .project_name == "Scaling Neuro public MRI contribution"
-            ' "$transition_state/config.json" >/dev/null
-          fi
-
-          mixed_fixture="$smoke_root/mixed-mr-fixture"
-          mkdir -p "$mixed_fixture/functional" "$mixed_fixture/structural"
-          cp -a "$functional_fixture/." "$mixed_fixture/functional/"
-          cp -a "$structural_fixture/." "$mixed_fixture/structural/"
-          [[ "$(find "$mixed_fixture" -type f -name '*.dcm' | wc -l | tr -d ' ')" == 11 ]]
-
-          export NEURO_SYNC_STATE_DIR="$smoke_root/state"
-          candidate_registration_output=$(./scripts/retry-release-candidate.sh \
-            registration "$client" register \
-            --email "release-qa+${EXPECTED_VERSION}@scalingneuro.com" \
-            --name "Scaling Neuro Release QA" \
-            --institution "Scaling Neuro" \
-            --lab "Public non-PHI scanner compatibility QA" \
-            --device-name "release-${EXPECTED_VERSION}-linux" \
-            --accept-policy-version open-mri-1.0.0)
-          printf '%s\n' "$candidate_registration_output"
-          grep -Fq 'contribution policy: open-mri-1.0.0' \
-            <<<"$candidate_registration_output"
-          first_upload_output=$(./scripts/retry-release-candidate.sh \
-            upload "$client" upload "$mixed_fixture" \
-            --confirm-authorized \
-            --confirm-native-pixels-authorized \
-            --accept-policy-version open-mri-1.0.0)
-          printf '%s\n' "$first_upload_output"
-
-          first_status="$smoke_root/first-status.json"
-          first_status_converged=false
-          for _ in $(seq 1 24); do
-            if "$client" status --json > "$first_status" &&
-               jq --exit-status '
-                 .status == "complete" and
-                 .summary.accepted == 2 and
-                 .summary.held == 0 and
-                 .summary.excluded == 0 and
-                 .dicom.receipt_received_series == 2 and
-                 .dicom.processing_total_series == 2 and
-                 .dicom.functional_epi_series == 1 and
-                 .dicom.archive_only_series == 1 and
-                 .dicom.failed_series == 0 and
-                 .dicom.purged_series == 0
-               ' "$first_status" >/dev/null 2>&1; then
-              first_status_converged=true
-              break
-            fi
-            sleep 5
-          done
-          if [[ "$first_status_converged" != true ]]; then
-            echo "Candidate upload status did not converge to the all-MR contract" >&2
-            jq '{id,status,summary,dicom}' "$first_status" >&2 || true
-            exit 1
-          fi
-          run_id=$(jq -er '.id' "$first_status")
-
-          processed=false
-          for _ in $(seq 1 90); do
-            "$client" status --json > "$smoke_root/status.json"
-            if jq --exit-status '
-              .dicom.status == "processed" and
-              .dicom.processed_series == 2 and
-              .dicom.processing_total_series == 2 and
-              .dicom.queued_series == 0 and
-              .dicom.processing_series == 0 and
-              .dicom.functional_epi_series == 1 and
-              .dicom.archive_only_series == 1 and
-              .dicom.archive_verified_series == 1 and
-              .dicom.failed_series == 0 and
-              .dicom.purged_series == 0
-            ' "$smoke_root/status.json" >/dev/null; then
-              processed=true
-              break
-            fi
-            sleep 10
-          done
-          if [[ "$processed" != true ]]; then
-            echo "Sophont processing did not reach a clean processed state" >&2
-            jq '{id,status,dicom}' "$smoke_root/status.json" >&2
-            exit 1
-          fi
-
-          replay_upload_output=$(./scripts/retry-release-candidate.sh \
-            upload "$client" upload "$mixed_fixture" \
-            --confirm-authorized \
-            --confirm-native-pixels-authorized \
-            --accept-policy-version open-mri-1.0.0)
-          printf '%s\n' "$replay_upload_output"
-          replay_status="$smoke_root/replay-status.json"
-          replay_status_converged=false
-          for _ in $(seq 1 24); do
-            if "$client" status --json > "$replay_status" &&
-               jq --exit-status --arg run_id "$run_id" '
-                 .id == $run_id and .status == "complete" and
-                 .summary.accepted == 2 and
-                 .summary.held == 0 and
-                 .summary.excluded == 0 and
-                 .dicom.status == "processed" and
-                 .dicom.receipt_received_series == 2 and
-                 .dicom.processed_series == 2 and
-                 .dicom.processing_total_series == 2 and
-                 .dicom.queued_series == 0 and
-                 .dicom.processing_series == 0 and
-                 .dicom.functional_epi_series == 1 and
-                 .dicom.archive_only_series == 1 and
-                 .dicom.archive_verified_series == 1 and
-                 .dicom.failed_series == 0 and
-                 .dicom.purged_series == 0
-               ' "$replay_status" >/dev/null 2>&1; then
-              replay_status_converged=true
-              break
-            fi
-            sleep 5
-          done
-          if [[ "$replay_status_converged" != true ]]; then
-            echo "Idempotent replay status did not converge to the all-MR contract" >&2
-            jq '{id,status,summary,dicom}' "$replay_status" >&2 || true
-            exit 1
-          fi
-
-      - name: Download new public Pages release bundle
-        uses: actions/download-artifact@v4
-        with:
-          name: neuro-sync-v${{ needs.metadata.outputs.version }}-pages
-          path: dist
-
-      - name: Cut over verified collaborator downloads
-        id: phase_two_deploy
-        uses: cloudflare/wrangler-action@v3
-        with:
-          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          command: pages deploy dist --project-name=scalingneuro --branch=main --commit-hash=${{ github.sha }}
-          gitHubToken: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Verify production API and released downloads
-        env:
-          EXPECTED_VERSION: ${{ needs.metadata.outputs.version }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          release_dir=$(mktemp -d)
-          trap 'rm -rf "$release_dir"' EXIT
-
-          converged=false
-          for attempt in $(seq 1 20); do
-            health=$(curl --fail --silent --show-error --max-time 15 \
-              "https://scalingneuro.com/health?commit=$GITHUB_SHA" || true)
-            source_version=$(curl --fail --silent --show-error --max-time 15 \
-              "https://scalingneuro.com/version.json?commit=$GITHUB_SHA" || true)
-            if curl --fail --silent --show-error --max-time 15 \
-                --output "$release_dir/latest.json" \
-                "https://scalingneuro.com/downloads/latest.json?release=$EXPECTED_VERSION&commit=$GITHUB_SHA" &&
-               jq --exit-status '.status == "ok"' <<<"$health" >/dev/null 2>&1 &&
-               jq --exit-status --arg sha "$GITHUB_SHA" '.commit == $sha' <<<"$source_version" >/dev/null 2>&1 &&
-               jq --exit-status --arg version "$EXPECTED_VERSION" '
-                 .schema_version == "1.0.0" and
-                 .version == $version and
-                 .channel == "open-beta" and
-                 .checksums_url == "/downloads/SHA256SUMS" and
-                 ((.artifacts | keys | sort) == ["linux", "macos", "windows"]) and
-                 (.artifacts.linux.url == ("/downloads/neuro-sync-v" + $version + "-linux-x86_64-musl-static.tar.gz")) and
-                 (.artifacts.linux.architecture == "x86_64") and
-                 (.artifacts.linux.runtime == {libc:"musl", linkage:"static"}) and
-                 ((.installers | keys | sort) == ["unix", "windows"]) and
-                 (.installers.unix.url == "/install.sh") and
-                 (.installers.windows.url == "/install.ps1") and
-                 (all(.installers[]; .sha256 | type == "string" and test("^[0-9a-f]{64}$"))) and
-                 (all(.artifacts[];
-                   (.url | type == "string" and test("^/downloads/[A-Za-z0-9][A-Za-z0-9._+-]*$")) and
-                   (.sha256 | type == "string" and test("^[0-9a-f]{64}$")) and
-                   (.signed | type == "boolean") and
-                   (.sbom_spdx_url | type == "string" and test("^/downloads/[A-Za-z0-9][A-Za-z0-9._+-]*\\.spdx\\.json$")) and
-                   (.sbom_cyclonedx_url | type == "string" and test("^/downloads/[A-Za-z0-9][A-Za-z0-9._+-]*\\.cdx\\.json$"))
-                 ))
-               ' "$release_dir/latest.json" >/dev/null 2>&1; then
-              converged=true
-              break
-            fi
-            sleep 5
-          done
-          if [[ "$converged" != true ]]; then
-            echo "Production API and release index did not converge" >&2
-            exit 1
-          fi
-
-          expected=$(mktemp)
-          {
-            printf '%s\n' install.ps1 install.sh latest.json
-            jq -r '.artifacts[] | [.url, .sbom_spdx_url, .sbom_cyclonedx_url][] | split("/")[-1]' \
-              "$release_dir/latest.json"
-          } | LC_ALL=C sort -u > "$expected"
-          actual=$(mktemp)
-          inventory_converged=false
-          for attempt in $(seq 1 20); do
-            candidate="$release_dir/SHA256SUMS.candidate"
-            if curl --fail --location --silent --show-error \
-                 --retry 5 --retry-all-errors \
-                 --output "$candidate" \
-                 "https://scalingneuro.com/downloads/SHA256SUMS?release=$EXPECTED_VERSION&commit=$GITHUB_SHA&attempt=$attempt" &&
-               awk '
-                 NF != 2 ||
-                 $1 !~ /^[0-9a-f]{64}$/ ||
-                 $2 !~ /^[A-Za-z0-9][A-Za-z0-9._+-]*$/ { exit 1 }
-               ' "$candidate"; then
-              awk '{print $2}' "$candidate" | LC_ALL=C sort > "$actual"
-              if diff -u "$expected" "$actual" >/dev/null; then
-                mv "$candidate" "$release_dir/SHA256SUMS"
-                inventory_converged=true
-                break
-              fi
-            fi
-            sleep 5
-          done
-          if [[ "$inventory_converged" != true ]]; then
-            echo "Production checksum inventory did not converge" >&2
-            diff -u "$expected" "$actual" >&2 || true
-            exit 1
-          fi
-
-          # Pages may expose the new index a few seconds before every edge has
-          # the matching immutable bytes. Retry content verification as a
-          # convergence unit instead of treating one stale edge response as a
-          # corrupt release.
-          artifacts_converged=false
-          for attempt in $(seq 1 20); do
-            downloads_ok=true
-            while IFS= read -r url; do
-              name=${url##*/}
-              if ! curl --fail --location --silent --show-error \
-                   --retry 5 --retry-all-errors \
-                   --output "$release_dir/$name" \
-                   "https://scalingneuro.com${url}?release=$EXPECTED_VERSION&commit=$GITHUB_SHA&attempt=$attempt"; then
-                downloads_ok=false
-              fi
-            done < <(
-              jq -r '[.artifacts[] | [.url, .sbom_spdx_url, .sbom_cyclonedx_url][]] + [.installers[].url] | .[]' \
-                "$release_dir/latest.json"
-            )
-            if [[ "$downloads_ok" == true ]] &&
-               (cd "$release_dir" && sha256sum --check --strict SHA256SUMS >/dev/null 2>&1); then
-              artifacts_converged=true
-              break
-            fi
-            sleep 5
-          done
-          if [[ "$artifacts_converged" != true ]]; then
-            echo "Production release bytes did not converge" >&2
-            (cd "$release_dir" && sha256sum --check --strict SHA256SUMS) >&2 || true
-            exit 1
-          fi
-
-          jq -r '.artifacts[] | [.url, .sha256] | @tsv' "$release_dir/latest.json" |
-            while IFS=$'\t' read -r url expected_sha; do
-              name=${url##*/}
-              actual_sha=$(sha256sum "$release_dir/$name" | cut -d' ' -f1)
-              [[ "$actual_sha" == "$expected_sha" ]] || {
-                echo "Published artifact digest does not match latest.json: $name" >&2
-                exit 1
-              }
-            done
-
-      - name: Publish only the production-verified draft
-        id: publish_github_release
+            }' > release/latest.json
+          (cd release && sha256sum neuro-sync-* install.sh install.ps1 latest.json > SHA256SUMS)
+      - name: Publish
         env:
           GH_TOKEN: ${{ github.token }}
-          VERSION: ${{ needs.metadata.outputs.version }}
-          PRERELEASE: ${{ github.event_name == 'workflow_dispatch' && inputs.prerelease || contains(needs.metadata.outputs.version, '-') }}
-          RELEASE_ID: ${{ needs.assemble.outputs.draft_release_id }}
-        shell: bash
+          VERSION: ${{ needs.validate.outputs.version }}
         run: |
-          set -euo pipefail
-          tag="client-v${VERSION}"
-          if [[ ! "$RELEASE_ID" =~ ^[1-9][0-9]*$ ]]; then
-            echo "Draft release action returned an unsafe release ID" >&2
-            exit 1
-          fi
-          release=$(gh api "repos/${GITHUB_REPOSITORY}/releases/${RELEASE_ID}")
-          release_sha=$(gh api "repos/${GITHUB_REPOSITORY}/commits/${tag}" --jq '.sha')
-          if ! jq --exit-status --arg tag "$tag" --arg id "$RELEASE_ID" '
-              .draft == true and .tag_name == $tag and (.id | tostring) == $id
-            ' <<<"$release" >/dev/null || [[ "$release_sha" != "$GITHUB_SHA" ]]; then
-            echo "Refusing to publish a non-draft or source-mismatched release" >&2
-            exit 1
-          fi
-          echo "eligible_draft=true" >> "$GITHUB_OUTPUT"
-          gh api --method PATCH "repos/${GITHUB_REPOSITORY}/releases/${RELEASE_ID}" \
-            -F draft=false \
-            -F prerelease="$PRERELEASE" >/dev/null
-
-      - name: Verify public release source and state
-        env:
-          GH_TOKEN: ${{ github.token }}
-          VERSION: ${{ needs.metadata.outputs.version }}
-          RELEASE_ID: ${{ needs.assemble.outputs.draft_release_id }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          tag="client-v${VERSION}"
-          release=$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${tag}")
-          jq --exit-status \
-            --arg tag "$tag" \
-            --arg id "$RELEASE_ID" \
-            '.draft == false and .tag_name == $tag and (.id | tostring) == $id and
-             any(.assets[]; .name == "latest.json") and
-             any(.assets[]; .name == "SHA256SUMS")' <<<"$release" >/dev/null
-          [[ "$(gh api "repos/${GITHUB_REPOSITORY}/commits/${tag}" --jq '.sha')" == "$GITHUB_SHA" ]]
-
-      - name: Restore the forward-compatible bridge after any cutover failure
-        # D1 migrations and accepted v2/all-MR jobs are forward-only. Once the
-        # phase-one backend can be canonical, recovery must keep that backend
-        # and restore only the previously published download bytes.
-        # A failed capture leaves the candidate bundle untrusted and occurs
-        # before any production deployment, so recovery must not deploy it.
-        if: ${{ failure() && steps.preserve_current_release.outputs.captured == 'true' }}
-        env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          GH_TOKEN: ${{ github.token }}
-          VERSION: ${{ needs.metadata.outputs.version }}
-          RELEASE_ID: ${{ needs.assemble.outputs.draft_release_id }}
-          RELEASE_WAS_ELIGIBLE: ${{ steps.publish_github_release.outputs.eligible_draft }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          recovery_failed=false
-
-          if [[ "$RELEASE_WAS_ELIGIBLE" == true ]]; then
-            tag="client-v${VERSION}"
-            release=$(gh api "repos/${GITHUB_REPOSITORY}/releases/${RELEASE_ID}" || true)
-            if [[ -z "$release" ]]; then
-              echo "Could not determine whether the candidate GitHub release became public" >&2
-              recovery_failed=true
-            elif ! jq --exit-status --arg tag "$tag" --arg id "$RELEASE_ID" '
-                .tag_name == $tag and (.id | tostring) == $id and
-                (.draft | type) == "boolean"
-              ' <<<"$release" >/dev/null; then
-              echo "Candidate GitHub release identity or draft state changed during rollback" >&2
-              recovery_failed=true
-            elif [[ $(jq -r '.draft' <<<"$release") == false ]]; then
-              if ! recovered_release=$(gh api --method PATCH \
-                "repos/${GITHUB_REPOSITORY}/releases/${RELEASE_ID}" \
-                -F draft=true); then
-                echo "Failed to return the GitHub release to draft state" >&2
-                recovery_failed=true
-              elif ! jq --exit-status --arg tag "$tag" --arg id "$RELEASE_ID" '
-                  .draft == true and .tag_name == $tag and (.id | tostring) == $id
-                ' <<<"$recovered_release" >/dev/null; then
-                echo "GitHub did not confirm the candidate release returned to draft state" >&2
-                recovery_failed=true
-              fi
-            fi
-          fi
-
-          if [[ ! -d dist-phase-one ]]; then
-            echo "The forward-compatible phase-one recovery bundle is unavailable" >&2
-            recovery_failed=true
-          elif ! npm exec --prefix worker -- wrangler pages deploy dist-phase-one \
-            --project-name=scalingneuro \
-            --branch=main \
-            --commit-hash="$GITHUB_SHA"; then
-            echo "Failed to restore the forward-compatible bridge deployment" >&2
-            recovery_failed=true
-          else
-            bridge_recovered=false
-            for attempt in $(seq 1 20); do
-              health=$(curl --fail --silent --show-error --max-time 15 \
-                "https://scalingneuro.com/health?recovery=bridge&attempt=$attempt" || true)
-              source_version=$(curl --fail --silent --show-error --max-time 15 \
-                "https://scalingneuro.com/version.json?recovery=bridge&attempt=$attempt" || true)
-              if jq --exit-status '.status == "ok"' <<<"$health" >/dev/null 2>&1 &&
-                 jq --exit-status \
-                   --arg sha "$GITHUB_SHA" \
-                   --arg static "${{ steps.preserve_current_release.outputs.production_commit }}" '
-                     .commit == $sha and .static_commit == $static and
-                     .deployment_phase == "backend-validation"
-                   ' <<<"$source_version" >/dev/null 2>&1 &&
-                 ./scripts/production-site.sh verify dist-phase-one &&
-                 ./scripts/production-downloads.sh verify dist-phase-one; then
-                bridge_recovered=true
-                break
-              fi
-              sleep 5
-            done
-            if [[ "$bridge_recovered" != true ]]; then
-              echo "Forward-compatible bridge recovery did not converge" >&2
-              recovery_failed=true
-            fi
-          fi
-
-          [[ "$recovery_failed" == false ]]
+          gh release create "client-v$VERSION" release/* \
+            --target "$GITHUB_SHA" \
+            --title "neuro-sync $VERSION" \
+            --notes "Functional EPI DICOM sync client."

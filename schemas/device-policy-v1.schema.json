@@ -6,6 +6,6 @@
   "additionalProperties": false,
   "required": ["accepted_consent_policy_version"],
   "properties": {
-    "accepted_consent_policy_version": { "const": "open-mri-1.0.0" }
+    "accepted_consent_policy_version": { "const": "open-epi-2.0.0" }
   }
 }

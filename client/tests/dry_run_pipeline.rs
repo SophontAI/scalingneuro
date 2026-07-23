@@ -41,7 +41,7 @@ fn dry_run_prepares_privacy_cleared_dicom_archives_without_network() {
         "output={progress_output}"
     );
     assert!(progress_output.contains("Confirming source stability"));
-    assert!(progress_output.contains("Preparing privacy-cleared MR DICOM archives"));
+    assert!(progress_output.contains("Preparing privacy-cleared EPI DICOM archives"));
     assert!(progress_output.contains("Final source stability check"));
     assert!(progress_output.contains("Privacy preparation complete"));
     let reports = fs::read_dir(state.join("reports"))
@@ -65,7 +65,7 @@ fn dry_run_prepares_privacy_cleared_dicom_archives_without_network() {
     assert_eq!(report["bundles"].as_array().unwrap().len(), 1);
     assert!(report.get("errors").is_none());
     assert!(report["bundles"][0]["archive"].is_object());
-    assert!(report["bundles"][0]["nifti"].is_null());
+    assert!(report["bundles"][0].get("nifti").is_none());
     assert!(report["bundles"][0]["metadata"].is_null());
     let archive_path = walkdir::WalkDir::new(state.join("bundles"))
         .into_iter()

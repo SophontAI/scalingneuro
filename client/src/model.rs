@@ -34,24 +34,6 @@ pub struct ClassificationEvidence {
     pub effect: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ScanSidecar {
-    pub schema_version: String,
-    pub bundle_id: String,
-    pub subject_id: String,
-    pub session_id: String,
-    pub series_id: String,
-    pub protocol_group_id: String,
-    pub modality: String,
-    pub source: SourceMetadata,
-    pub image: ImageMetadata,
-    pub files: BundleFiles,
-    pub metadata_policy: MetadataPolicy,
-    pub conversion: ConversionProvenance,
-    pub classification: Classification,
-    pub qc: QcResult,
-}
-
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct SourceMetadata {
     pub dicom_count: u64,
@@ -88,86 +70,9 @@ pub struct SourceMetadata {
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct ImageMetadata {
-    pub dimensions: Vec<u64>,
-    pub voxel_size_mm: Vec<f64>,
-    pub datatype: String,
-    pub bits_per_voxel: u16,
-    pub affine: [[f64; 4]; 4],
-    pub orientation: String,
-    pub volume_count: u64,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub echo_number: Option<i64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub tr_seconds: Option<f64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub te_seconds: Option<f64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub inversion_time_seconds: Option<f64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub flip_angle_degrees: Option<f64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub slice_thickness_mm: Option<f64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub spacing_between_slices_mm: Option<f64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub pixel_bandwidth_hz: Option<f64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub dwell_time_seconds: Option<f64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub effective_echo_spacing_seconds: Option<f64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub total_readout_time_seconds: Option<f64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub phase_encoding_direction: Option<String>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub slice_timing_seconds: Vec<f64>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub acquisition_matrix: Vec<u64>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub recon_matrix: Vec<u64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub multiband_acceleration_factor: Option<f64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub parallel_reduction_factor_in_plane: Option<f64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub partial_fourier: Option<f64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub echo_train_length: Option<i64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub number_of_averages: Option<f64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub imaging_frequency_mhz: Option<f64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub imaged_nucleus: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct BundleFiles {
-    pub nifti: FileDigest,
-}
-
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct MetadataPolicy {
     pub policy_id: String,
     pub policy_version: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct FileDigest {
-    pub filename: String,
-    pub size_bytes: u64,
-    pub sha256: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub uncompressed_sha256: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ConversionProvenance {
-    pub client_version: String,
-    pub converter: String,
-    pub converter_version: String,
-    pub arguments: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -232,13 +137,9 @@ pub struct ManifestBundle {
     #[serde(default)]
     pub series_kind: String,
     #[serde(default)]
-    pub processing_route: String,
+    pub archive_route: String,
     #[serde(default)]
     pub pixel_data_policy: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub nifti: Option<ManifestObject>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub metadata: Option<ManifestObject>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub archive: Option<ManifestArchiveObject>,
     pub source_dicom_count: u64,
@@ -248,15 +149,14 @@ pub struct ManifestBundle {
 
 impl ManifestBundle {
     pub fn is_dicom_archive(&self) -> bool {
-        self.archive.is_some() && self.nifti.is_none() && self.metadata.is_none()
+        self.archive.is_some()
     }
 
     pub fn upload_objects(&self) -> Vec<&ManifestObject> {
-        self.nifti
-            .iter()
-            .chain(self.metadata.iter())
-            .chain(self.archive.as_ref().map(|archive| &archive.object))
-            .collect()
+        self.archive
+            .as_ref()
+            .map(|archive| vec![&archive.object])
+            .unwrap_or_default()
     }
 
     pub fn total_size(&self) -> u64 {
@@ -283,8 +183,6 @@ pub struct ManifestObject {
     pub local_path: String,
     pub size: u64,
     pub sha256: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub uncompressed_sha256: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -297,13 +195,9 @@ pub struct ReportBundle {
     #[serde(default)]
     pub series_kind: String,
     #[serde(default)]
-    pub processing_route: String,
+    pub archive_route: String,
     #[serde(default)]
     pub pixel_data_policy: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub nifti: Option<ReportObject>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub metadata: Option<ReportObject>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub archive: Option<ReportArchiveObject>,
     pub source_dicom_count: u64,
@@ -326,8 +220,6 @@ pub struct ReportObject {
     pub relative_key: String,
     pub size: u64,
     pub sha256: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub uncompressed_sha256: Option<String>,
 }
 
 impl From<&ManifestObject> for ReportObject {
@@ -336,7 +228,6 @@ impl From<&ManifestObject> for ReportObject {
             relative_key: object.relative_key.clone(),
             size: object.size,
             sha256: object.sha256.clone(),
-            uncompressed_sha256: object.uncompressed_sha256.clone(),
         }
     }
 }
@@ -350,10 +241,8 @@ impl From<&ManifestBundle> for ReportBundle {
             session_id: bundle.session_id.clone(),
             protocol_group_id: bundle.protocol_group_id.clone(),
             series_kind: bundle.series_kind.clone(),
-            processing_route: bundle.processing_route.clone(),
+            archive_route: bundle.archive_route.clone(),
             pixel_data_policy: bundle.pixel_data_policy.clone(),
-            nifti: bundle.nifti.as_ref().map(ReportObject::from),
-            metadata: bundle.metadata.as_ref().map(ReportObject::from),
             archive: bundle.archive.as_ref().map(|archive| ReportArchiveObject {
                 object: ReportObject::from(&archive.object),
                 format: archive.format.clone(),
@@ -366,17 +255,6 @@ impl From<&ManifestBundle> for ReportBundle {
             qc: bundle.qc.clone(),
         }
     }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct ExistingArchiveBundle {
-    pub bundle_id: String,
-    pub series_id: String,
-    pub subject_id: String,
-    pub session_id: String,
-    pub protocol_group_id: String,
-    pub upload_id: String,
-    pub nii_uncompressed_sha256: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -402,8 +280,6 @@ pub struct RunReport {
     pub worker_upload_id: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub worker_upload_ids: Vec<String>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub existing_bundles: Vec<ExistingArchiveBundle>,
     #[serde(default)]
     pub archive_commit_count: u64,
 }
@@ -421,17 +297,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn published_sidecar_example_roundtrips_through_rust_contract() {
-        let original: serde_json::Value = serde_json::from_str(include_str!(
-            "../../schemas/examples/scan-sidecar-v1.example.json"
-        ))
-        .unwrap();
-        let sidecar: ScanSidecar = serde_json::from_value(original.clone()).unwrap();
-        let roundtrip = serde_json::to_value(sidecar).unwrap();
-        assert_eq!(json_shape(&roundtrip), json_shape(&original));
-    }
-
-    #[test]
     fn shareable_report_objects_never_serialize_local_paths() {
         let manifest_bundle = ManifestBundle {
             bundle_id: "aaaaaaaaaaaaaaaaaaaaaaaa".into(),
@@ -440,23 +305,20 @@ mod tests {
             session_id: "dddddddddddddddddddddddd".into(),
             protocol_group_id: "eeeeeeeeeeeeeeeeeeeeeeee".into(),
             series_kind: "functional_epi".into(),
-            processing_route: "functional-epi-v1".into(),
+            archive_route: "functional-epi-v1".into(),
             pixel_data_policy: "scanner-native-not-defaced".into(),
-            nifti: Some(ManifestObject {
-                relative_key: "bundle/scan.nii.gz".into(),
-                local_path: "/private/source/workspace/scan.nii.gz".into(),
-                size: 12,
-                sha256: "a".repeat(64),
-                uncompressed_sha256: Some("b".repeat(64)),
+            archive: Some(ManifestArchiveObject {
+                object: ManifestObject {
+                    relative_key: "bundle/dicom.tar.zst".into(),
+                    local_path: "/private/source/workspace/dicom.tar.zst".into(),
+                    size: 12,
+                    sha256: "a".repeat(64),
+                },
+                format: "dicom-tar-zstd".into(),
+                dicom_instance_count: 10,
+                deidentification_profile: "scaling-neuro.dicom-deidentification".into(),
+                deidentification_profile_version: "2.0.0".into(),
             }),
-            metadata: Some(ManifestObject {
-                relative_key: "bundle/scan.json".into(),
-                local_path: "/private/source/workspace/scan.json".into(),
-                size: 13,
-                sha256: "c".repeat(64),
-                uncompressed_sha256: None,
-            }),
-            archive: None,
             source_dicom_count: 10,
             classification: Classification {
                 decision: ClassificationDecision::Accepted,
@@ -479,7 +341,7 @@ mod tests {
             site_id: "site".into(),
             project_id: "project".into(),
             project_name: "Project".into(),
-            consent_policy_version: "pilot-2026-07".into(),
+            consent_policy_version: "open-epi-2.0.0".into(),
             client_version: crate::CLIENT_VERSION.into(),
             started_at: "2026-07-12T00:00:00Z".into(),
             completed_at: Some("2026-07-12T00:01:00Z".into()),
@@ -489,30 +351,11 @@ mod tests {
             errors: Vec::new(),
             worker_upload_id: None,
             worker_upload_ids: Vec::new(),
-            existing_bundles: Vec::new(),
             archive_commit_count: 1,
         };
         let serialized = serde_json::to_string(&report).unwrap();
         assert!(!serialized.contains("local_path"));
         assert!(!serialized.contains("source_path"));
         assert!(!serialized.contains("/private/source"));
-    }
-
-    fn json_shape(value: &serde_json::Value) -> serde_json::Value {
-        match value {
-            serde_json::Value::Object(object) => serde_json::Value::Object(
-                object
-                    .iter()
-                    .map(|(key, value)| (key.clone(), json_shape(value)))
-                    .collect(),
-            ),
-            serde_json::Value::Array(values) => {
-                serde_json::Value::Array(values.iter().map(json_shape).collect())
-            }
-            serde_json::Value::Null => serde_json::Value::String("null".into()),
-            serde_json::Value::Bool(_) => serde_json::Value::String("boolean".into()),
-            serde_json::Value::Number(_) => serde_json::Value::String("number".into()),
-            serde_json::Value::String(_) => serde_json::Value::String("string".into()),
-        }
     }
 }

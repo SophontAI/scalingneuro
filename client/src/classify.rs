@@ -9,18 +9,6 @@ use crate::{
     model::{Classification, ClassificationDecision, ClassificationEvidence},
 };
 
-#[derive(Debug, Clone, Default)]
-pub struct ConversionSignals {
-    pub dimensions: Vec<u64>,
-    pub volume_count: u64,
-    pub repetition_time_seconds: Option<f64>,
-    pub echo_time_seconds: Option<f64>,
-    pub bids_has_diffusion: bool,
-    pub bids_has_asl: bool,
-    pub functional_epi_evidence: bool,
-    pub converted_name_count: usize,
-}
-
 pub fn classify_header(group: &SeriesGroup) -> Classification {
     let header = &group.representative;
     let mut evidence = Vec::new();
@@ -337,7 +325,7 @@ pub fn classify_header(group: &SeriesGroup) -> Classification {
     // Both contracts can be individually valid (for example after a scanner
     // exports stale supplemental fields), but selecting one route would then
     // discard a contradictory scientific interpretation. Keep that ambiguity
-    // local instead of producing an archive the processor must reject.
+    // local instead of producing an archive that violates the sync contract.
     if diffusion && asl_perfusion {
         return hold(
             "ambiguous_diffusion_and_asl_scientific_context",
@@ -503,7 +491,7 @@ pub fn classify_header(group: &SeriesGroup) -> Classification {
         None
     };
     if let Some((_, evidence_code)) = functional_timing {
-        evidence.push(ev(evidence_code, "dicom_header", "limits_processing"));
+        evidence.push(ev(evidence_code, "dicom_header", "limits_classification"));
     }
 
     let (kind, confidence, kind_evidence) = if derived_diffusion {
@@ -558,17 +546,27 @@ pub fn classify_header(group: &SeriesGroup) -> Classification {
         evidence.push(ev(
             "philips_private_metadata_dropped_public_pixel_scaling_retained",
             "dicom_header",
-            "limits_processing",
+            "limits_classification",
         ));
     }
     if kind != "functional_epi" && !evidence.iter().any(|item| item.code == kind_evidence) {
         evidence.push(ev(kind_evidence, "dicom_header", "supports"));
     }
-    Classification {
-        decision: ClassificationDecision::Accepted,
-        kind: kind.into(),
-        confidence,
-        evidence,
+    if kind == "functional_epi" {
+        Classification {
+            decision: ClassificationDecision::Accepted,
+            kind: kind.into(),
+            confidence,
+            evidence,
+        }
+    } else {
+        evidence.push(ev("not_functional_epi", "dicom_header", "excludes"));
+        Classification {
+            decision: ClassificationDecision::Excluded,
+            kind: "not_functional_epi".into(),
+            confidence,
+            evidence,
+        }
     }
 }
 
@@ -694,85 +692,6 @@ fn normalized_family_text(value: &str) -> String {
         .collect::<Vec<_>>()
         .join(" ")
         .to_ascii_uppercase()
-}
-
-pub fn refine_after_conversion(
-    mut classification: Classification,
-    signals: &ConversionSignals,
-) -> Classification {
-    if signals.converted_name_count != 1 {
-        return hold(
-            "conversion_output_ambiguous",
-            1.0,
-            [(
-                "ambiguous_conversion_output",
-                "converter_sidecar",
-                "contradicts",
-            )],
-        );
-    }
-    if signals.bids_has_diffusion {
-        return hold(
-            "diffusion",
-            1.0,
-            [("diffusion_metadata", "converter_sidecar", "contradicts")],
-        );
-    }
-    if signals.bids_has_asl {
-        return hold(
-            "asl_or_perfusion",
-            1.0,
-            [("asl_metadata", "converter_sidecar", "contradicts")],
-        );
-    }
-    if !signals.functional_epi_evidence {
-        return hold(
-            "ambiguous_mr",
-            0.95,
-            [("missing_echo_planar_evidence", "derived", "contradicts")],
-        );
-    }
-    if signals.dimensions.len() != 4 || signals.volume_count < 10 {
-        return hold(
-            "not_functional_4d",
-            1.0,
-            [("insufficient_timepoints", "nifti_header", "contradicts")],
-        );
-    }
-    let Some(tr) = signals.repetition_time_seconds else {
-        return hold(
-            "missing_repetition_time",
-            1.0,
-            [("missing_tr", "converter_sidecar", "contradicts")],
-        );
-    };
-    if !(0.1..=20.0).contains(&tr) {
-        return hold(
-            "implausible_repetition_time",
-            1.0,
-            [("tr_out_of_range", "converter_sidecar", "contradicts")],
-        );
-    }
-    let Some(te) = signals.echo_time_seconds else {
-        return hold(
-            "missing_echo_time",
-            1.0,
-            [("missing_te", "converter_sidecar", "contradicts")],
-        );
-    };
-    if !(0.0 < te && te <= 2.0) {
-        return hold(
-            "implausible_echo_time",
-            1.0,
-            [("te_out_of_range", "converter_sidecar", "contradicts")],
-        );
-    }
-    classification.confidence = classification.confidence.max(0.98);
-    classification.kind = "functional_epi".into();
-    classification
-        .evidence
-        .push(ev("valid_4d_time_series", "nifti_header", "supports"));
-    classification
 }
 
 fn hold<I, A, B, C>(kind: &str, confidence: f64, items: I) -> Classification
@@ -1000,7 +919,7 @@ mod tests {
     }
 
     #[test]
-    fn generic_epi_without_temporal_evidence_is_archived_as_other_mr() {
+    fn generic_epi_without_temporal_evidence_stays_local() {
         let classification = classify_header(&group(DicomHeader {
             modality: Some("MR".into()),
             scanning_sequence: vec!["EP".into()],
@@ -1008,12 +927,12 @@ mod tests {
             burned_in_annotation: Some("NO".into()),
             ..Default::default()
         }));
-        assert_eq!(classification.decision, ClassificationDecision::Accepted);
-        assert_eq!(classification.kind, "other_mr");
+        assert_eq!(classification.decision, ClassificationDecision::Excluded);
+        assert_eq!(classification.kind, "not_functional_epi");
     }
 
     #[test]
-    fn diffusion_is_accepted_for_archive_verification() {
+    fn diffusion_stays_local() {
         let classification = classify_header(&group(DicomHeader {
             modality: Some("MR".into()),
             scanning_sequence: vec!["EP".into()],
@@ -1024,8 +943,8 @@ mod tests {
             burned_in_annotation: Some("NO".into()),
             ..Default::default()
         }));
-        assert_eq!(classification.kind, "diffusion");
-        assert_eq!(classification.decision, ClassificationDecision::Accepted);
+        assert_eq!(classification.kind, "not_functional_epi");
+        assert_eq!(classification.decision, ClassificationDecision::Excluded);
     }
 
     #[test]
@@ -1081,7 +1000,7 @@ mod tests {
     }
 
     #[test]
-    fn non_asl_perfusion_is_archived_without_an_asl_label_contract() {
+    fn non_asl_perfusion_stays_local_without_an_asl_label_contract() {
         for sequence_name in ["ep2d_DSC_perfusion", "T1_DCE_perfusion"] {
             let classification = classify_header(&group(DicomHeader {
                 modality: Some("MR".into()),
@@ -1089,8 +1008,8 @@ mod tests {
                 burned_in_annotation: Some("NO".into()),
                 ..Default::default()
             }));
-            assert_eq!(classification.decision, ClassificationDecision::Accepted);
-            assert_eq!(classification.kind, "perfusion");
+            assert_eq!(classification.decision, ClassificationDecision::Excluded);
+            assert_eq!(classification.kind, "not_functional_epi");
             assert!(
                 classification
                     .evidence
@@ -1107,7 +1026,7 @@ mod tests {
     }
 
     #[test]
-    fn derived_diffusion_products_do_not_require_acquired_diffusion_metadata() {
+    fn derived_diffusion_products_stay_local() {
         for derived_term in ["ADC", "FA", "TRACEW"] {
             let classification = classify_header(&group(DicomHeader {
                 modality: Some("MR".into()),
@@ -1116,8 +1035,8 @@ mod tests {
                 burned_in_annotation: Some("NO".into()),
                 ..Default::default()
             }));
-            assert_eq!(classification.decision, ClassificationDecision::Accepted);
-            assert_eq!(classification.kind, "derived_mr");
+            assert_eq!(classification.decision, ClassificationDecision::Excluded);
+            assert_eq!(classification.kind, "not_functional_epi");
             assert!(
                 !classification
                     .evidence
@@ -1199,7 +1118,7 @@ mod tests {
     }
 
     #[test]
-    fn functional_route_requires_consistent_tr_and_valid_te_without_blocking_archive() {
+    fn functional_epi_requires_consistent_tr_and_valid_te() {
         let header = DicomHeader {
             modality: Some("MR".into()),
             image_type: vec!["ORIGINAL".into(), "PRIMARY".into(), "BOLD".into()],
@@ -1219,8 +1138,8 @@ mod tests {
             timing_instance(Some(2_000.0), None),
         ];
         let missing = classify_header(&missing);
-        assert_eq!(missing.decision, ClassificationDecision::Accepted);
-        assert_eq!(missing.kind, "other_mr");
+        assert_eq!(missing.decision, ClassificationDecision::Excluded);
+        assert_eq!(missing.kind, "not_functional_epi");
         assert!(
             missing
                 .evidence
@@ -1234,8 +1153,8 @@ mod tests {
             timing_instance(Some(2_000.01), Some(30.0)),
         ];
         let inconsistent_tr = classify_header(&inconsistent_tr);
-        assert_eq!(inconsistent_tr.decision, ClassificationDecision::Accepted);
-        assert_eq!(inconsistent_tr.kind, "other_mr");
+        assert_eq!(inconsistent_tr.decision, ClassificationDecision::Excluded);
+        assert_eq!(inconsistent_tr.kind, "not_functional_epi");
         assert!(
             inconsistent_tr
                 .evidence
@@ -1255,7 +1174,7 @@ mod tests {
     }
 
     #[test]
-    fn protocol_label_alone_cannot_route_a_series_to_functional_processing() {
+    fn protocol_label_alone_cannot_select_a_series_for_sync() {
         let classification = classify_header(&group(DicomHeader {
             modality: Some("MR".into()),
             image_type: vec!["ORIGINAL".into(), "PRIMARY".into()],
@@ -1267,8 +1186,8 @@ mod tests {
             burned_in_annotation: Some("NO".into()),
             ..Default::default()
         }));
-        assert_eq!(classification.decision, ClassificationDecision::Accepted);
-        assert_eq!(classification.kind, "other_mr");
+        assert_eq!(classification.decision, ClassificationDecision::Excluded);
+        assert_eq!(classification.kind, "not_functional_epi");
         assert!(
             classification
                 .evidence
@@ -1373,26 +1292,6 @@ mod tests {
             classify_header(&missing_software).decision,
             ClassificationDecision::Accepted
         );
-    }
-
-    #[test]
-    fn post_conversion_requires_real_time_series() {
-        let refined = refine_after_conversion(
-            Classification {
-                decision: ClassificationDecision::Accepted,
-                kind: "candidate".into(),
-                confidence: 0.8,
-                evidence: vec![],
-            },
-            &ConversionSignals {
-                dimensions: vec![64, 64, 32, 1],
-                volume_count: 1,
-                repetition_time_seconds: Some(1.0),
-                converted_name_count: 1,
-                ..Default::default()
-            },
-        );
-        assert_eq!(refined.decision, ClassificationDecision::Held);
     }
 
     #[test]

@@ -14,6 +14,7 @@
 .wrangler/
 node_modules/
 dist/
+.playwright-cli/
 
 # Client, QA, and release artifacts
 client/target/

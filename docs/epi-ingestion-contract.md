@@ -1,34 +1,56 @@
-# Functional EPI processing route
+# Functional EPI sync contract
 
-The repository’s primary intake contract is now [MR DICOM ingestion](mr-ingestion-contract.md). This document defines the narrower `functional-epi-v1` processing route applied after an MR series has passed the common local archive and metadata-privacy gates.
+## Scope
 
-## Routing evidence
+`neuro-sync` accepts one completed DICOM export folder and uploads only confirmed
+functional echo-planar imaging time series. The source directory is read-only.
+Structural, diffusion, perfusion, field-map, reference, localizer, derived,
+secondary-capture, non-image, non-MR, malformed, and ambiguous series stay local.
 
-An MR series enters `functional-epi-v1` only when standard DICOM evidence supports both echo-planar acquisition and repeated temporal structure. Evidence may include:
+The tool does not convert, deface, preprocess, visualize, or analyze scans.
 
-- `ScanningSequence = EP` or the Enhanced MR echo-planar pulse-sequence declaration;
-- canonical EPI/BOLD values in Image Type or Sequence Name;
-- two or more temporal-position or acquisition identifiers;
-- repeated slice positions across time, or multiple classic mosaic instances; and
-- plausible, series-consistent repetition and echo timing.
+## Local selection
 
-Scanner manufacturer, model, software version, local protocol name, and prior fixture status are provenance rather than inclusion gates. Free-text descriptions may assist local categorization but cannot be the sole basis for functional routing because they are removed from the uploaded archive.
+A series must have a supported MR Image SOP class, coherent study/series/instance
+identity, valid Pixel Data boundaries, and no declared burned-in annotation,
+overlay, or graphic content.
 
-Diffusion, ASL/perfusion, field-map, SBRef, structural, localizer, derived, single-volume, or ambiguous MR remains uploadable under the common contract but is assigned `archive-verify-v1`. It is never sent into the functional converter merely because it is echo planar.
+Functional selection requires both:
 
-## Independent confirmation
+1. strong EPI evidence from standard DICOM fields; and
+2. repeated temporal evidence from temporal-position identifiers, acquisition
+   numbers, repeated slice positions, or multiple classic mosaic instances.
 
-The Sophont consumer must independently establish all of the following from the exact received bytes:
+The client also requires plausible and series-consistent repetition and echo
+timing. Scanner vendor and free-text protocol labels never select a series alone.
 
-1. whole-archive and member hashes match the receipt and manifest;
-2. the tar boundary, ordering, sizes, and extraction limits are canonical;
-3. every member parses as a supported MR Image DICOM and passes the recursive metadata-privacy audit;
-4. the manifest’s purpose and processing route match the job declaration;
-5. retained DICOM headers independently support functional EPI; and
-6. pinned conversion produces one native-space 4D NIfTI with at least ten volumes, plausible TR/TE, valid geometry/datatype, finite nonconstant signal, and a contract-valid minimized sidecar.
+## Local deidentification
 
-Only then may the processor publish `bold.nii.gz`, `bold.json`, and `processing-manifest.json` and mark the functional series processed. If independently audited headers do not confirm functional EPI, the privacy-valid series is downgraded to archive verification without conversion or deletion. Intrinsic archive/privacy violations purge the unverified raw object and tombstone its identity. Transport, timeout, converter, and scientific-compatibility failures retain the governed source archive for retry or review.
+Selected instances are rewritten before network access. The client removes
+identity, dates, clinical and administrative fields, institution and workstation
+identity, free text, paths, overlays, graphics, and unreviewed private data. It
+remaps referential UIDs and retains only bounded fields needed to decode and
+interpret the functional acquisition.
 
-## Vendor compatibility
+The rewritten file is reopened and recursively audited. Any failed privacy or
+integrity check keeps that series local.
 
-Standards-based intake and fixture-certified conversion are separate claims. Classic MR, Enhanced MR, Legacy Converted Enhanced MR, and supported compressed transfer syntaxes use the same route declarations, but a scanner/export family earns a conversion certification only through the reproducible evidence in [Vendor QA](vendor-qa.md). Lack of a certified fixture does not prevent safe source receipt; it remains visible as downstream compatibility state.
+## Archive and transfer
+
+Each selected series becomes one deterministic `dicom.tar.zst`. The archive
+contains rewritten DICOM Part 10 files followed by a canonical manifest with
+pseudonymous identities, classifier evidence, policy versions, ordered instance
+hashes, and the whole-archive hash.
+
+The client requests an R2 multipart allocation, uploads checksum-bound parts,
+and checkpoints ETags locally. After R2 confirms the completed object and the
+client confirms the source folder is unchanged, the Worker records a durable
+receipt. No background job is created.
+
+## Shared use
+
+A researcher receives archive access after submitting the participation form.
+The archive API lists committed, non-withdrawn functional EPI series and issues
+short-lived download URLs. The downloaded artifact is the deidentified DICOM
+archive. Each lab chooses its own conversion, preprocessing, compute, and
+analysis stack.

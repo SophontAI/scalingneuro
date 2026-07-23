@@ -32,9 +32,9 @@ EOF
   fi
 }
 
-MACOS_NAME="neuro-sync-v$VERSION-macos-universal-UNSIGNED-PILOT"
+MACOS_NAME="neuro-sync-v$VERSION-macos-universal"
 LINUX_NAME="neuro-sync-v$VERSION-linux-x86_64-musl-static"
-WINDOWS_NAME="neuro-sync-v$VERSION-windows-x86_64-UNSIGNED-PILOT.zip"
+WINDOWS_NAME="neuro-sync-v$VERSION-windows-x86_64.zip"
 make_package "$MACOS_NAME" zip
 make_package "$LINUX_NAME" tar
 printf 'unused Windows fixture\n' > "$ASSETS/$WINDOWS_NAME"

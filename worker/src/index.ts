@@ -1,65 +1,37 @@
-import { AppError } from "./errors";
-import type { Env } from "./env";
-import { ensureClusterLaunch } from "./cluster";
 import {
-  claimProcessingJob,
+  createArchiveAccess,
+  listArchive,
+  parseArchiveAccessRequest,
+  signArchiveDownload,
+} from "./archive-access";
+import {
   checkpointDicomUpload,
-  cleanupPendingRejectedDicomInputs,
   completeDicomUpload,
-  completeProcessingJob,
   createDicomUpload,
   createDicomUploadPartUrl,
-  failProcessingJob,
   getDicomUploadStatus,
-  grantProcessingOutputs,
-  heartbeatProcessingJob,
   refreshDicomUploadCredentials,
 } from "./dicom";
+import { AppError } from "./errors";
+import type { Env } from "./env";
 import {
-  adminCleanup,
   acceptPublicContributionPolicy,
-  cleanupAbandoned,
-  completeUpload,
-  createAdminInvite,
-  createUploadPartUrl,
-  createUpload,
-  enroll,
-  getUploadStatus,
   health,
-  listContributorRegistrations,
   publicContributionInfo,
-  refreshUploadCredentials,
   registerContributor,
-  revokeDevice,
-  revokeInvite,
-  withdrawUpload,
 } from "./service";
 import {
-  parseAdminInviteRequest,
   parseCompleteUploadRequest,
   parseCreateDicomUploadRequest,
-  parseCreateUploadRequest,
-  parseEnrollRequest,
   parseJsonText,
-  parsePublicRegistrationRequest,
   parsePublicPolicyAcceptanceRequest,
-  parseProcessorClaimRequest,
-  parseProcessorCompleteRequest,
-  parseProcessorFailRequest,
-  parseProcessorLeaseRequest,
-  parseProcessorOutputRequest,
+  parsePublicRegistrationRequest,
   parseSignPartRequest,
 } from "./validation";
 
 const UUID =
   "([0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})";
-const uploadCredentialsRoute = new RegExp(
-  `^/v1/uploads/${UUID}/credentials$`,
-  "u",
-);
-const uploadCompleteRoute = new RegExp(`^/v1/uploads/${UUID}/complete$`, "u");
-const uploadPartRoute = new RegExp(`^/v1/uploads/${UUID}/parts$`, "u");
-const uploadStatusRoute = new RegExp(`^/v1/uploads/${UUID}$`, "u");
+const SERIES_ARCHIVE_ID = "([a-f0-9]{24})";
 const dicomCredentialsRoute = new RegExp(
   `^/v1/dicom-uploads/${UUID}/credentials$`,
   "u",
@@ -72,28 +44,13 @@ const dicomCheckpointRoute = new RegExp(
   `^/v1/dicom-uploads/${UUID}/checkpoint$`,
   "u",
 );
-const dicomPartRoute = new RegExp(`^/v1/dicom-uploads/${UUID}/parts$`, "u");
+const dicomPartRoute = new RegExp(
+  `^/v1/dicom-uploads/${UUID}/parts$`,
+  "u",
+);
 const dicomStatusRoute = new RegExp(`^/v1/dicom-uploads/${UUID}$`, "u");
-const processorHeartbeatRoute = new RegExp(
-  `^/v1/processor/jobs/${UUID}/heartbeat$`,
-  "u",
-);
-const processorOutputsRoute = new RegExp(
-  `^/v1/processor/jobs/${UUID}/outputs$`,
-  "u",
-);
-const processorCompleteRoute = new RegExp(
-  `^/v1/processor/jobs/${UUID}/complete$`,
-  "u",
-);
-const processorFailRoute = new RegExp(
-  `^/v1/processor/jobs/${UUID}/fail$`,
-  "u",
-);
-const inviteRevokeRoute = new RegExp(`^/v1/admin/invites/${UUID}/revoke$`, "u");
-const deviceRevokeRoute = new RegExp(`^/v1/admin/devices/${UUID}/revoke$`, "u");
-const uploadWithdrawRoute = new RegExp(
-  `^/v1/admin/uploads/${UUID}/withdraw$`,
+const archiveDownloadRoute = new RegExp(
+  `^/v1/archive/${UUID}/${SERIES_ARCHIVE_ID}/download$`,
   "u",
 );
 
@@ -111,6 +68,19 @@ function json(body: unknown, requestId: string, status = 200): Response {
   return new Response(`${JSON.stringify(body)}\n`, {
     status,
     headers: apiHeaders(requestId),
+  });
+}
+
+function redirect(url: string, requestId: string): Response {
+  return new Response(null, {
+    status: 302,
+    headers: {
+      "cache-control": "no-store",
+      location: url,
+      "referrer-policy": "no-referrer",
+      "x-content-type-options": "nosniff",
+      "x-request-id": requestId,
+    },
   });
 }
 
@@ -132,9 +102,8 @@ async function requestJson(request: Request): Promise<unknown> {
   if (contentLength && Number(contentLength) > maximumBytes) {
     throw new AppError("INVALID_REQUEST", 413, "Request body exceeds 1 MiB");
   }
-  if (!request.body) {
-    return parseJsonText("");
-  }
+  if (!request.body) return parseJsonText("");
+
   const reader = request.body.getReader();
   const chunks: Uint8Array[] = [];
   let total = 0;
@@ -155,78 +124,62 @@ async function requestJson(request: Request): Promise<unknown> {
     bytes.set(chunk, offset);
     offset += chunk.byteLength;
   }
-  let body: string;
   try {
-    body = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
-  } catch {
+    return parseJsonText(
+      new TextDecoder("utf-8", { fatal: true }).decode(bytes),
+    );
+  } catch (error) {
+    if (error instanceof AppError) throw error;
     throw new AppError("INVALID_REQUEST", 400, "Request body must be UTF-8");
   }
-  return parseJsonText(body);
-}
-
-function routeLabel(pathname: string): string {
-  if (
-    pathname === "/health" ||
-    pathname === "/v1/contribution" ||
-    pathname === "/v1/device/policy" ||
-    pathname === "/v1/enroll" ||
-    pathname === "/v1/register" ||
-    pathname === "/v1/uploads" ||
-    pathname === "/v1/dicom-uploads" ||
-    pathname === "/v1/processor/jobs/claim" ||
-    pathname === "/v1/admin/invites" ||
-    pathname === "/v1/admin/registrations" ||
-    pathname === "/v1/admin/cleanup"
-  ) {
-    return pathname;
-  }
-  if (uploadCredentialsRoute.test(pathname))
-    return "/v1/uploads/:id/credentials";
-  if (uploadCompleteRoute.test(pathname)) return "/v1/uploads/:id/complete";
-  if (uploadPartRoute.test(pathname)) return "/v1/uploads/:id/parts";
-  if (uploadStatusRoute.test(pathname)) return "/v1/uploads/:id";
-  if (dicomCredentialsRoute.test(pathname))
-    return "/v1/dicom-uploads/:id/credentials";
-  if (dicomCompleteRoute.test(pathname))
-    return "/v1/dicom-uploads/:id/complete";
-  if (dicomCheckpointRoute.test(pathname))
-    return "/v1/dicom-uploads/:id/checkpoint";
-  if (dicomPartRoute.test(pathname)) return "/v1/dicom-uploads/:id/parts";
-  if (dicomStatusRoute.test(pathname)) return "/v1/dicom-uploads/:id";
-  if (processorHeartbeatRoute.test(pathname))
-    return "/v1/processor/jobs/:id/heartbeat";
-  if (processorOutputsRoute.test(pathname))
-    return "/v1/processor/jobs/:id/outputs";
-  if (processorCompleteRoute.test(pathname))
-    return "/v1/processor/jobs/:id/complete";
-  if (processorFailRoute.test(pathname))
-    return "/v1/processor/jobs/:id/fail";
-  if (inviteRevokeRoute.test(pathname))
-    return "/v1/admin/invites/:id/revoke";
-  if (deviceRevokeRoute.test(pathname))
-    return "/v1/admin/devices/:id/revoke";
-  if (uploadWithdrawRoute.test(pathname))
-    return "/v1/admin/uploads/:id/withdraw";
-  return "unknown";
 }
 
 function idMatch(regex: RegExp, pathname: string): string | null {
   return regex.exec(pathname)?.[1] ?? null;
 }
 
+function routeLabel(pathname: string): string {
+  if (
+    [
+      "/health",
+      "/v1/contribution",
+      "/v1/device/policy",
+      "/v1/register",
+      "/v1/dicom-uploads",
+      "/v1/archive-access",
+      "/v1/archive",
+    ].includes(pathname)
+  ) {
+    return pathname;
+  }
+  if (dicomCredentialsRoute.test(pathname)) {
+    return "/v1/dicom-uploads/:id/credentials";
+  }
+  if (dicomCompleteRoute.test(pathname)) {
+    return "/v1/dicom-uploads/:id/complete";
+  }
+  if (dicomCheckpointRoute.test(pathname)) {
+    return "/v1/dicom-uploads/:id/checkpoint";
+  }
+  if (dicomPartRoute.test(pathname)) return "/v1/dicom-uploads/:id/parts";
+  if (dicomStatusRoute.test(pathname)) return "/v1/dicom-uploads/:id";
+  if (archiveDownloadRoute.test(pathname)) {
+    return "/v1/archive/:upload/:series/download";
+  }
+  return "unknown";
+}
+
 export async function fetchHandler(
   request: Request,
   env: Env,
-  ctx?: ExecutionContext,
+  _ctx?: ExecutionContext,
 ): Promise<Response> {
   const requestId = crypto.randomUUID();
   const startedAt = Date.now();
-  const url = new URL(request.url);
-  const path = url.pathname;
+  const path = new URL(request.url).pathname;
   try {
     if (request.method === "GET" && path === "/health") {
-      const result = await health(env);
-      return json(result, requestId);
+      return json(await health(env), requestId);
     }
     if (request.method === "GET" && path === "/v1/contribution") {
       return json(
@@ -234,10 +187,7 @@ export async function fetchHandler(
         requestId,
       );
     }
-    if (
-      request.method === "POST" &&
-      path === "/v1/device/policy"
-    ) {
+    if (request.method === "POST" && path === "/v1/device/policy") {
       return json(
         await acceptPublicContributionPolicy(
           request,
@@ -257,21 +207,6 @@ export async function fetchHandler(
         201,
       );
     }
-    if (request.method === "POST" && path === "/v1/enroll") {
-      return json(
-        await enroll(env, parseEnrollRequest(await requestJson(request))),
-        requestId,
-        201,
-      );
-    }
-    if (request.method === "POST" && path === "/v1/uploads") {
-      const result = await createUpload(
-        request,
-        env,
-        parseCreateUploadRequest(await requestJson(request)),
-      );
-      return json(result.body, requestId, result.created ? 201 : 200);
-    }
     if (request.method === "POST" && path === "/v1/dicom-uploads") {
       const result = await createDicomUpload(
         request,
@@ -280,28 +215,35 @@ export async function fetchHandler(
       );
       return json(result.body, requestId, result.created ? 201 : 200);
     }
-    if (request.method === "POST" && path === "/v1/processor/jobs/claim") {
-      const result = await claimProcessingJob(
-        request,
-        env,
-        parseProcessorClaimRequest(await requestJson(request)),
+    if (request.method === "POST" && path === "/v1/archive-access") {
+      return json(
+        await createArchiveAccess(
+          env,
+          parseArchiveAccessRequest(await requestJson(request)),
+        ),
+        requestId,
+        201,
       );
-      return result === null
-        ? new Response(null, { status: 204, headers: apiHeaders(requestId) })
-        : json(result, requestId);
+    }
+    if (request.method === "GET" && path === "/v1/archive") {
+      return json(await listArchive(request, env), requestId);
     }
 
-    const credentialsUploadId = idMatch(uploadCredentialsRoute, path);
+    const credentialsUploadId = idMatch(dicomCredentialsRoute, path);
     if (request.method === "POST" && credentialsUploadId) {
       return json(
-        await refreshUploadCredentials(request, env, credentialsUploadId),
+        await refreshDicomUploadCredentials(
+          request,
+          env,
+          credentialsUploadId,
+        ),
         requestId,
       );
     }
-    const completeUploadId = idMatch(uploadCompleteRoute, path);
+    const completeUploadId = idMatch(dicomCompleteRoute, path);
     if (request.method === "POST" && completeUploadId) {
       return json(
-        await completeUpload(
+        await completeDicomUpload(
           request,
           env,
           completeUploadId,
@@ -310,10 +252,22 @@ export async function fetchHandler(
         requestId,
       );
     }
-    const partUploadId = idMatch(uploadPartRoute, path);
+    const checkpointUploadId = idMatch(dicomCheckpointRoute, path);
+    if (request.method === "POST" && checkpointUploadId) {
+      return json(
+        await checkpointDicomUpload(
+          request,
+          env,
+          checkpointUploadId,
+          parseCompleteUploadRequest(await requestJson(request)),
+        ),
+        requestId,
+      );
+    }
+    const partUploadId = idMatch(dicomPartRoute, path);
     if (request.method === "POST" && partUploadId) {
       return json(
-        await createUploadPartUrl(
+        await createDicomUploadPartUrl(
           request,
           env,
           partUploadId,
@@ -322,160 +276,31 @@ export async function fetchHandler(
         requestId,
       );
     }
-    const statusUploadId = idMatch(uploadStatusRoute, path);
+    const statusUploadId = idMatch(dicomStatusRoute, path);
     if (request.method === "GET" && statusUploadId) {
       return json(
-        await getUploadStatus(request, env, statusUploadId),
+        await getDicomUploadStatus(request, env, statusUploadId),
         requestId,
       );
     }
-    const dicomCredentialsUploadId = idMatch(dicomCredentialsRoute, path);
-    if (request.method === "POST" && dicomCredentialsUploadId) {
-      return json(
-        await refreshDicomUploadCredentials(
+    const archiveMatch = archiveDownloadRoute.exec(path);
+    if (request.method === "GET" && archiveMatch?.[1] && archiveMatch[2]) {
+      return redirect(
+        await signArchiveDownload(
           request,
           env,
-          dicomCredentialsUploadId,
+          archiveMatch[1],
+          archiveMatch[2],
         ),
         requestId,
       );
     }
-    const dicomCompleteUploadId = idMatch(dicomCompleteRoute, path);
-    if (request.method === "POST" && dicomCompleteUploadId) {
-      const result = await completeDicomUpload(
-        request,
-        env,
-        dicomCompleteUploadId,
-        parseCompleteUploadRequest(await requestJson(request)),
-      );
-      await ensureClusterLaunch(env, dicomCompleteUploadId);
-      return json(result, requestId);
-    }
-    const dicomCheckpointUploadId = idMatch(dicomCheckpointRoute, path);
-    if (request.method === "POST" && dicomCheckpointUploadId) {
-      return json(
-        await checkpointDicomUpload(
-          request,
-          env,
-          dicomCheckpointUploadId,
-          parseCompleteUploadRequest(await requestJson(request)),
-        ),
-        requestId,
-      );
-    }
-    const dicomPartUploadId = idMatch(dicomPartRoute, path);
-    if (request.method === "POST" && dicomPartUploadId) {
-      return json(
-        await createDicomUploadPartUrl(
-          request,
-          env,
-          dicomPartUploadId,
-          parseSignPartRequest(await requestJson(request)),
-        ),
-        requestId,
-      );
-    }
-    const dicomStatusUploadId = idMatch(dicomStatusRoute, path);
-    if (request.method === "GET" && dicomStatusUploadId) {
-      const result = await getDicomUploadStatus(
-        request,
-        env,
-        dicomStatusUploadId,
-      );
-      await ensureClusterLaunch(env, dicomStatusUploadId);
-      return json(result, requestId);
-    }
-
-    const heartbeatJobId = idMatch(processorHeartbeatRoute, path);
-    if (request.method === "POST" && heartbeatJobId) {
-      return json(
-        await heartbeatProcessingJob(
-          request,
-          env,
-          heartbeatJobId,
-          parseProcessorLeaseRequest(await requestJson(request)),
-        ),
-        requestId,
-      );
-    }
-    const outputsJobId = idMatch(processorOutputsRoute, path);
-    if (request.method === "POST" && outputsJobId) {
-      return json(
-        await grantProcessingOutputs(
-          request,
-          env,
-          outputsJobId,
-          parseProcessorOutputRequest(await requestJson(request)),
-        ),
-        requestId,
-      );
-    }
-    const completedJobId = idMatch(processorCompleteRoute, path);
-    if (request.method === "POST" && completedJobId) {
-      return json(
-        await completeProcessingJob(
-          request,
-          env,
-          completedJobId,
-          parseProcessorCompleteRequest(await requestJson(request)),
-        ),
-        requestId,
-      );
-    }
-    const failedJobId = idMatch(processorFailRoute, path);
-    if (request.method === "POST" && failedJobId) {
-      return json(
-        await failProcessingJob(
-          request,
-          env,
-          failedJobId,
-          parseProcessorFailRequest(await requestJson(request)),
-        ),
-        requestId,
-      );
-    }
-
-    if (request.method === "POST" && path === "/v1/admin/invites") {
-      return json(
-        await createAdminInvite(
-          request,
-          env,
-          parseAdminInviteRequest(await requestJson(request)),
-        ),
-        requestId,
-        201,
-      );
-    }
-    if (request.method === "GET" && path === "/v1/admin/registrations") {
-      return json(await listContributorRegistrations(request, env), requestId);
-    }
-    if (request.method === "POST" && path === "/v1/admin/cleanup") {
-      const result = await adminCleanup(request, env);
-      await cleanupPendingRejectedDicomInputs(env, 50);
-      return json(result, requestId);
-    }
-    const inviteId = idMatch(inviteRevokeRoute, path);
-    if (request.method === "POST" && inviteId) {
-      return json(await revokeInvite(request, env, inviteId), requestId);
-    }
-    const deviceId = idMatch(deviceRevokeRoute, path);
-    if (request.method === "POST" && deviceId) {
-      return json(await revokeDevice(request, env, deviceId), requestId);
-    }
-    const withdrawnUploadId = idMatch(uploadWithdrawRoute, path);
-    if (request.method === "POST" && withdrawnUploadId) {
-      return json(
-        await withdrawUpload(request, env, withdrawnUploadId),
-        requestId,
-      );
-    }
-
     throw new AppError("NOT_FOUND", 404, "Route was not found");
   } catch (error) {
     const appError =
       error instanceof AppError
         ? error
-        : new AppError("INTERNAL", 500, "Unexpected control-plane error");
+        : new AppError("INTERNAL", 500, "Unexpected service error");
     const errorBody: Record<string, unknown> = {
       code: appError.code,
       message: appError.message,
@@ -497,26 +322,6 @@ export async function fetchHandler(
   }
 }
 
-const worker = {
+export default {
   fetch: fetchHandler,
-  async scheduled(
-    _controller: ScheduledController,
-    env: Env,
-    ctx: ExecutionContext,
-  ): Promise<void> {
-    ctx.waitUntil(
-      Promise.allSettled([
-        cleanupAbandoned(env),
-        cleanupPendingRejectedDicomInputs(env, 50),
-      ]).then((results) => {
-        if (results.some((result) => result.status === "rejected")) {
-          console.error(
-            JSON.stringify({ event: "cleanup_failed", source: "scheduled" }),
-          );
-        }
-      }),
-    );
-  },
 } satisfies ExportedHandler<Env>;
-
-export default worker;

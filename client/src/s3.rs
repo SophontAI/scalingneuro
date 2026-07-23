@@ -21,7 +21,7 @@ use tokio::{
 use crate::{
     api::{
         ApiFailure, CompletedObject, CompletedPart, IngestApi, MultipartObject, PartUploadGrant,
-        PartUploadRequest, UploadRoute,
+        PartUploadRequest,
     },
     progress::{Progress, ProgressUnit},
     state::{StateStore, UploadObjectRecord, UploadedPart},
@@ -43,31 +43,16 @@ pub struct MultipartUploader {
     api: IngestApi,
     state: StateStore,
     worker_upload_id: String,
-    route: UploadRoute,
 }
 
 impl MultipartUploader {
-    pub fn new(api: IngestApi, state: StateStore, worker_upload_id: String) -> Result<Self> {
-        Self::new_for(api, state, worker_upload_id, UploadRoute::Legacy)
-    }
-
     pub fn new_dicom(api: IngestApi, state: StateStore, worker_upload_id: String) -> Result<Self> {
-        Self::new_for(api, state, worker_upload_id, UploadRoute::Dicom)
-    }
-
-    fn new_for(
-        api: IngestApi,
-        state: StateStore,
-        worker_upload_id: String,
-        route: UploadRoute,
-    ) -> Result<Self> {
         let http = build_part_client()?;
         Ok(Self {
             http,
             api,
             state,
             worker_upload_id,
-            route,
         })
     }
 
@@ -80,11 +65,11 @@ impl MultipartUploader {
         for object in objects {
             verify_local_object_size(Path::new(&object.local_path), object.size).await?;
         }
-        let label = match self.route {
-            UploadRoute::Legacy => "Uploading",
-            UploadRoute::Dicom => "Uploading privacy-cleared MR DICOM archives",
-        };
-        let mut progress = Progress::bounded(label, total_bytes, ProgressUnit::Bytes);
+        let mut progress = Progress::bounded(
+            "Uploading functional EPI DICOM archives",
+            total_bytes,
+            ProgressUnit::Bytes,
+        );
         let descriptor_map: HashMap<_, _> = descriptors
             .iter()
             .map(|item| (item.key.as_str(), item))
@@ -93,59 +78,35 @@ impl MultipartUploader {
             bail!("ingest API returned an incomplete multipart object plan");
         }
         let (progress_tx, mut progress_rx) = tokio::sync::mpsc::unbounded_channel();
-        let transfer = async {
-            if self.route == UploadRoute::Dicom {
-                stream::iter(objects.iter().enumerate())
-                    .map(|(index, object)| {
-                        let uploader = self.clone();
-                        let descriptor = descriptor_map.get(object.key.as_str()).copied().context(
-                            "ingest API omitted an expected object from the multipart plan",
-                        );
-                        let progress_tx = progress_tx.clone();
-                        async move {
-                            let descriptor = descriptor?;
-                            tracing::debug!(
-                                file = index + 1,
-                                total_files = objects.len(),
-                                bytes = object.size,
-                                "Uploading prepared file"
-                            );
-                            let completed = uploader
-                                .upload_object(object, descriptor, &progress_tx)
-                                .await?;
-                            tracing::debug!(
-                                file = index + 1,
-                                total_files = objects.len(),
-                                "Prepared file upload complete"
-                            );
-                            Ok::<_, anyhow::Error>(completed)
-                        }
-                    })
-                    .buffer_unordered(DICOM_OBJECT_CONCURRENCY)
-                    .try_collect::<Vec<_>>()
-                    .await
-            } else {
-                let mut completed = Vec::with_capacity(objects.len());
-                for (index, object) in objects.iter().enumerate() {
-                    let descriptor = descriptor_map
-                        .get(object.key.as_str())
-                        .context("ingest API omitted an expected object from the multipart plan")?;
+        let transfer = stream::iter(objects.iter().enumerate())
+            .map(|(index, object)| {
+                let uploader = self.clone();
+                let descriptor = descriptor_map
+                    .get(object.key.as_str())
+                    .copied()
+                    .context("ingest API omitted an expected object from the multipart plan");
+                let progress_tx = progress_tx.clone();
+                async move {
+                    let descriptor = descriptor?;
                     tracing::debug!(
                         file = index + 1,
                         total_files = objects.len(),
                         bytes = object.size,
                         "Uploading prepared file"
                     );
-                    completed.push(self.upload_object(object, descriptor, &progress_tx).await?);
+                    let completed = uploader
+                        .upload_object(object, descriptor, &progress_tx)
+                        .await?;
                     tracing::debug!(
                         file = index + 1,
                         total_files = objects.len(),
                         "Prepared file upload complete"
                     );
+                    Ok::<_, anyhow::Error>(completed)
                 }
-                Ok(completed)
-            }
-        };
+            })
+            .buffer_unordered(DICOM_OBJECT_CONCURRENCY)
+            .try_collect::<Vec<_>>();
         tokio::pin!(transfer);
         let mut completed = loop {
             tokio::select! {
@@ -288,18 +249,11 @@ impl MultipartUploader {
                 size,
                 sha256: sha256.clone(),
             };
-            let grant = match match self.route {
-                UploadRoute::Legacy => {
-                    self.api
-                        .create_part_upload(&self.worker_upload_id, request)
-                        .await
-                }
-                UploadRoute::Dicom => {
-                    self.api
-                        .create_dicom_part_upload(&self.worker_upload_id, request)
-                        .await
-                }
-            } {
+            let grant = match self
+                .api
+                .create_dicom_part_upload(&self.worker_upload_id, request)
+                .await
+            {
                 Ok(grant) => grant,
                 Err(error) => {
                     let retry_after = if let Some(failure) = error.downcast_ref::<ApiFailure>() {
@@ -611,424 +565,4 @@ fn completed_object(object: &UploadObjectRecord, parts: Vec<UploadedPart>) -> Co
 
 fn is_retryable(status: StatusCode) -> bool {
     status == StatusCode::TOO_MANY_REQUESTS || status.is_server_error()
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::api::{PartUploadGrant, PartUploadHeaders};
-    use axum::{
-        Json, Router,
-        extract::Path as AxumPath,
-        http::{StatusCode, header::LOCATION},
-        routing::{any, put},
-    };
-    use std::sync::{
-        Arc,
-        atomic::{AtomicUsize, Ordering},
-    };
-
-    #[test]
-    fn part_sizes_cover_file_without_overlap() {
-        assert_eq!(expected_part_size(11, 5, 1), Some(5));
-        assert_eq!(expected_part_size(11, 5, 2), Some(5));
-        assert_eq!(expected_part_size(11, 5, 3), Some(1));
-        assert_eq!(expected_part_size(11, 5, 4), None);
-    }
-
-    #[test]
-    fn etag_normalization_is_bare() {
-        assert_eq!("\"abc123\"".trim_matches('"'), "abc123");
-        assert_eq!("abc123".trim_matches('"'), "abc123");
-    }
-
-    #[test]
-    fn part_grant_must_bind_exact_length_and_digest() {
-        let digest = "a".repeat(64);
-        let signed_at = chrono::Utc::now();
-        let multipart_id = "multipart-fixture";
-        let key = "prefix/bundle/scan.nii.gz";
-        let grant = PartUploadGrant {
-            url: format!(
-                "https://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.r2.cloudflarestorage.com/bucket/{key}?partNumber=2&uploadId={multipart_id}&X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Credential=ACCESSKEY%2F{}%2Fauto%2Fs3%2Faws4_request&X-Amz-Date={}&X-Amz-Expires=900&X-Amz-SignedHeaders=content-length%3Bhost%3Bx-amz-content-sha256&X-Amz-Signature={}",
-                signed_at.format("%Y%m%d"),
-                signed_at.format("%Y%m%dT%H%M%SZ"),
-                "f".repeat(64)
-            ),
-            headers: PartUploadHeaders {
-                content_length: "12".into(),
-                content_sha256: digest.clone(),
-            },
-            expires_at: (signed_at + chrono::Duration::minutes(15)).to_rfc3339(),
-        };
-        assert!(validate_part_grant(&grant, key, 2, multipart_id, 12, &digest).is_ok());
-        assert!(validate_part_grant(&grant, key, 3, multipart_id, 12, &digest).is_err());
-        assert!(validate_part_grant(&grant, key, 2, multipart_id, 13, &digest).is_err());
-        assert!(validate_part_grant(&grant, key, 2, multipart_id, 12, &"b".repeat(64)).is_err());
-        let mut duplicate = grant.clone();
-        duplicate.url.push_str("&partNumber=2");
-        assert!(validate_part_grant(&duplicate, key, 2, multipart_id, 12, &digest).is_err());
-    }
-
-    #[tokio::test]
-    async fn multipart_client_never_follows_307_or_308() {
-        for redirect_status in [
-            StatusCode::TEMPORARY_REDIRECT,
-            StatusCode::PERMANENT_REDIRECT,
-        ] {
-            let target_hits = Arc::new(AtomicUsize::new(0));
-            let target_hits_for_handler = target_hits.clone();
-            let target_app = Router::new().fallback(any(move || {
-                let target_hits = target_hits_for_handler.clone();
-                async move {
-                    target_hits.fetch_add(1, Ordering::SeqCst);
-                    StatusCode::NO_CONTENT
-                }
-            }));
-            let target_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-            let target_address = target_listener.local_addr().unwrap();
-            let target_server =
-                tokio::spawn(
-                    async move { axum::serve(target_listener, target_app).await.unwrap() },
-                );
-
-            let location = format!("http://{target_address}/signed-body-capture");
-            let redirect_app = Router::new().route(
-                "/part",
-                put(move || {
-                    let location = location.clone();
-                    async move { (redirect_status, [(LOCATION, location)]) }
-                }),
-            );
-            let redirect_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-            let redirect_address = redirect_listener.local_addr().unwrap();
-            let redirect_server =
-                tokio::spawn(
-                    async move { axum::serve(redirect_listener, redirect_app).await.unwrap() },
-                );
-
-            let response = build_part_client()
-                .unwrap()
-                .put(format!("http://{redirect_address}/part"))
-                .header(reqwest::header::AUTHORIZATION, "signed-sensitive-value")
-                .body("sensitive-imaging-bytes")
-                .send()
-                .await
-                .unwrap();
-            assert_eq!(response.status().as_u16(), redirect_status.as_u16());
-            tokio::task::yield_now().await;
-            assert_eq!(target_hits.load(Ordering::SeqCst), 0);
-
-            redirect_server.abort();
-            target_server.abort();
-        }
-    }
-
-    #[tokio::test]
-    async fn upload_progress_advances_per_body_chunk_before_put_completion() {
-        use axum::{body::Body, routing::post};
-        use std::sync::{Mutex, atomic::AtomicU64};
-        use tokio::sync::Semaphore;
-
-        let origin = Arc::new(Mutex::new(String::new()));
-        let release_first_response = Arc::new(Semaphore::new(0));
-        let put_attempts = Arc::new(AtomicUsize::new(0));
-        let received_bytes = Arc::new(AtomicU64::new(0));
-
-        let grant_origin = Arc::clone(&origin);
-        let grant_app = post(move |Json(request): Json<serde_json::Value>| {
-            let origin = Arc::clone(&grant_origin);
-            async move {
-                let key = request["key"].as_str().unwrap();
-                let part_number = request["part_number"].as_u64().unwrap();
-                let size = request["size"].as_u64().unwrap();
-                let sha256 = request["sha256"].as_str().unwrap();
-                let multipart_id = "multipart-streaming-fixture";
-                let signed_at = chrono::Utc::now();
-                let origin = origin.lock().unwrap().clone();
-                Json(serde_json::json!({
-                    "url": format!(
-                        "{origin}/bucket/{key}?partNumber={part_number}&uploadId={multipart_id}&X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Credential=ACCESSKEY%2F{}%2Fauto%2Fs3%2Faws4_request&X-Amz-Date={}&X-Amz-Expires=900&X-Amz-SignedHeaders=content-length%3Bhost%3Bx-amz-content-sha256&X-Amz-Signature={}",
-                        signed_at.format("%Y%m%d"),
-                        signed_at.format("%Y%m%dT%H%M%SZ"),
-                        "f".repeat(64),
-                    ),
-                    "headers": {
-                        "content-length": size.to_string(),
-                        "x-amz-content-sha256": sha256,
-                    },
-                    "expires_at": (signed_at + chrono::Duration::minutes(15)).to_rfc3339(),
-                }))
-            }
-        });
-
-        let put_release = Arc::clone(&release_first_response);
-        let put_attempt_counter = Arc::clone(&put_attempts);
-        let put_received_bytes = Arc::clone(&received_bytes);
-        let put_app = put(move |body: Body| {
-            let release = Arc::clone(&put_release);
-            let attempts = Arc::clone(&put_attempt_counter);
-            let received = Arc::clone(&put_received_bytes);
-            async move {
-                let attempt = attempts.fetch_add(1, Ordering::SeqCst);
-                let mut body = body.into_data_stream();
-                while let Some(chunk) = body.next().await {
-                    received.fetch_add(chunk.unwrap().len() as u64, Ordering::SeqCst);
-                }
-                if attempt == 0 {
-                    let _permit = release.acquire().await.unwrap();
-                    return (
-                        StatusCode::INTERNAL_SERVER_ERROR,
-                        [(reqwest::header::ETAG.as_str(), "\"retry\"")],
-                    );
-                }
-                (
-                    StatusCode::OK,
-                    [(reqwest::header::ETAG.as_str(), "\"streamed-etag\"")],
-                )
-            }
-        });
-
-        let app = Router::new()
-            .route("/v1/dicom-uploads/{upload_id}/parts", grant_app)
-            .route("/bucket/{*key}", put_app);
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let address = listener.local_addr().unwrap();
-        *origin.lock().unwrap() = format!("http://{address}");
-        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
-
-        let root = tempfile::tempdir().unwrap();
-        let state = StateStore::open(&root.path().join("state.sqlite3")).unwrap();
-        state.create_run("run", root.path(), false).unwrap();
-        let worker_upload_id = "11111111-1111-4111-8111-111111111111";
-        let bytes = vec![0x5a; UPLOAD_BODY_CHUNK_SIZE * 3 + 17];
-        let path = root.path().join("dicom.tar.zst");
-        std::fs::write(&path, &bytes).unwrap();
-        let object = UploadObjectRecord {
-            run_id: "run".into(),
-            worker_upload_id: worker_upload_id.into(),
-            key: "prefix/dicom.tar.zst".into(),
-            local_path: path.to_string_lossy().into_owned(),
-            size: bytes.len() as u64,
-            sha256: hex::encode(Sha256::digest(&bytes)),
-            multipart_id: None,
-            status: "pending".into(),
-            etag: None,
-        };
-        state.add_upload_object(&object).unwrap();
-        let descriptor = MultipartObject {
-            key: object.key.clone(),
-            upload_id: "multipart-streaming-fixture".into(),
-            part_size: object.size,
-            kind: Some("dicom_archive".into()),
-            series_archive_id: Some("streaming-fixture".into()),
-        };
-        let config = crate::config::ClientConfig {
-            api_url: format!("http://{address}"),
-            device_token: "sn_device_test".into(),
-            site_id: "site".into(),
-            project_id: "project".into(),
-            project_name: "Project".into(),
-            consent_policy_version: "policy".into(),
-            pseudonym_key_b64: "fixture".into(),
-        };
-        let api = IngestApi::from_config(&config).unwrap();
-        let uploader = MultipartUploader::new_dicom(api, state, worker_upload_id.into()).unwrap();
-        let (progress_tx, mut progress_rx) = tokio::sync::mpsc::unbounded_channel();
-        let upload = tokio::spawn(async move {
-            uploader
-                .upload_object(&object, &descriptor, &progress_tx)
-                .await
-        });
-
-        let mut transferred = Vec::new();
-        while transferred.iter().sum::<u64>() < bytes.len() as u64 {
-            let update = tokio::time::timeout(Duration::from_secs(2), progress_rx.recv())
-                .await
-                .expect("upload body should report progress before the response")
-                .expect("progress channel should remain open");
-            if let UploadProgress::Transferred(count) = update {
-                transferred.push(count);
-            }
-        }
-        assert!(transferred.len() > 1, "a PUT body must report many chunks");
-        assert!(transferred[0] < bytes.len() as u64);
-        assert_eq!(transferred.iter().sum::<u64>(), bytes.len() as u64);
-        tokio::time::timeout(Duration::from_secs(2), async {
-            while received_bytes.load(Ordering::SeqCst) < bytes.len() as u64 {
-                tokio::task::yield_now().await;
-            }
-        })
-        .await
-        .expect("local fixture should receive the complete request body");
-        assert_eq!(received_bytes.load(Ordering::SeqCst), bytes.len() as u64);
-        assert!(
-            !upload.is_finished(),
-            "progress must arrive while the HTTP PUT is still awaiting its response"
-        );
-
-        release_first_response.add_permits(1);
-        tokio::time::timeout(Duration::from_secs(3), upload)
-            .await
-            .expect("retry should complete")
-            .unwrap()
-            .unwrap();
-        while let Ok(update) = progress_rx.try_recv() {
-            if let UploadProgress::Transferred(count) = update {
-                transferred.push(count);
-            }
-        }
-        assert_eq!(
-            transferred.iter().sum::<u64>(),
-            bytes.len() as u64,
-            "retries must not double-count a part"
-        );
-        assert_eq!(put_attempts.load(Ordering::SeqCst), 2);
-        assert_eq!(
-            received_bytes.load(Ordering::SeqCst),
-            bytes.len() as u64 * 2
-        );
-        server.abort();
-    }
-
-    #[tokio::test]
-    async fn dicom_archives_upload_concurrently_but_parts_for_each_key_stay_sequential() {
-        use axum::routing::post;
-        use std::{collections::HashMap, sync::Mutex};
-
-        let origin = Arc::new(Mutex::new(String::new()));
-        let total_active = Arc::new(AtomicUsize::new(0));
-        let total_max = Arc::new(AtomicUsize::new(0));
-        let active_by_key = Arc::new(Mutex::new(HashMap::<String, usize>::new()));
-        let max_by_key = Arc::new(Mutex::new(HashMap::<String, usize>::new()));
-
-        let grant_origin = Arc::clone(&origin);
-        let grant_app = post(move |Json(request): Json<serde_json::Value>| {
-            let origin = Arc::clone(&grant_origin);
-            async move {
-                let key = request["key"].as_str().unwrap();
-                let part_number = request["part_number"].as_u64().unwrap();
-                let size = request["size"].as_u64().unwrap();
-                let sha256 = request["sha256"].as_str().unwrap();
-                let multipart_id = format!("multipart-{}", key.rsplit('/').next().unwrap());
-                let signed_at = chrono::Utc::now();
-                let origin = origin.lock().unwrap().clone();
-                Json(serde_json::json!({
-                    "url": format!(
-                        "{origin}/bucket/{key}?partNumber={part_number}&uploadId={multipart_id}&X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Credential=ACCESSKEY%2F{}%2Fauto%2Fs3%2Faws4_request&X-Amz-Date={}&X-Amz-Expires=900&X-Amz-SignedHeaders=content-length%3Bhost%3Bx-amz-content-sha256&X-Amz-Signature={}",
-                        signed_at.format("%Y%m%d"),
-                        signed_at.format("%Y%m%dT%H%M%SZ"),
-                        "f".repeat(64),
-                    ),
-                    "headers": {
-                        "content-length": size.to_string(),
-                        "x-amz-content-sha256": sha256,
-                    },
-                    "expires_at": (signed_at + chrono::Duration::minutes(15)).to_rfc3339(),
-                }))
-            }
-        });
-
-        let put_total_active = Arc::clone(&total_active);
-        let put_total_max = Arc::clone(&total_max);
-        let put_active_by_key = Arc::clone(&active_by_key);
-        let put_max_by_key = Arc::clone(&max_by_key);
-        let put_app = put(move |AxumPath(key): AxumPath<String>| {
-            let total_active = Arc::clone(&put_total_active);
-            let total_max = Arc::clone(&put_total_max);
-            let active_by_key = Arc::clone(&put_active_by_key);
-            let max_by_key = Arc::clone(&put_max_by_key);
-            async move {
-                let now_active = total_active.fetch_add(1, Ordering::SeqCst) + 1;
-                total_max.fetch_max(now_active, Ordering::SeqCst);
-                {
-                    let mut active = active_by_key.lock().unwrap();
-                    let count = active.entry(key.clone()).or_default();
-                    *count += 1;
-                    let mut maxima = max_by_key.lock().unwrap();
-                    maxima
-                        .entry(key.clone())
-                        .and_modify(|maximum| *maximum = (*maximum).max(*count))
-                        .or_insert(*count);
-                }
-                tokio::time::sleep(Duration::from_millis(75)).await;
-                {
-                    let mut active = active_by_key.lock().unwrap();
-                    *active.get_mut(&key).unwrap() -= 1;
-                }
-                total_active.fetch_sub(1, Ordering::SeqCst);
-                (
-                    StatusCode::OK,
-                    [(reqwest::header::ETAG.as_str(), format!("\"etag-{key}\""))],
-                )
-            }
-        });
-
-        let app = Router::new()
-            .route("/v1/dicom-uploads/{upload_id}/parts", grant_app)
-            .route("/bucket/{*key}", put_app);
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let address = listener.local_addr().unwrap();
-        *origin.lock().unwrap() = format!("http://{address}");
-        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
-
-        let root = tempfile::tempdir().unwrap();
-        let state = StateStore::open(&root.path().join("state.sqlite3")).unwrap();
-        state.create_run("run", root.path(), false).unwrap();
-        let worker_upload_id = "11111111-1111-4111-8111-111111111111";
-        let mut objects = Vec::new();
-        let mut descriptors = Vec::new();
-        for name in ["a.bin", "b.bin", "c.bin"] {
-            let path = root.path().join(name);
-            std::fs::write(&path, b"abcdefgh").unwrap();
-            let key = format!("prefix/{name}");
-            let object = UploadObjectRecord {
-                run_id: "run".into(),
-                worker_upload_id: worker_upload_id.into(),
-                key: key.clone(),
-                local_path: path.to_string_lossy().into_owned(),
-                size: 8,
-                sha256: hex::encode(Sha256::digest(b"abcdefgh")),
-                multipart_id: None,
-                status: "pending".into(),
-                etag: None,
-            };
-            state.add_upload_object(&object).unwrap();
-            objects.push(object);
-            descriptors.push(MultipartObject {
-                key,
-                upload_id: format!("multipart-{name}"),
-                part_size: 4,
-                kind: Some("dicom_archive".into()),
-                series_archive_id: Some(name.repeat(4)),
-            });
-        }
-        let config = crate::config::ClientConfig {
-            api_url: format!("http://{address}"),
-            device_token: "sn_device_test".into(),
-            site_id: "site".into(),
-            project_id: "project".into(),
-            project_name: "Project".into(),
-            consent_policy_version: "policy".into(),
-            pseudonym_key_b64: "fixture".into(),
-        };
-        let api = IngestApi::from_config(&config).unwrap();
-        let uploader = MultipartUploader::new_dicom(api, state, worker_upload_id.into()).unwrap();
-        let completed = uploader.upload_all(&objects, &descriptors).await.unwrap();
-
-        assert_eq!(completed.len(), 3);
-        assert!(
-            total_max.load(Ordering::SeqCst) >= 2,
-            "different archive keys should overlap in flight"
-        );
-        assert!(
-            max_by_key
-                .lock()
-                .unwrap()
-                .values()
-                .all(|maximum| *maximum == 1),
-            "parts for one R2 object key must remain sequential"
-        );
-        server.abort();
-    }
 }

@@ -14,31 +14,14 @@
   ],
   "properties": {
     "registration_open": { "type": "boolean" },
-    "project_name": {
-      "type": "string",
-      "minLength": 1,
-      "maxLength": 128
-    },
-    "consent_policy_version": {
-      "type": "string",
-      "minLength": 1,
-      "maxLength": 64,
-      "pattern": "^[A-Za-z0-9][A-Za-z0-9.+_-]*$"
-    },
+    "project_name": { "const": "Scaling Neuro shared EPI archive" },
+    "consent_policy_version": { "const": "open-epi-2.0.0" },
     "policy_url": {
       "type": "string",
       "format": "uri",
       "pattern": "^https://scalingneuro\\.com/"
     },
-    "self_service_quota_bytes": {
-      "description": "Canonical cumulative public-workstation allowance in bytes, or null when uncapped. During the 0.2-to-0.3 transition, an exact legacy neuro-sync user agent may receive the JSON-safe maximum integer as an uncapped parsing sentinel while backend quota remains null.",
-      "type": ["integer", "null"],
-      "minimum": 1,
-      "maximum": 9007199254740991
-    },
-    "minimum_client_version": {
-      "type": "string",
-      "pattern": "^(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)(?:-[A-Za-z0-9.-]+)?(?:\\+[A-Za-z0-9.-]+)?$"
-    }
+    "self_service_quota_bytes": { "type": "null" },
+    "minimum_client_version": { "const": "0.5.0" }
   }
 }

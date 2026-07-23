@@ -26,20 +26,13 @@ jobs:
         with:
           python-version: "3.13"
           cache: pip
-          cache-dependency-path: |
-            schemas/requirements.txt
-            scripts/vendor-dicom-qa-requirements.txt
+          cache-dependency-path: schemas/requirements.txt
 
-      - name: Install schema and vendor-QA validators
-        run: |
-          python -m pip install --requirement schemas/requirements.txt
-          python -m pip install --require-hashes --requirement scripts/vendor-dicom-qa-requirements.txt
+      - name: Install schema validators
+        run: python -m pip install --requirement schemas/requirements.txt
 
-      - name: Validate schemas, examples, and policy paths
-        run: |
-          python schemas/validate.py
-          python scripts/test_vendor_dicom_qa.py
-          python scripts/vendor_dicom_qa.py --self-test
+      - name: Validate schemas and examples
+        run: python schemas/validate.py
 
   client:
     name: Rust client
@@ -170,11 +163,6 @@ jobs:
           ./scripts/test-workflow-triggers.sh
           ./scripts/test-configure-pages-production.sh
 
-      - name: Test two-phase production download preservation
-        run: |
-          ./scripts/test-production-downloads.sh
-          ./scripts/test-release-cutover.sh
-
       - name: Detect Worker component
         id: component
         shell: bash
@@ -209,23 +197,3 @@ jobs:
       - name: Test
         if: steps.component.outputs.present == 'true'
         run: npm test --prefix worker
-
-  processor:
-    name: Cluster processor
-    runs-on: ubuntu-latest
-    steps:
-      - name: Check out source
-        uses: actions/checkout@v6
-
-      - name: Set up Python
-        uses: actions/setup-python@v6
-        with:
-          python-version: "3.13"
-          cache: pip
-          cache-dependency-path: processor/requirements.lock
-
-      - name: Install locked processor dependencies
-        run: python -m pip install --require-hashes --requirement processor/requirements.lock
-
-      - name: Test processor contracts and pipelines
-        run: PYTHONPATH=processor python -m unittest discover -v -s processor/tests

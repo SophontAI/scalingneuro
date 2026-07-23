@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://scalingneuro.com/schemas/upload-part-request-v1.schema.json",
   "title": "Scaling Neuro request one presigned multipart-part URL v1",
-  "description": "The exact part capability requested from POST /v1/uploads/{upload_id}/parts. The Worker verifies that the key, part number, byte range, size, and digest match the initialized multipart plan before signing anything.",
+  "description": "The exact part capability requested for one initialized functional EPI archive.",
   "type": "object",
   "additionalProperties": false,
   "required": ["key", "part_number", "size", "sha256"],

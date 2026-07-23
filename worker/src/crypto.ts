@@ -50,8 +50,8 @@ export function randomBytes(length: number): Uint8Array<ArrayBuffer> {
   return crypto.getRandomValues(new Uint8Array(length));
 }
 
-export function randomOpaqueToken(prefix: "sn_device" | "sn_invite"): string {
-  return `${prefix}_${base64Url(randomBytes(32))}`;
+export function randomAccessToken(): string {
+  return `sn_access_${base64Url(randomBytes(32))}`;
 }
 
 export function pseudonymKeyBase64(bytes: Uint8Array): string {
@@ -116,22 +116,6 @@ export function sha256PassThrough(body: ReadableStream<Uint8Array>): {
       bytesToHex(new Uint8Array(digest)),
     ),
   };
-}
-
-export async function constantTimeEqual(
-  left: string,
-  right: string,
-): Promise<boolean> {
-  const [leftHash, rightHash] = await Promise.all([
-    sha256Hex(left),
-    sha256Hex(right),
-  ]);
-  let difference = leftHash.length ^ rightHash.length;
-  for (let index = 0; index < leftHash.length; index += 1) {
-    difference |=
-      leftHash.charCodeAt(index) ^ (rightHash.charCodeAt(index) || 0);
-  }
-  return difference === 0;
 }
 
 export function canonicalJson(value: unknown): string {
@@ -257,6 +241,18 @@ export async function decryptRegistrationEmail(
   );
 }
 
+export async function encryptArchiveAccessEmail(
+  email: string,
+  registrationId: string,
+  base64EncryptionKey: string,
+): Promise<string> {
+  return encryptBoundText(
+    email,
+    `scaling-neuro/archive-access/v1/${registrationId}`,
+    base64EncryptionKey,
+  );
+}
+
 export async function decryptSiteKey(
   ciphertext: string,
   siteId: string,
@@ -297,8 +293,4 @@ export async function decryptSiteKey(
 
 export function utf8Bytes(value: string): Uint8Array<ArrayBuffer> {
   return encoder.encode(value) as Uint8Array<ArrayBuffer>;
-}
-
-export function utf8String(value: ArrayBuffer): string {
-  return decoder.decode(value);
 }

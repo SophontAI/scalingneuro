@@ -1,13 +1,13 @@
 {
   "schema_version": "2.0.0",
-  "series_archive_id": "8d3b6a88f4bc7d7e0f122345",
-  "series_id": "4e6b098d125ef730af122345",
-  "subject_id": "a4b73d9e6f12a2b011223344",
-  "session_id": "b9e5cf2f5a74a3f811223344",
-  "protocol_group_id": "cc2d5fa34ca8e913af122345",
+  "series_archive_id": "7c2a5f77f3ab6c6d9e011234",
+  "series_id": "3d5a987c014de62f9a011234",
+  "subject_id": "9c48102a77e3500f3a011234",
+  "session_id": "6a138b712e4d11af9a011234",
+  "protocol_group_id": "bb1c4ef23b97d8029a011234",
   "modality": "mr",
-  "series_kind": "structural_t1w",
-  "processing_route": "archive-verify-v1",
+  "series_kind": "functional_epi",
+  "archive_route": "functional-epi-v1",
   "pixel_data_policy": "scanner-native-not-defaced",
   "dicom_instance_count": 1,
   "writer_contract": {
@@ -29,28 +29,23 @@
   },
   "source": {
     "dicom_count": 1,
-    "manufacturer": "Future Scanner Works",
-    "model": "FutureMR Research 9000",
+    "manufacturer": "Example Scanner",
+    "model": "Example 3T",
     "software_versions": ["R1.2"],
     "magnetic_field_strength": 3,
-    "scanning_sequence": ["GR"],
-    "mr_acquisition_type": "3D",
-    "image_type": ["ORIGINAL", "PRIMARY", "M", "ND", "NORM"]
+    "scanning_sequence": ["EP"],
+    "mr_acquisition_type": "2D",
+    "image_type": ["ORIGINAL", "PRIMARY", "FMRI", "NONE"]
   },
   "classification": {
     "decision": "accepted",
-    "kind": "structural_t1w",
-    "confidence": 0.98,
+    "kind": "functional_epi",
+    "confidence": 0.99,
     "evidence": [
       {
-        "code": "structural_t1w_evidence",
+        "code": "functional_epi_evidence",
         "source": "dicom_header",
         "effect": "supports"
-      },
-      {
-        "code": "missing_tr_in_series_instance",
-        "source": "dicom_header",
-        "effect": "limits_processing"
       }
     ]
   },

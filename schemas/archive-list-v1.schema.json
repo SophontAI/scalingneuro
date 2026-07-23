@@ -1,0 +1,52 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://scalingneuro.com/schemas/archive-list-v1.schema.json",
+  "title": "Scaling Neuro shared EPI archive listing v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["format", "series"],
+  "properties": {
+    "format": { "const": "dicom-tar-zstd" },
+    "series": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "upload_id",
+          "series_archive_id",
+          "series_id",
+          "dicom_count",
+          "size",
+          "sha256",
+          "received_at",
+          "download_url"
+        ],
+        "properties": {
+          "upload_id": {
+            "$ref": "https://scalingneuro.com/schemas/common-v1.schema.json#/$defs/uuid"
+          },
+          "series_archive_id": {
+            "$ref": "https://scalingneuro.com/schemas/common-v1.schema.json#/$defs/pseudonymId"
+          },
+          "series_id": {
+            "$ref": "https://scalingneuro.com/schemas/common-v1.schema.json#/$defs/pseudonymId"
+          },
+          "dicom_count": { "type": "integer", "minimum": 1 },
+          "size": { "type": "integer", "minimum": 32 },
+          "sha256": {
+            "$ref": "https://scalingneuro.com/schemas/common-v1.schema.json#/$defs/sha256"
+          },
+          "received_at": {
+            "$ref": "https://scalingneuro.com/schemas/common-v1.schema.json#/$defs/timestamp"
+          },
+          "download_url": {
+            "type": "string",
+            "format": "uri",
+            "pattern": "^https://scalingneuro\\.com/v1/archive/"
+          }
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://scalingneuro.com/schemas/archive-access-response-v1.schema.json",
+  "title": "Scaling Neuro archive access response v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["access_token", "token_type", "archive_url"],
+  "properties": {
+    "access_token": {
+      "type": "string",
+      "pattern": "^sn_access_[A-Za-z0-9_-]{43}$"
+    },
+    "token_type": { "const": "Bearer" },
+    "archive_url": { "const": "https://scalingneuro.com/v1/archive" }
+  }
+}

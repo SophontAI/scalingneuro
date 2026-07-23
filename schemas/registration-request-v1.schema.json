@@ -77,11 +77,6 @@
       "pattern": "^[^\\u0000-\\u001F\\u007F]+$"
     },
     "contact_opt_in": { "type": "boolean" },
-    "accepted_consent_policy_version": {
-      "type": "string",
-      "minLength": 1,
-      "maxLength": 64,
-      "pattern": "^[A-Za-z0-9][A-Za-z0-9.+_-]*$"
-    }
+    "accepted_consent_policy_version": { "const": "open-epi-2.0.0" }
   }
 }

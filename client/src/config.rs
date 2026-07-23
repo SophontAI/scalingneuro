@@ -15,9 +15,7 @@ pub struct AppPaths {
     pub config: PathBuf,
     pub database: PathBuf,
     pub lock: PathBuf,
-    pub pending_enrollment: PathBuf,
     pub pending_registration: PathBuf,
-    pub work: PathBuf,
     pub bundles: PathBuf,
     pub reports: PathBuf,
 }
@@ -38,9 +36,7 @@ impl AppPaths {
             config: root.join("config.json"),
             database: root.join("state.sqlite3"),
             lock: root.join("instance.lock"),
-            pending_enrollment: root.join("pending-enrollment.json"),
             pending_registration: root.join("pending-registration.json"),
-            work: root.join("work"),
             bundles: root.join("bundles"),
             reports: root.join("reports"),
             root,
@@ -48,7 +44,7 @@ impl AppPaths {
     }
 
     pub fn initialize(&self) -> Result<()> {
-        for path in [&self.root, &self.work, &self.bundles, &self.reports] {
+        for path in [&self.root, &self.bundles, &self.reports] {
             fs::create_dir_all(path)
                 .with_context(|| format!("failed to create {}", path.display()))?;
             privacy::restrict_dir(path)?;

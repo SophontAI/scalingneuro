@@ -1,12 +1,9 @@
 # Copy to .dev.vars. Never commit the populated file.
-# Generate ADMIN_API_TOKEN with: openssl rand -base64 32
 # Generate SITE_KEY_ENCRYPTION_KEY_B64 with: openssl rand -base64 32
-# Generate CLUSTER_LAUNCH_HMAC_KEY with: openssl rand -base64 32
-ADMIN_API_TOKEN="replace-with-a-long-random-admin-token"
 SITE_KEY_ENCRYPTION_KEY_B64="replace-with-32-random-bytes-in-base64"
-CLUSTER_LAUNCH_HMAC_KEY="replace-with-32-random-bytes-in-base64"
 
 # S3 secret for a dedicated parent token scoped to Object Read & Write on only this bucket.
-# The Worker uses it only to sign short-lived URLs for one exact multipart part.
+# The Worker uses it only to sign short-lived URLs for one exact multipart part
+# or one authenticated archive download.
 # It never returns this secret or reusable R2 credentials to the client.
 R2_PARENT_SECRET_ACCESS_KEY="replace-with-parent-r2-secret-access-key"

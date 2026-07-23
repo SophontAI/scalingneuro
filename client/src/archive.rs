@@ -45,23 +45,8 @@ pub const DICOM_ARCHIVE_FORMAT: &str = "dicom-tar-zstd";
 pub const DICOM_MANIFEST_SCHEMA_VERSION: &str = "2.0.0";
 pub const DICOM_METADATA_POLICY_ID: &str = "scaling-neuro.dicom-deidentification";
 pub const DICOM_METADATA_POLICY_VERSION: &str = "2.0.0";
-pub const FUNCTIONAL_EPI_PROCESSING_ROUTE: &str = "functional-epi-v1";
-pub const ARCHIVE_VERIFY_PROCESSING_ROUTE: &str = "archive-verify-v1";
+pub const FUNCTIONAL_EPI_ARCHIVE_ROUTE: &str = "functional-epi-v1";
 pub const SCANNER_NATIVE_NOT_DEFACED_PIXEL_POLICY: &str = "scanner-native-not-defaced";
-pub const MR_SERIES_KINDS: [&str; 12] = [
-    "functional_epi",
-    "structural_t1w",
-    "structural_t2w",
-    "structural_other",
-    "diffusion",
-    "asl_perfusion",
-    "perfusion",
-    "fieldmap",
-    "sbref",
-    "localizer",
-    "derived_mr",
-    "other_mr",
-];
 const DICOM_IMPLEMENTATION_CLASS_UID: &str = "2.25.323468694959424494117938985101850441847";
 const DICOM_IMPLEMENTATION_VERSION_NAME: &str = "NEUROSYNC_RAW_1";
 const MAX_SEQUENCE_DEPTH: usize = 32;
@@ -148,7 +133,7 @@ struct ArchiveManifest {
     protocol_group_id: String,
     modality: &'static str,
     series_kind: String,
-    processing_route: &'static str,
+    archive_route: &'static str,
     pixel_data_policy: &'static str,
     dicom_instance_count: u64,
     writer_contract: ArchiveWriterContract,
@@ -200,7 +185,7 @@ struct ArchiveIdentityPreimage<'a> {
     protocol_group_id: &'a str,
     modality: &'static str,
     series_kind: &'a str,
-    processing_route: &'static str,
+    archive_route: &'static str,
     pixel_data_policy: &'static str,
     dicom_instance_count: u64,
     writer_contract: &'a ArchiveWriterContract,
@@ -439,7 +424,7 @@ where
 
     let classification = request.classification;
     let series_kind = classification.kind.clone();
-    let processing_route = processing_route_for_kind(&series_kind);
+    let archive_route = archive_route_for_kind(&series_kind);
     let writer_contract = archive_writer_contract();
     let deidentification = DeidentificationAudit {
         policy_id: DICOM_METADATA_POLICY_ID,
@@ -518,7 +503,7 @@ where
         &session_id,
         &protocol_group_id,
         &series_kind,
-        processing_route,
+        archive_route,
         &writer_contract,
         &deidentification,
         &source,
@@ -534,7 +519,7 @@ where
         protocol_group_id: protocol_group_id.clone(),
         modality: "mr",
         series_kind: series_kind.clone(),
-        processing_route,
+        archive_route,
         pixel_data_policy: SCANNER_NATIVE_NOT_DEFACED_PIXEL_POLICY,
         dicom_instance_count: instances.len() as u64,
         writer_contract,
@@ -573,17 +558,14 @@ where
         session_id,
         protocol_group_id,
         series_kind,
-        processing_route: processing_route.into(),
+        archive_route: archive_route.into(),
         pixel_data_policy: SCANNER_NATIVE_NOT_DEFACED_PIXEL_POLICY.into(),
-        nifti: None,
-        metadata: None,
         archive: Some(ManifestArchiveObject {
             object: ManifestObject {
                 relative_key: format!("{series_archive_id}/dicom.tar.zst"),
                 local_path: archive_path.to_string_lossy().into_owned(),
                 size: archive_size,
                 sha256: archive_sha256,
-                uncompressed_sha256: None,
             },
             format: DICOM_ARCHIVE_FORMAT.into(),
             dicom_instance_count: group.files.len() as u64,
@@ -753,7 +735,7 @@ fn derive_series_archive_id(
     session_id: &str,
     protocol_group_id: &str,
     series_kind: &str,
-    processing_route: &'static str,
+    archive_route: &'static str,
     writer_contract: &ArchiveWriterContract,
     deidentification: &DeidentificationAudit,
     source: &SourceMetadata,
@@ -768,7 +750,7 @@ fn derive_series_archive_id(
         protocol_group_id,
         modality: "mr",
         series_kind,
-        processing_route,
+        archive_route,
         pixel_data_policy: SCANNER_NATIVE_NOT_DEFACED_PIXEL_POLICY,
         dicom_instance_count: instances.len() as u64,
         writer_contract,
@@ -783,16 +765,13 @@ fn derive_series_archive_id(
     Ok(pseudonymizer.id("dicom-series-archive-v3", &hex::encode(digest.finalize())))
 }
 
-pub fn processing_route_for_kind(series_kind: &str) -> &'static str {
-    if series_kind == "functional_epi" {
-        FUNCTIONAL_EPI_PROCESSING_ROUTE
-    } else {
-        ARCHIVE_VERIFY_PROCESSING_ROUTE
-    }
+pub fn archive_route_for_kind(series_kind: &str) -> &'static str {
+    debug_assert_eq!(series_kind, "functional_epi");
+    FUNCTIONAL_EPI_ARCHIVE_ROUTE
 }
 
 pub fn supported_series_kind(series_kind: &str) -> bool {
-    MR_SERIES_KINDS.contains(&series_kind)
+    series_kind == "functional_epi"
 }
 
 fn prepare_sanitized_dicom<F: FnMut(u64)>(
@@ -1399,7 +1378,7 @@ fn sanitize_dataset(
     retain_extended_offset_table: bool,
 ) -> Result<InMemDicomObject> {
     if depth > MAX_SEQUENCE_DEPTH {
-        bail!("DICOM sequence nesting exceeds the privacy processor limit");
+        bail!("DICOM sequence nesting exceeds the local sanitizer limit");
     }
     let drop_philips_enhanced_root_lut_label = depth == 0
         && image_type_profile == MrImageTypeProfile::Enhanced
@@ -1422,7 +1401,7 @@ fn sanitize_dataset(
             // Some Philips Enhanced MR objects carry this vendor label at the
             // root without any Real World Value Mapping. Source validation
             // binds the exact value to the exact scanner/IOD context; do not
-            // retain it where the processor's sanitized contract is strict.
+            // retain it where the sanitized archive contract is strict.
             continue;
         }
         if tag == MR_RECEIVE_COIL_SEQUENCE
@@ -3758,7 +3737,7 @@ fn validate_pixel_transforms(
     context: PixelTransformContext,
 ) -> Result<()> {
     if depth > MAX_SEQUENCE_DEPTH {
-        bail!("DICOM sequence nesting exceeds the privacy processor limit");
+        bail!("DICOM sequence nesting exceeds the local sanitizer limit");
     }
     if object.element(REAL_WORLD_VALUE_MAPPING_SEQUENCE).is_ok() {
         bail!("DICOM RealWorldValueMapping is not supported by the privacy writer");
@@ -4003,7 +3982,7 @@ fn validate_reference_semantics(
     referenced_image_allowed_here: bool,
 ) -> Result<()> {
     if depth > MAX_SEQUENCE_DEPTH {
-        bail!("DICOM sequence nesting exceeds the privacy processor limit");
+        bail!("DICOM sequence nesting exceeds the local sanitizer limit");
     }
     const UNSUPPORTED_REFERENCE_SEMANTICS: &[Tag] = &[
         DERIVATION_IMAGE_SEQUENCE,
@@ -4061,7 +4040,7 @@ fn validate_context_uid_placement(
     path: &mut Vec<Tag>,
 ) -> Result<()> {
     if depth > MAX_SEQUENCE_DEPTH {
-        bail!("DICOM sequence nesting exceeds the privacy processor limit");
+        bail!("DICOM sequence nesting exceeds the local sanitizer limit");
     }
     for element in object.iter() {
         if element.tag() == Tag(0x0008, 0x0117) {
@@ -4841,7 +4820,7 @@ fn validate_surface_transmit_alias_placement(
     allowed_here: bool,
 ) -> Result<()> {
     if depth > MAX_SEQUENCE_DEPTH {
-        bail!("DICOM sequence nesting exceeds the privacy processor limit");
+        bail!("DICOM sequence nesting exceeds the local sanitizer limit");
     }
     for element in object.iter() {
         if element.tag() == MR_TRANSMIT_COIL_SEQUENCE
@@ -4888,7 +4867,7 @@ fn validate_metabolite_map_placement(
     allowed_here: bool,
 ) -> Result<()> {
     if depth > MAX_SEQUENCE_DEPTH {
-        bail!("DICOM sequence nesting exceeds the privacy processor limit");
+        bail!("DICOM sequence nesting exceeds the local sanitizer limit");
     }
     for element in object.iter() {
         if element.tag() == MR_METABOLITE_MAP_SEQUENCE {
@@ -4923,7 +4902,7 @@ fn rebuild_metabolite_map_sequence() -> DataElement<InMemDicomObject> {
 
 fn validate_source_asl_conditionals(object: &InMemDicomObject, depth: usize) -> Result<()> {
     if depth > MAX_SEQUENCE_DEPTH {
-        bail!("DICOM sequence nesting exceeds the privacy processor limit");
+        bail!("DICOM sequence nesting exceeds the local sanitizer limit");
     }
     const CONDITIONAL_CHILDREN: &[Tag] = &[
         Tag(0x0018, 0x925a),
@@ -4960,7 +4939,7 @@ fn validate_source_asl_conditionals(object: &InMemDicomObject, depth: usize) -> 
 
 fn validate_source_asl_item(object: &InMemDicomObject, depth: usize) -> Result<()> {
     if depth > MAX_SEQUENCE_DEPTH {
-        bail!("DICOM sequence nesting exceeds the privacy processor limit");
+        bail!("DICOM sequence nesting exceeds the local sanitizer limit");
     }
     let crusher = root_text(object, Tag(0x0018, 0x9259), VR::CS)
         .filter(|value| matches!(value.as_str(), "YES" | "NO"))
@@ -6789,7 +6768,7 @@ mod tests {
             "3".repeat(24).as_str(),
             "4".repeat(24).as_str(),
             "functional_epi",
-            FUNCTIONAL_EPI_PROCESSING_ROUTE,
+            FUNCTIONAL_EPI_ARCHIVE_ROUTE,
             &writer_contract,
             &audit,
             &source,
@@ -6804,7 +6783,7 @@ mod tests {
             "3".repeat(24).as_str(),
             "4".repeat(24).as_str(),
             "functional_epi",
-            FUNCTIONAL_EPI_PROCESSING_ROUTE,
+            FUNCTIONAL_EPI_ARCHIVE_ROUTE,
             &writer_contract,
             &audit,
             &source,
@@ -6822,7 +6801,7 @@ mod tests {
             "3".repeat(24).as_str(),
             "4".repeat(24).as_str(),
             "functional_epi",
-            FUNCTIONAL_EPI_PROCESSING_ROUTE,
+            FUNCTIONAL_EPI_ARCHIVE_ROUTE,
             &next_patch_contract,
             &audit,
             &source,
@@ -6841,7 +6820,7 @@ mod tests {
             "3".repeat(24).as_str(),
             "4".repeat(24).as_str(),
             "functional_epi",
-            FUNCTIONAL_EPI_PROCESSING_ROUTE,
+            FUNCTIONAL_EPI_ARCHIVE_ROUTE,
             &changed_contract,
             &audit,
             &source,

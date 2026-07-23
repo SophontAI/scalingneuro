@@ -1,4 +1,4 @@
-import { constantTimeEqual, sha256Hex } from "./crypto";
+import { sha256Hex } from "./crypto";
 import { AppError } from "./errors";
 import type { DeviceContext, Env } from "./env";
 
@@ -99,30 +99,4 @@ export function authenticateDeviceForPolicyAcceptance(
   env: Env,
 ): Promise<DeviceContext> {
   return authenticateDeviceContext(request, env, true);
-}
-
-export async function authenticateAdmin(
-  request: Request,
-  env: Env,
-): Promise<void> {
-  const token = bearerToken(request);
-  if (
-    !env.ADMIN_API_TOKEN ||
-    !(await constantTimeEqual(token, env.ADMIN_API_TOKEN))
-  ) {
-    throw new AppError("UNAUTHORIZED", 401, "Admin token is invalid");
-  }
-}
-
-export async function authenticateProcessor(
-  request: Request,
-  env: Env,
-): Promise<void> {
-  const token = bearerToken(request);
-  if (
-    !env.PROCESSOR_API_TOKEN ||
-    !(await constantTimeEqual(token, env.PROCESSOR_API_TOKEN))
-  ) {
-    throw new AppError("UNAUTHORIZED", 401, "Processor token is invalid");
-  }
 }

@@ -3,7 +3,6 @@
   "status": "already_received",
   "format": "dicom-series-v1",
   "series_count": 1,
-  "total_bytes": 134217728,
   "already_received_series": [
     {
       "series_archive_id": "7c2a5f77f3ab6c6d9e011234",

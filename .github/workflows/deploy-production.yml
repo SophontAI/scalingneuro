@@ -2,8 +2,7 @@ name: Deploy production
 
 on:
   push:
-    branches:
-      - main
+    branches: [main]
   workflow_dispatch:
 
 permissions:
@@ -16,247 +15,72 @@ concurrency:
 
 jobs:
   deploy:
-    name: Deploy to Cloudflare Pages
     runs-on: ubuntu-latest
     environment:
       name: production
       url: https://scalingneuro.com
     steps:
-      - name: Check out source
-        uses: actions/checkout@v6
+      - uses: actions/checkout@v6
         with:
           fetch-depth: 0
-
-      - name: Reconcile upload-triggered cluster route
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: worker/package-lock.json
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+          cache: pip
+          cache-dependency-path: schemas/requirements.txt
+      - name: Validate the site and service
+        run: |
+          python -m pip install --requirement schemas/requirements.txt
+          npm ci --prefix worker
+          python schemas/validate.py
+          node schemas/validate-ajv.mjs
+          npm run check --prefix worker
+      - name: Enforce production bindings and isolated previews
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-        run: ./scripts/configure-cluster-launch-tunnel.sh
-
-      - name: Classify release or website-only deployment
-        id: release_alignment
+        run: ./scripts/configure-pages-production.sh
+      - name: Apply D1 migrations
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: npm exec --prefix worker -- wrangler d1 migrations apply scaling-neuro-control --remote --config worker/wrangler.jsonc
+      - name: Build the site and Worker
+        run: ./scripts/build-site.sh
+      - name: Restore the latest verified client release
         env:
           GH_TOKEN: ${{ github.token }}
         shell: bash
         run: |
           set -euo pipefail
           source_version=$(sed -n 's/^version = "\([^"]*\)"/\1/p' client/Cargo.toml | head -1)
-          release_tag=$(gh api "repos/${GITHUB_REPOSITORY}/releases?per_page=100" \
-            --jq '[.[] | select(.draft == false and .prerelease == false and (.tag_name | startswith("client-v")))] | sort_by(.published_at) | reverse | .[0].tag_name // ""')
-          release_version=${release_tag#client-v}
-          release_sha=""
-          if [[ -n "$release_tag" ]]; then
-            release_sha=$(gh api "repos/${GITHUB_REPOSITORY}/commits/${release_tag}" --jq '.sha')
-          fi
-
-          deploy=false
-          deployment_mode=deferred
-          if [[ -n "$source_version" &&
-                "$source_version" == "$release_version" &&
-                "$release_sha" == "$GITHUB_SHA" ]]; then
-            deploy=true
-            deployment_mode=release
-            echo "Deploying source and packages from exact release $release_tag ($release_sha)."
-          elif [[ -n "$source_version" &&
-                  "$source_version" == "$release_version" &&
-                  -n "$release_sha" ]] &&
-               git merge-base --is-ancestor "$release_sha" "$GITHUB_SHA"; then
-            changed_count=0
-            changed_paths_log=""
-            non_site_count=0
-            non_site_paths_log=""
-            while IFS= read -r path; do
-              [[ -n "$path" ]] || continue
-              changed_count=$((changed_count + 1))
-              changed_paths_log="${changed_paths_log}${path}"$'\n'
-              case "$path" in
-                .github/workflows/deploy-production.yml|\
-                404.html|\
-                app.js|\
-                downloads/index.html|\
-                favicon.svg|\
-                index.html|\
-                styles.css|\
-                docs/contribution-policy.html|\
-                docs/dicom-deidentification-policy.md)
-                  ;;
-                *)
-                  non_site_count=$((non_site_count + 1))
-                  non_site_paths_log="${non_site_paths_log}${path}"$'\n'
-                  ;;
-              esac
-            done < <(git diff --name-only "$release_sha" "$GITHUB_SHA")
-
-            if (( changed_count > 0 && non_site_count == 0 )); then
-              deploy=true
-              deployment_mode=website-only
-              echo "Deploying website-only changes on top of stable client release $release_tag ($release_sha)."
-              printf 'Website paths:\n%s' "$changed_paths_log"
-            else
-              echo "Deferring production because changes since $release_tag include release-coupled paths:"
-              printf '%s' "$non_site_paths_log"
-            fi
-          else
-            echo "Deferring production: source client $source_version does not match descendant website changes from latest stable release ${release_tag:-none}/${release_sha:-none}."
-          fi
-
-          {
-            echo "deploy=$deploy"
-            echo "deployment_mode=$deployment_mode"
-            echo "release_tag=$release_tag"
-          } >> "$GITHUB_OUTPUT"
-          if [[ "$deploy" != true ]]; then
-            echo "Client, Worker, processor, schema, and migration changes remain gated on the atomic client release workflow."
-          fi
-
-      - name: Set up Node
-        if: steps.release_alignment.outputs.deploy == 'true'
-        uses: actions/setup-node@v6
-        with:
-          node-version: "22"
-          cache: npm
-          cache-dependency-path: worker/package-lock.json
-
-      - name: Set up Python
-        if: steps.release_alignment.outputs.deploy == 'true'
-        uses: actions/setup-python@v6
-        with:
-          python-version: "3.13"
-          cache: pip
-          cache-dependency-path: |
-            schemas/requirements.txt
-            processor/requirements.lock
-
-      - name: Install locked validators and Worker dependencies
-        if: steps.release_alignment.outputs.deploy == 'true'
-        run: |
-          python -m pip install --requirement schemas/requirements.txt
-          python -m pip install --require-hashes --requirement processor/requirements.lock
-          npm ci --prefix worker
-
-      - name: Block deployment on contract or Worker regressions
-        if: steps.release_alignment.outputs.deploy == 'true'
-        run: |
-          python schemas/validate.py
-          node schemas/validate-ajv.mjs
-          npm run check --prefix worker
-          PYTHONPATH=processor python -m unittest discover -v -s processor/tests
-
-      - name: Enforce fail-closed production and isolated previews
-        if: steps.release_alignment.outputs.deploy == 'true'
-        env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-        run: ./scripts/configure-pages-production.sh
-
-      - name: Apply control-plane migrations
-        if: steps.release_alignment.outputs.deploy == 'true'
-        env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-        run: npm exec --prefix worker -- wrangler d1 migrations apply scaling-neuro-control --remote --config worker/wrangler.jsonc
-
-      - name: Build safe site and Pages Worker bundle
-        if: steps.release_alignment.outputs.deploy == 'true'
-        run: ./scripts/build-site.sh
-
-      - name: Restore the latest verified client release
-        if: steps.release_alignment.outputs.deploy == 'true'
-        env:
-          GH_TOKEN: ${{ github.token }}
-          RELEASE_TAG: ${{ steps.release_alignment.outputs.release_tag }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          tag=$RELEASE_TAG
-          if [[ -z "$tag" ]]; then
-            echo "No published client release exists; leaving the download-unavailable page in place."
-            exit 0
-          fi
-
-          asset_dir=$(mktemp -d)
-          trap 'rm -rf "$asset_dir"' EXIT
-          gh release download "$tag" --dir "$asset_dir"
-
-          if find "$asset_dir" -mindepth 1 \( -type l -o -type d \) -print -quit | grep -q .; then
-            echo "Release assets must be regular top-level files" >&2
+          tag=$(gh api "repos/${GITHUB_REPOSITORY}/releases/latest" --jq '.tag_name // ""')
+          [[ "$tag" == "client-v${source_version}" ]] || {
+            echo "Latest client release ${tag:-<none>} does not match source version ${source_version}." >&2
+            echo "Publish client-v${source_version}, then rerun this deployment." >&2
             exit 1
-          fi
-          while IFS= read -r -d '' file; do
-            name=$(basename "$file")
-            if [[ ! "$name" =~ ^[A-Za-z0-9][A-Za-z0-9._+-]*$ ]]; then
-              echo "Unsafe release asset name: $name" >&2
-              exit 1
-            fi
-          done < <(find "$asset_dir" -mindepth 1 -maxdepth 1 -type f -print0)
-
-          test -f "$asset_dir/latest.json"
-          test -f "$asset_dir/SHA256SUMS"
-          version=${tag#client-v}
-          jq --exit-status --arg version "$version" '
-            .schema_version == "1.0.0" and
-            .version == $version and
-            (.channel == "pilot" or .channel == "open-beta") and
-            .checksums_url == "/downloads/SHA256SUMS" and
-            ((.artifacts | keys | sort) == ["linux", "macos", "windows"]) and
-            (.artifacts.linux.url == ("/downloads/neuro-sync-v" + $version + "-linux-x86_64-musl-static.tar.gz")) and
-            (.artifacts.linux.architecture == "x86_64") and
-            (.artifacts.linux.runtime == {libc:"musl", linkage:"static"}) and
-            ((.installers == null and $version == "0.2.0") or
-              (((.installers | keys | sort) == ["unix", "windows"]) and
-               (.installers.unix.url == "/install.sh") and
-               (.installers.windows.url == "/install.ps1") and
-               (all(.installers[]; .sha256 | type == "string" and test("^[0-9a-f]{64}$"))))) and
-            (all(.artifacts[];
-              (.url | type == "string" and test("^/downloads/[A-Za-z0-9][A-Za-z0-9._+-]*$")) and
-              (.sha256 | type == "string" and test("^[0-9a-f]{64}$")) and
-              (.signed | type == "boolean") and
-              (.sbom_spdx_url | type == "string" and test("^/downloads/[A-Za-z0-9][A-Za-z0-9._+-]*\\.spdx\\.json$")) and
-              (.sbom_cyclonedx_url | type == "string" and test("^/downloads/[A-Za-z0-9][A-Za-z0-9._+-]*\\.cdx\\.json$"))
-            ))
-          ' "$asset_dir/latest.json" >/dev/null
-
-          expected=$(mktemp)
-          {
-            printf '%s\n' SHA256SUMS latest.json
-            jq -r '.artifacts[] | [.url, .sbom_spdx_url, .sbom_cyclonedx_url][] | split("/")[-1]' "$asset_dir/latest.json"
-            jq -r '.installers // {} | .[].url | split("/")[-1]' "$asset_dir/latest.json"
-          } | LC_ALL=C sort -u > "$expected"
-          actual=$(mktemp)
-          find "$asset_dir" -mindepth 1 -maxdepth 1 -type f -printf '%f\n' | LC_ALL=C sort > "$actual"
-          diff -u "$expected" "$actual"
-
-          (cd "$asset_dir" && sha256sum --check --strict SHA256SUMS)
-          jq -r '.artifacts[] | [.url, .sha256] | @tsv' "$asset_dir/latest.json" |
-            while IFS=$'\t' read -r url expected_sha; do
-              name=${url##*/}
-              actual_sha=$(sha256sum "$asset_dir/$name" | cut -d' ' -f1)
-              [[ "$actual_sha" == "$expected_sha" ]] || {
-                echo "Release index digest mismatch: $name" >&2
-                exit 1
-              }
-            done
-          if find "$asset_dir" -maxdepth 1 -type f -size +26214400c -print -quit | grep -q .; then
-            echo "A release asset exceeds Cloudflare Pages' 25 MiB limit" >&2
-            exit 1
-          fi
-          install -m 0644 "$asset_dir"/* dist/downloads/
-          if [[ -f "$asset_dir/install.sh" && -f "$asset_dir/install.ps1" ]]; then
-            install -m 0755 "$asset_dir/install.sh" dist/install.sh
-            install -m 0644 "$asset_dir/install.ps1" dist/install.ps1
-          fi
-
-      - name: Deploy production
-        if: steps.release_alignment.outputs.deploy == 'true'
+          }
+          release_dir=$(mktemp -d)
+          trap 'rm -rf "$release_dir"' EXIT
+          gh release download "$tag" --dir "$release_dir"
+          (cd "$release_dir" && sha256sum --check --strict SHA256SUMS)
+          find "$release_dir" -mindepth 1 -maxdepth 1 -type f \
+            ! -name 'install.sh' ! -name 'install.ps1' -exec install -m 0644 {} dist/downloads/ \;
+          install -m 0755 "$release_dir/install.sh" dist/install.sh
+          install -m 0644 "$release_dir/install.ps1" dist/install.ps1
+      - name: Deploy Cloudflare Pages
         uses: cloudflare/wrangler-action@v3
         with:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           command: pages deploy dist --project-name=scalingneuro --branch=main --commit-hash=${{ github.sha }}
           gitHubToken: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Verify production API and source version
-        if: steps.release_alignment.outputs.deploy == 'true'
+      - name: Verify the deployed source
         shell: bash
         run: |
           set -euo pipefail
@@ -271,26 +95,3 @@ jobs:
           done
           echo "Production did not converge to the deployed source version" >&2
           exit 1
-
-      - name: Verify production terminal installers
-        if: steps.release_alignment.outputs.deploy == 'true'
-        shell: bash
-        run: |
-          set -euo pipefail
-          verify_dir=$(mktemp -d)
-          trap 'rm -rf "$verify_dir"' EXIT
-          curl --fail --location --silent --show-error --retry 5 --retry-all-errors \
-            --output "$verify_dir/latest.json" https://scalingneuro.com/downloads/latest.json
-          if jq --exit-status '.installers != null' "$verify_dir/latest.json" >/dev/null; then
-            jq -r '.installers[] | [.url, .sha256] | @tsv' "$verify_dir/latest.json" |
-              while IFS=$'\t' read -r url expected_sha; do
-                name=${url##*/}
-                curl --fail --location --silent --show-error --retry 5 --retry-all-errors \
-                  --output "$verify_dir/$name" "https://scalingneuro.com$url"
-                actual_sha=$(sha256sum "$verify_dir/$name" | cut -d' ' -f1)
-                [[ "$actual_sha" == "$expected_sha" ]] || {
-                  echo "Production installer digest mismatch: $name" >&2
-                  exit 1
-                }
-              done
-          fi

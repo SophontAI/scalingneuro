@@ -1,5 +1,5 @@
 {
-  "key": "archive/v1/0190f870-1111-7f2a-a24c-0a6abf16ec81/0190f870-2222-7f2a-a24c-0a6abf16ec81/0190f86f-e0de-7f2a-a24c-0a6abf16ec81/7c2a5f77f3ab6c6d9e011234/sub-a4b73d9e6f12a2b011223344_ses-b9e5cf2f5a74a3f811223344_ser-45fa0d3f9a2e9af111223344_bold.nii.gz",
+  "key": "dicom/v1/site/project/0190f86f-e0de-7f2a-a24c-0a6abf16ec81/7c2a5f77f3ab6c6d9e011234/dicom.tar.zst",
   "part_number": 1,
   "size": 67108864,
   "sha256": "4d927ef68b696afbc1f5e6a5b2b7b372f4b33f576cc8d5340cdbbea33e970234"

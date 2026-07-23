@@ -1,0 +1,46 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://scalingneuro.com/schemas/registration-response-v1.schema.json",
+  "title": "Scaling Neuro workstation registration response v1",
+  "description": "The stable result of a new or replayed workstation registration.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "registration_id",
+    "device_token",
+    "device_id",
+    "site_id",
+    "project_id",
+    "project_name",
+    "consent_policy_version",
+    "pseudonym_key_b64"
+  ],
+  "properties": {
+    "registration_id": {
+      "$ref": "https://scalingneuro.com/schemas/common-v1.schema.json#/$defs/uuid"
+    },
+    "device_token": {
+      "type": "string",
+      "minLength": 53,
+      "maxLength": 53,
+      "pattern": "^sn_device_[A-Za-z0-9_-]{43}$"
+    },
+    "device_id": {
+      "$ref": "https://scalingneuro.com/schemas/common-v1.schema.json#/$defs/uuid"
+    },
+    "site_id": {
+      "$ref": "https://scalingneuro.com/schemas/common-v1.schema.json#/$defs/uuid"
+    },
+    "project_id": {
+      "$ref": "https://scalingneuro.com/schemas/common-v1.schema.json#/$defs/uuid"
+    },
+    "project_name": { "const": "Scaling Neuro shared EPI archive" },
+    "consent_policy_version": { "const": "open-epi-2.0.0" },
+    "pseudonym_key_b64": {
+      "type": "string",
+      "minLength": 44,
+      "maxLength": 44,
+      "pattern": "^[A-Za-z0-9+/]{43}=$"
+    }
+  }
+}

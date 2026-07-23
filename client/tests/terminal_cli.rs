@@ -47,7 +47,6 @@ fn automation_flags_are_documented_in_command_help() {
     assert!(upload.status.success());
     let upload_help = String::from_utf8_lossy(&upload.stdout);
     assert!(upload_help.contains("--confirm-authorized"));
-    assert!(upload_help.contains("--confirm-native-pixels-authorized"));
     assert!(upload_help.contains("--accept-policy-version"));
 }
 

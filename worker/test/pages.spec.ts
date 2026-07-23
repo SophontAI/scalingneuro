@@ -3,11 +3,16 @@ import { createExecutionContext } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
 import pages from "../src/pages";
 
+const assets: Fetcher = {
+  fetch: async () => new Response("asset"),
+  connect: () => {
+    throw new Error("Socket connections are not used by the static test asset binding");
+  },
+};
+
 const pagesEnv = {
   ...env,
-  ASSETS: {
-    fetch: async () => new Response("asset"),
-  } as unknown as Fetcher,
+  ASSETS: assets,
 };
 
 describe("Pages advanced-mode wrapper", () => {
@@ -51,5 +56,18 @@ describe("Pages advanced-mode wrapper", () => {
     );
     expect(response.status).toBe(404);
     expect(response.headers.get("cache-control")).toBe("no-store");
+  });
+
+  it("serves the API on loopback for complete local verification", async () => {
+    const response = await pages.fetch(
+      new Request("http://127.0.0.1:8788/health"),
+      pagesEnv,
+      createExecutionContext(),
+    );
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({
+      status: "ok",
+      service: "scaling-neuro-sync",
+    });
   });
 });

@@ -1,9 +1,9 @@
 [package]
 name = "neuro-sync"
-version = "0.4.0"
+version = "0.5.0"
 edition = "2024"
 rust-version = "1.85"
-description = "Privacy-first MR DICOM contribution client for Scaling Neuro"
+description = "Functional EPI DICOM sync client for Scaling Neuro"
 license = "Apache-2.0 OR MIT"
 repository = "https://github.com/SophontAI/scalingneuro"
 publish = false

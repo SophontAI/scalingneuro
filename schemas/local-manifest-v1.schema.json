@@ -1,16 +1,11 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://scalingneuro.com/schemas/local-manifest-v1.schema.json",
-  "title": "Scaling Neuro local preparation manifest v1",
-  "description": "The owner-only checkpoint created during local DICOM preparation and upload. It contains local paths and must never be uploaded, logged, or shared as a collaborator report.",
+  "title": "neuro-sync local functional EPI manifest",
   "type": "object",
-  "additionalProperties": false,
   "required": [
     "schema_version",
     "run_id",
-    "site_id",
-    "project_id",
-    "consent_policy_version",
     "client_version",
     "classifier_contract_version",
     "archive_contract_version",
@@ -20,288 +15,110 @@
     "bundles"
   ],
   "properties": {
-    "schema_version": { "const": "3.0.0" },
-    "run_id": {
-      "$ref": "https://scalingneuro.com/schemas/common-v1.schema.json#/$defs/uuid"
-    },
-    "site_id": {
-      "$ref": "https://scalingneuro.com/schemas/common-v1.schema.json#/$defs/uuid"
-    },
-    "project_id": {
-      "$ref": "https://scalingneuro.com/schemas/common-v1.schema.json#/$defs/uuid"
-    },
-    "consent_policy_version": {
-      "type": "string",
-      "minLength": 1,
-      "maxLength": 64,
-      "pattern": "^[A-Za-z0-9][A-Za-z0-9.+_-]*$"
-    },
-    "client_version": {
-      "type": "string",
-      "minLength": 1,
-      "maxLength": 64,
-      "pattern": "^(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)(?:-[A-Za-z0-9.-]+)?(?:\\+[A-Za-z0-9.-]+)?$"
-    },
-    "classifier_contract_version": { "const": "2.0.0" },
-    "archive_contract_version": { "const": "2.0.0" },
+    "schema_version": { "type": "string" },
+    "run_id": { "type": "string", "minLength": 1 },
+    "site_id": { "type": "string", "minLength": 1 },
+    "project_id": { "type": "string", "minLength": 1 },
+    "consent_policy_version": { "const": "open-epi-2.0.0" },
+    "client_version": { "type": "string" },
+    "classifier_contract_version": { "type": "string" },
+    "archive_contract_version": { "type": "string" },
     "metadata_policy": {
       "type": "object",
-      "additionalProperties": false,
       "required": ["policy_id", "policy_version"],
       "properties": {
-        "policy_id": { "const": "scaling-neuro.dicom-deidentification" },
+        "policy_id": {
+          "const": "scaling-neuro.dicom-deidentification"
+        },
         "policy_version": { "const": "2.0.0" }
       }
     },
-    "created_at": {
-      "$ref": "https://scalingneuro.com/schemas/common-v1.schema.json#/$defs/timestamp"
-    },
-    "source_summary": {
-      "$ref": "https://scalingneuro.com/schemas/common-v1.schema.json#/$defs/sourceSummary"
-    },
+    "created_at": { "type": "string", "format": "date-time" },
+    "source_summary": { "type": "object" },
     "bundles": {
       "type": "array",
-      "items": { "$ref": "#/$defs/manifestBundle" }
-    }
-  },
-  "$defs": {
-    "localObject": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["relative_key", "local_path", "size", "sha256"],
-      "properties": {
-        "relative_key": {
-          "type": "string",
-          "minLength": 1,
-          "maxLength": 512,
-          "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.(?:/|$))[A-Za-z0-9._~/-]+(?:\\.nii\\.gz|\\.json)$"
-        },
-        "local_path": {
-          "type": "string",
-          "minLength": 1,
-          "maxLength": 8192
-        },
-        "size": {
-          "type": "integer",
-          "minimum": 1,
-          "maximum": 5368709120
-        },
-        "sha256": {
-          "$ref": "https://scalingneuro.com/schemas/common-v1.schema.json#/$defs/sha256"
-        },
-        "uncompressed_sha256": {
-          "$ref": "https://scalingneuro.com/schemas/common-v1.schema.json#/$defs/sha256"
-        }
-      },
-      "allOf": [
-        {
-          "if": {
-            "type": "object",
-            "properties": {
-              "relative_key": {
-                "type": "string",
-                "pattern": "\\.nii\\.gz$"
-              }
-            },
-            "required": ["relative_key"]
+      "items": {
+        "type": "object",
+        "required": [
+          "bundle_id",
+          "series_id",
+          "subject_id",
+          "session_id",
+          "protocol_group_id",
+          "series_kind",
+          "archive_route",
+          "pixel_data_policy",
+          "archive",
+          "classification",
+          "qc"
+        ],
+        "properties": {
+          "bundle_id": {
+            "type": "string",
+            "pattern": "^[a-f0-9]{24}$"
           },
-          "then": {
-            "type": "object",
-            "properties": {
-              "uncompressed_sha256": {}
-            },
-            "required": ["uncompressed_sha256"]
-          }
-        },
-        {
-          "if": {
-            "type": "object",
-            "properties": {
-              "relative_key": {
-                "type": "string",
-                "pattern": "\\.json$"
-              }
-            },
-            "required": ["relative_key"]
+          "series_id": {
+            "type": "string",
+            "pattern": "^[a-f0-9]{24}$"
           },
-          "then": {
+          "subject_id": {
+            "type": "string",
+            "pattern": "^[a-f0-9]{24}$"
+          },
+          "session_id": {
+            "type": "string",
+            "pattern": "^[a-f0-9]{24}$"
+          },
+          "protocol_group_id": {
+            "type": "string",
+            "pattern": "^[a-f0-9]{24}$"
+          },
+          "series_kind": { "const": "functional_epi" },
+          "archive_route": { "const": "functional-epi-v1" },
+          "pixel_data_policy": {
+            "const": "scanner-native-not-defaced"
+          },
+          "archive": {
             "type": "object",
+            "required": [
+              "relative_key",
+              "size",
+              "sha256",
+              "format",
+              "dicom_instance_count",
+              "deidentification_profile",
+              "deidentification_profile_version"
+            ],
             "properties": {
-              "uncompressed_sha256": false
+              "relative_key": { "type": "string" },
+              "local_path": { "type": "string" },
+              "size": { "type": "integer", "minimum": 32 },
+              "sha256": {
+                "type": "string",
+                "pattern": "^[a-f0-9]{64}$"
+              },
+              "format": { "const": "dicom-tar-zstd" },
+              "dicom_instance_count": {
+                "type": "integer",
+                "minimum": 1
+              },
+              "deidentification_profile": {
+                "const": "scaling-neuro.dicom-deidentification"
+              },
+              "deidentification_profile_version": { "const": "2.0.0" }
             }
-          }
+          },
+          "classification": {
+            "type": "object",
+            "required": ["decision", "kind"],
+            "properties": {
+              "decision": { "const": "accepted" },
+              "kind": { "const": "functional_epi" }
+            }
+          },
+          "qc": { "type": "object" }
         }
-      ]
-    },
-    "localArchiveObject": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": [
-        "relative_key",
-        "local_path",
-        "size",
-        "sha256",
-        "format",
-        "dicom_instance_count",
-        "deidentification_profile",
-        "deidentification_profile_version"
-      ],
-      "properties": {
-        "relative_key": {
-          "type": "string",
-          "minLength": 38,
-          "maxLength": 38,
-          "pattern": "^[a-f0-9]{24}/dicom\\.tar\\.zst$"
-        },
-        "local_path": {
-          "type": "string",
-          "minLength": 1,
-          "maxLength": 8192
-        },
-        "size": {
-          "type": "integer",
-          "minimum": 32,
-          "maximum": 68719476736
-        },
-        "sha256": {
-          "$ref": "https://scalingneuro.com/schemas/common-v1.schema.json#/$defs/sha256"
-        },
-        "uncompressed_sha256": false,
-        "format": { "const": "dicom-tar-zstd" },
-        "dicom_instance_count": {
-          "type": "integer",
-          "minimum": 1,
-          "maximum": 500000
-        },
-        "deidentification_profile": {
-          "const": "scaling-neuro.dicom-deidentification"
-        },
-        "deidentification_profile_version": { "const": "2.0.0" }
       }
-    },
-    "manifestBundle": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": [
-        "bundle_id",
-        "series_id",
-        "subject_id",
-        "session_id",
-        "protocol_group_id",
-        "series_kind",
-        "processing_route",
-        "pixel_data_policy",
-        "source_dicom_count",
-        "classification",
-        "qc"
-      ],
-      "properties": {
-        "bundle_id": {
-          "$ref": "https://scalingneuro.com/schemas/common-v1.schema.json#/$defs/pseudonymId"
-        },
-        "series_id": {
-          "$ref": "https://scalingneuro.com/schemas/common-v1.schema.json#/$defs/pseudonymId"
-        },
-        "subject_id": {
-          "$ref": "https://scalingneuro.com/schemas/common-v1.schema.json#/$defs/pseudonymId"
-        },
-        "session_id": {
-          "$ref": "https://scalingneuro.com/schemas/common-v1.schema.json#/$defs/pseudonymId"
-        },
-        "protocol_group_id": {
-          "$ref": "https://scalingneuro.com/schemas/common-v1.schema.json#/$defs/pseudonymId"
-        },
-        "series_kind": {
-          "enum": [
-            "functional_epi",
-            "structural_t1w",
-            "structural_t2w",
-            "structural_other",
-            "diffusion",
-            "asl_perfusion",
-            "perfusion",
-            "fieldmap",
-            "sbref",
-            "localizer",
-            "derived_mr",
-            "other_mr"
-          ]
-        },
-        "processing_route": {
-          "enum": ["functional-epi-v1", "archive-verify-v1"]
-        },
-        "pixel_data_policy": { "const": "scanner-native-not-defaced" },
-        "nifti": {
-          "allOf": [
-            { "$ref": "#/$defs/localObject" },
-            {
-              "type": "object",
-              "properties": {
-                "relative_key": {
-                  "type": "string",
-                  "pattern": "\\.nii\\.gz$"
-                }
-              }
-            }
-          ]
-        },
-        "metadata": {
-          "allOf": [
-            { "$ref": "#/$defs/localObject" },
-            {
-              "type": "object",
-              "properties": {
-                "relative_key": {
-                  "type": "string",
-                  "pattern": "\\.json$"
-                },
-                "size": {
-                  "type": "integer",
-                  "maximum": 8388608
-                }
-              }
-            }
-          ]
-        },
-        "archive": {
-          "$ref": "#/$defs/localArchiveObject"
-        },
-        "source_dicom_count": {
-          "type": "integer",
-          "minimum": 1,
-          "maximum": 500000
-        },
-        "classification": {
-          "$ref": "https://scalingneuro.com/schemas/common-v1.schema.json#/$defs/classification"
-        },
-        "qc": {
-          "$ref": "https://scalingneuro.com/schemas/common-v1.schema.json#/$defs/qualityControl"
-        }
-      },
-      "oneOf": [
-        {
-          "required": ["nifti", "metadata"],
-          "properties": { "nifti": {}, "metadata": {}, "archive": false }
-        },
-        {
-          "required": ["archive"],
-          "properties": { "archive": {}, "nifti": false, "metadata": false }
-        }
-      ],
-      "allOf": [
-        {
-          "if": {
-            "properties": { "series_kind": { "const": "functional_epi" } },
-            "required": ["series_kind"]
-          },
-          "then": {
-            "properties": { "processing_route": { "const": "functional-epi-v1" } }
-          },
-          "else": {
-            "properties": { "processing_route": { "const": "archive-verify-v1" } }
-          }
-        }
-      ]
     }
   }
 }

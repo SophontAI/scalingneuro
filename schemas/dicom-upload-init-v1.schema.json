@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://scalingneuro.com/schemas/dicom-upload-init-v1.schema.json",
-  "title": "Scaling Neuro deidentified DICOM series upload request v1",
+  "title": "Scaling Neuro functional EPI upload request v1",
   "type": "object",
   "additionalProperties": false,
   "required": ["format", "client_version", "deidentification", "series"],
@@ -16,14 +16,16 @@
       "additionalProperties": false,
       "required": ["policy_id", "policy_version"],
       "properties": {
-        "policy_id": { "const": "scaling-neuro.dicom-deidentification" },
-        "policy_version": { "enum": ["1.0.0", "2.0.0"] }
+        "policy_id": {
+          "const": "scaling-neuro.dicom-deidentification"
+        },
+        "policy_version": { "const": "2.0.0" }
       }
     },
     "series": {
       "type": "array",
       "minItems": 1,
-      "maxItems": 8,
+      "maxItems": 1,
       "items": {
         "type": "object",
         "additionalProperties": false,
@@ -34,35 +36,42 @@
           "session_id",
           "protocol_group_id",
           "dicom_count",
+          "series_kind",
+          "archive_route",
+          "pixel_data_policy",
           "archive"
         ],
         "properties": {
-          "series_archive_id": { "$ref": "https://scalingneuro.com/schemas/common-v1.schema.json#/$defs/pseudonymId" },
-          "series_id": { "$ref": "https://scalingneuro.com/schemas/common-v1.schema.json#/$defs/pseudonymId" },
-          "subject_id": { "$ref": "https://scalingneuro.com/schemas/common-v1.schema.json#/$defs/pseudonymId" },
-          "session_id": { "$ref": "https://scalingneuro.com/schemas/common-v1.schema.json#/$defs/pseudonymId" },
-          "protocol_group_id": { "$ref": "https://scalingneuro.com/schemas/common-v1.schema.json#/$defs/pseudonymId" },
-          "dicom_count": { "type": "integer", "minimum": 1, "maximum": 500000 },
-          "series_kind": {
-            "enum": [
-              "functional_epi",
-              "structural_t1w",
-              "structural_t2w",
-              "structural_other",
-              "diffusion",
-              "asl_perfusion",
-              "perfusion",
-              "fieldmap",
-              "sbref",
-              "localizer",
-              "derived_mr",
-              "other_mr"
-            ]
+          "series_archive_id": {
+            "type": "string",
+            "pattern": "^[a-f0-9]{24}$"
           },
-          "processing_route": {
-            "enum": ["functional-epi-v1", "archive-verify-v1"]
+          "series_id": {
+            "type": "string",
+            "pattern": "^[a-f0-9]{24}$"
           },
-          "pixel_data_policy": { "const": "scanner-native-not-defaced" },
+          "subject_id": {
+            "type": "string",
+            "pattern": "^[a-f0-9]{24}$"
+          },
+          "session_id": {
+            "type": "string",
+            "pattern": "^[a-f0-9]{24}$"
+          },
+          "protocol_group_id": {
+            "type": "string",
+            "pattern": "^[a-f0-9]{24}$"
+          },
+          "dicom_count": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 500000
+          },
+          "series_kind": { "const": "functional_epi" },
+          "archive_route": { "const": "functional-epi-v1" },
+          "pixel_data_policy": {
+            "const": "scanner-native-not-defaced"
+          },
           "archive": {
             "type": "object",
             "additionalProperties": false,
@@ -71,77 +80,21 @@
               "format": { "const": "dicom-tar-zstd" },
               "relative_key": {
                 "type": "string",
-                "minLength": 1,
-                "maxLength": 512,
                 "pattern": "^[a-f0-9]{24}/dicom\\.tar\\.zst$"
               },
-              "size": { "type": "integer", "minimum": 32, "maximum": 68719476736 },
-              "sha256": { "$ref": "https://scalingneuro.com/schemas/common-v1.schema.json#/$defs/sha256" }
-            }
-          }
-        },
-        "allOf": [
-          {
-            "if": {
-              "type": "object",
-              "properties": { "series_kind": { "const": "functional_epi" } },
-              "required": ["series_kind"]
-            },
-            "then": {
-              "properties": { "processing_route": { "const": "functional-epi-v1" } }
-            },
-            "else": {
-              "properties": { "processing_route": { "const": "archive-verify-v1" } }
-            }
-          }
-        ]
-      }
-    }
-  },
-  "allOf": [
-    {
-      "if": {
-        "type": "object",
-        "properties": {
-          "deidentification": {
-            "type": "object",
-            "properties": { "policy_version": { "const": "1.0.0" } },
-            "required": ["policy_version"]
-          }
-        },
-        "required": ["deidentification"]
-      },
-      "then": {
-        "properties": {
-          "series": {
-            "type": "array",
-            "items": {
-              "type": "object",
-              "properties": {
-                "series_kind": false,
-                "processing_route": false,
-                "pixel_data_policy": false
+              "size": {
+                "type": "integer",
+                "minimum": 32,
+                "maximum": 68719476736
+              },
+              "sha256": {
+                "type": "string",
+                "pattern": "^[a-f0-9]{64}$"
               }
             }
           }
         }
-      },
-      "else": {
-        "properties": {
-          "series": {
-            "type": "array",
-            "items": {
-              "type": "object",
-              "properties": {
-                "series_kind": {},
-                "processing_route": {},
-                "pixel_data_policy": {}
-              },
-              "required": ["series_kind", "processing_route", "pixel_data_policy"]
-            }
-          }
-        }
       }
     }
-  ]
+  }
 }

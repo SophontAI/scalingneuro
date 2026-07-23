@@ -1,107 +1,104 @@
-/* ==========================================================================
-   Scaling Neuro: site interactions
-   ========================================================================== */
+const $ = (selector, root = document) => root.querySelector(selector);
+const $$ = (selector, root = document) => [...root.querySelectorAll(selector)];
 
-const $  = (s, r = document) => r.querySelector(s);
-const $$ = (s, r = document) => [...r.querySelectorAll(s)];
-
-/* ---------- nav scroll state ---------- */
-const nav = $('#nav');
+const nav = $("#nav");
 const navLinks = $$('.nav-links a[href^="#"]');
-const navSections = navLinks
-  .map((link) => ({ link, section: $(link.getAttribute('href')) }))
-  .filter((item) => item.section);
-const onScroll = () => {
-  nav.classList.toggle('scrolled', window.scrollY > 24);
-  const marker = window.scrollY + window.innerHeight * 0.34;
-  let current = navSections[0];
-  navSections.forEach((item) => { if (item.section.offsetTop <= marker) current = item; });
-  navLinks.forEach((link) => {
-    const active = link === current?.link;
-    link.classList.toggle('is-current', active);
-    if (active) link.setAttribute('aria-current', 'location');
-    else link.removeAttribute('aria-current');
-  });
-};
-window.addEventListener('scroll', onScroll, { passive: true });
-onScroll();
+const sections = navLinks
+  .map((link) => ({ link, section: $(link.getAttribute("href")) }))
+  .filter(({ section }) => section);
 
-/* ---------- reveal on scroll ---------- */
-const io = new IntersectionObserver((entries) => {
-  entries.forEach((entry) => {
-    if (entry.isIntersecting) { entry.target.classList.add('in-view'); io.unobserve(entry.target); }
-  });
-}, { threshold: 0.16 });
-$$('.reveal').forEach((el) => io.observe(el));
-
-/* ---------- terminal tabs ---------- */
-const terminalTabs = $$('.term-tab');
-function activateTerminalTab(tab, moveFocus = false) {
-  terminalTabs.forEach((item) => {
-    const active = item === tab;
-    item.classList.toggle('is-active', active);
-    item.setAttribute('aria-selected', String(active));
-    item.tabIndex = active ? 0 : -1;
-  });
-  $$('.term-pane').forEach((pane) => pane.classList.toggle('is-active', pane.dataset.pane === tab.dataset.tab));
-  if (moveFocus) tab.focus();
+function updateNavigation() {
+  nav?.classList.toggle("scrolled", window.scrollY > 20);
+  const marker = window.scrollY + window.innerHeight * 0.35;
+  let current = sections[0];
+  for (const item of sections) {
+    if (item.section.offsetTop <= marker) current = item;
+  }
+  for (const link of navLinks) {
+    link.classList.toggle("is-current", link === current?.link);
+  }
 }
 
-terminalTabs.forEach((tab, index) => {
-  tab.addEventListener('click', () => activateTerminalTab(tab));
-  tab.addEventListener('keydown', (event) => {
-    let next = index;
-    if (event.key === 'ArrowRight') next = (index + 1) % terminalTabs.length;
-    else if (event.key === 'ArrowLeft') next = (index - 1 + terminalTabs.length) % terminalTabs.length;
-    else if (event.key === 'Home') next = 0;
-    else if (event.key === 'End') next = terminalTabs.length - 1;
-    else return;
-    event.preventDefault();
-    activateTerminalTab(terminalTabs[next], true);
-  });
-});
+window.addEventListener("scroll", updateNavigation, { passive: true });
+updateNavigation();
 
-/* ---------- toast ---------- */
 let toastTimer;
-const toast = (msg) => {
-  const t = $('#toast');
-  t.textContent = msg;
-  t.classList.add('show');
-  clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => t.classList.remove('show'), 2200);
-};
+function showToast(message) {
+  const element = $("#toast");
+  if (!element) return;
+  element.textContent = message;
+  element.classList.add("show");
+  window.clearTimeout(toastTimer);
+  toastTimer = window.setTimeout(() => element.classList.remove("show"), 2200);
+}
 
-/* ---------- copy install command ---------- */
-$('#copyBtn')?.addEventListener('click', async () => {
-  const cmd = /Windows/i.test(navigator.userAgent)
-    ? 'irm https://scalingneuro.com/install.ps1 | iex'
-    : 'curl -fsSL https://scalingneuro.com/install.sh | sh';
-  try { await navigator.clipboard.writeText(cmd); toast('Install command copied'); }
-  catch { toast('Copy failed; use the command shown above'); }
+const installCommand = /Windows/i.test(navigator.userAgent)
+  ? "irm https://scalingneuro.com/install.ps1 | iex"
+  : "curl -fsSL https://scalingneuro.com/install.sh | sh";
+const installCommandElement = $("#installCommand");
+const installPlatform = $("#installPlatform");
+if (installCommandElement) installCommandElement.textContent = installCommand;
+if (installPlatform && /Windows/i.test(navigator.userAgent)) {
+  installPlatform.textContent = "# Windows PowerShell";
+}
+
+$("#copyBtn")?.addEventListener("click", async () => {
+  try {
+    await navigator.clipboard.writeText(installCommand);
+    showToast("Install command copied");
+  } catch {
+    showToast("Copy failed. Select the command above.");
+  }
 });
 
-/* ---------- count-up figures ---------- */
-const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
-if (!reducedMotion) {
-  const fmt = new Intl.NumberFormat('en-US');
-  const countUp = (el) => {
-    const target = +el.dataset.count;
-    const prefix = el.dataset.prefix || '';
-    const suffix = el.dataset.suffix || '';
-    const dur = 1500; let start = null;
-    const step = (t) => {
-      if (start === null) start = t;
-      const p = Math.min((t - start) / dur, 1);
-      const eased = 1 - Math.pow(1 - p, 3);
-      el.textContent = prefix + fmt.format(Math.round(target * eased)) + suffix;
-      if (p < 1) requestAnimationFrame(step);
-    };
-    requestAnimationFrame(step);
+const accessForm = $("#accessForm");
+const accessResult = $("#accessResult");
+const formStatus = $("#formStatus");
+let issuedAccessToken = "";
+
+accessForm?.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const submit = accessForm.querySelector('button[type="submit"]');
+  const fields = new FormData(accessForm);
+  const body = {
+    contact_name: fields.get("contact_name"),
+    contact_email: fields.get("contact_email"),
+    institution_name: fields.get("institution_name"),
+    lab_name: fields.get("lab_name"),
+    participation_commitment: fields.get("participation_commitment") === "on",
   };
-  const countObs = new IntersectionObserver((entries) => {
-    entries.forEach((entry) => {
-      if (entry.isIntersecting) { countUp(entry.target); countObs.unobserve(entry.target); }
+
+  submit.disabled = true;
+  formStatus.textContent = "Creating archive access…";
+  try {
+    const response = await fetch("/v1/archive-access", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body),
     });
-  }, { threshold: 0.6 });
-  $$('[data-count]').forEach((el) => countObs.observe(el));
-}
+    const payload = await response.json();
+    if (!response.ok) {
+      throw new Error(payload?.error?.message || "Access could not be created");
+    }
+    issuedAccessToken = payload.access_token;
+    $("#accessToken").textContent = issuedAccessToken;
+    accessForm.hidden = true;
+    accessResult.hidden = false;
+    accessResult.scrollIntoView({ behavior: "smooth", block: "center" });
+  } catch (error) {
+    formStatus.textContent =
+      error instanceof Error ? error.message : "Access could not be created";
+  } finally {
+    submit.disabled = false;
+  }
+});
+
+$("#copyToken")?.addEventListener("click", async () => {
+  if (!issuedAccessToken) return;
+  try {
+    await navigator.clipboard.writeText(issuedAccessToken);
+    showToast("Archive token copied");
+  } catch {
+    showToast("Copy failed. Select the token manually.");
+  }
+});

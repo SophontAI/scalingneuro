@@ -7,7 +7,7 @@ $assets = Join-Path $testRoot "assets"
 $stage = Join-Path $testRoot "stage"
 $rendered = Join-Path $testRoot "rendered"
 $version = "9.8.7"
-$packageStem = "neuro-sync-v$version-windows-x86_64-UNSIGNED-PILOT"
+$packageStem = "neuro-sync-v$version-windows-x86_64"
 $package = "$packageStem.zip"
 
 try {

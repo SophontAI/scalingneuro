@@ -1,8 +1,8 @@
 {
   "registration_open": true,
-  "project_name": "Scaling Neuro public MRI contribution",
-  "consent_policy_version": "open-mri-1.0.0",
+  "project_name": "Scaling Neuro shared EPI archive",
+  "consent_policy_version": "open-epi-2.0.0",
   "policy_url": "https://scalingneuro.com/docs/contribution-policy",
   "self_service_quota_bytes": null,
-  "minimum_client_version": "0.2.8"
+  "minimum_client_version": "0.5.0"
 }

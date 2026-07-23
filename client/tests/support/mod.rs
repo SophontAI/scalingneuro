@@ -1514,40 +1514,6 @@ fn csa2(tags: &[(&str, &str, Vec<&str>)]) -> Vec<u8> {
     output
 }
 
-#[allow(dead_code)]
-pub fn write_nifti_epi(path: &Path) {
-    let dimensions = [4_i16, 8, 8, 8, 300, 1, 1, 1];
-    let voxel_count = 8 * 8 * 8 * 300;
-    let mut bytes = vec![0_u8; 352 + voxel_count * 4];
-    bytes[0..4].copy_from_slice(&348_i32.to_le_bytes());
-    for (index, value) in dimensions.iter().enumerate() {
-        bytes[40 + index * 2..42 + index * 2].copy_from_slice(&value.to_le_bytes());
-    }
-    bytes[70..72].copy_from_slice(&16_i16.to_le_bytes());
-    bytes[72..74].copy_from_slice(&32_i16.to_le_bytes());
-    for (index, value) in [1.0_f32, 2.0, 2.0, 2.0, 0.8].iter().enumerate() {
-        bytes[76 + index * 4..80 + index * 4].copy_from_slice(&value.to_le_bytes());
-    }
-    bytes[108..112].copy_from_slice(&352_f32.to_le_bytes());
-    bytes[112..116].copy_from_slice(&1_f32.to_le_bytes());
-    bytes[123] = 10; // millimeters + seconds
-    bytes[254..256].copy_from_slice(&1_i16.to_le_bytes());
-    for (index, value) in [
-        2.0_f32, 0.0, 0.0, -7.0, 0.0, 2.0, 0.0, -7.0, 0.0, 0.0, 2.0, -7.0,
-    ]
-    .iter()
-    .enumerate()
-    {
-        bytes[280 + index * 4..284 + index * 4].copy_from_slice(&value.to_le_bytes());
-    }
-    bytes[148..167].copy_from_slice(b"SYNTHETIC TEXT LEAK");
-    bytes[344..348].copy_from_slice(b"n+1\0");
-    for (index, chunk) in bytes[352..].chunks_exact_mut(4).enumerate() {
-        chunk.copy_from_slice(&((index % 251) as f32).to_le_bytes());
-    }
-    fs::write(path, bytes).unwrap();
-}
-
 fn text_element(output: &mut Vec<u8>, group: u16, item: u16, vr: &[u8; 2], value: &str) {
     let mut bytes = value.as_bytes().to_vec();
     if bytes.len() % 2 != 0 {

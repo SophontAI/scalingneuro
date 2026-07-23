@@ -27,7 +27,7 @@ fn synthetic_part10_files_group_and_classify_as_functional_epi() {
 }
 
 #[test]
-fn every_supported_privacy_clearable_mr_kind_is_accepted() {
+fn only_functional_epi_is_accepted() {
     let cases = [
         (FixturePurpose::FunctionalEpi, "functional_epi"),
         (FixturePurpose::StructuralT1w, "structural_t1w"),
@@ -41,7 +41,7 @@ fn every_supported_privacy_clearable_mr_kind_is_accepted() {
         (FixturePurpose::DerivedMr, "derived_mr"),
         (FixturePurpose::OtherMr, "other_mr"),
     ];
-    for (purpose, expected_kind) in cases {
+    for (purpose, _detected_kind) in cases {
         let directory = tempdir().unwrap();
         support::write_functional_epi_fixture(
             &directory.path().join("image.dcm"),
@@ -59,14 +59,22 @@ fn every_supported_privacy_clearable_mr_kind_is_accepted() {
         );
         let discovery = discover(directory.path()).unwrap();
         let classification = classify_header(&discovery.series[0]);
-        assert_eq!(
-            classification.decision,
-            ClassificationDecision::Accepted,
-            "purpose {purpose:?}: kind={} evidence={:?}",
-            classification.kind,
-            classification.evidence
-        );
-        assert_eq!(classification.kind, expected_kind, "purpose {purpose:?}");
+        if purpose == FixturePurpose::FunctionalEpi {
+            assert_eq!(
+                classification.decision,
+                ClassificationDecision::Accepted,
+                "purpose {purpose:?}: kind={} evidence={:?}",
+                classification.kind,
+                classification.evidence
+            );
+            assert_eq!(classification.kind, "functional_epi");
+        } else {
+            assert_ne!(
+                classification.decision,
+                ClassificationDecision::Accepted,
+                "purpose {purpose:?} must stay local"
+            );
+        }
     }
 }
 

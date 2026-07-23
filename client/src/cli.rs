@@ -6,14 +6,13 @@ use clap::{Parser, Subcommand};
 use crate::{
     DEFAULT_API_URL,
     pipeline::{ContributorDetails, Runtime},
-    state::PublicRunStatus,
 };
 
 #[derive(Parser)]
 #[command(
     name = "neuro-sync",
     version,
-    about = "Share approved MR DICOM scans with Scaling Neuro",
+    about = "Sync approved functional EPI DICOMs with Scaling Neuro",
     long_about = None,
     subcommand_precedence_over_arg = true
 )]
@@ -32,7 +31,7 @@ pub struct Cli {
 pub enum Command {
     /// Run the guided terminal setup and folder-sync flow.
     Setup,
-    /// Register this machine for open public MR DICOM contribution.
+    /// Register this machine for shared functional EPI contribution.
     Register {
         #[arg(long)]
         email: String,
@@ -54,15 +53,6 @@ pub enum Command {
         #[arg(long)]
         device_name: Option<String>,
     },
-    /// Enroll this machine using a one-time project invite.
-    #[command(hide = true)]
-    Enroll {
-        invite: String,
-        #[arg(long, default_value = DEFAULT_API_URL)]
-        server: String,
-        #[arg(long)]
-        device_name: Option<String>,
-    },
     /// Sync a DICOM folder, automatically continuing any checkpointed work.
     #[command(alias = "run")]
     Upload {
@@ -73,9 +63,6 @@ pub enum Command {
         /// Confirm the selected scans are institutionally authorized for contribution.
         #[arg(long)]
         confirm_authorized: bool,
-        /// Confirm authorization to transfer scanner-native pixels without defacing.
-        #[arg(long)]
-        confirm_native_pixels_authorized: bool,
         /// Exact new policy version accepted when this workstation's policy is out of date.
         #[arg(long, value_name = "VERSION")]
         accept_policy_version: Option<String>,
@@ -149,25 +136,10 @@ pub async fn execute(cli: Cli) -> Result<()> {
             println!("contribution policy: {}", config.consent_policy_version);
             Ok(())
         }
-        Some(Command::Enroll {
-            invite,
-            server,
-            device_name,
-        }) => {
-            let device_name = device_name.unwrap_or_else(default_device_name);
-            let config = runtime.enroll(invite, &server, device_name).await?;
-            println!(
-                "enrolled for {} ({})",
-                config.project_name, config.project_id
-            );
-            println!("contribution policy: {}", config.consent_policy_version);
-            Ok(())
-        }
         Some(Command::Upload {
             folder,
             dry_run,
             confirm_authorized,
-            confirm_native_pixels_authorized,
             accept_policy_version,
         }) => {
             let folder = folder
@@ -179,8 +151,7 @@ pub async fn execute(cli: Cli) -> Result<()> {
             if !dry_run {
                 let mut config = crate::config::ClientConfig::load(&runtime.paths)?;
                 let contribution = runtime.contribution_info(&config.api_url).await?;
-                let automated_authorization =
-                    confirm_authorized && confirm_native_pixels_authorized;
+                let automated_authorization = confirm_authorized;
                 validate_explicit_policy_version(
                     accept_policy_version.as_deref(),
                     &contribution.consent_policy_version,
@@ -217,32 +188,10 @@ pub async fn execute(cli: Cli) -> Result<()> {
             let run = runtime
                 .run_record(run_id.as_deref())?
                 .context("no matching run was found")?;
-            let dicom = match runtime.dicom_processing_status(&run).await {
-                Ok(status) => status,
-                Err(error) => {
-                    if !json {
-                        println!(
-                            "processing: temporarily unavailable ({})",
-                            error.root_cause()
-                        );
-                    }
-                    None
-                }
-            };
             if json {
-                #[derive(serde::Serialize)]
-                struct StatusOutput {
-                    #[serde(flatten)]
-                    local: PublicRunStatus,
-                    #[serde(skip_serializing_if = "Option::is_none")]
-                    dicom: Option<crate::pipeline::DicomProcessingStatus>,
-                }
                 println!(
                     "{}",
-                    serde_json::to_string_pretty(&StatusOutput {
-                        local: PublicRunStatus::from(&run),
-                        dicom,
-                    })?
+                    serde_json::to_string_pretty(&crate::state::PublicRunStatus::from(&run))?
                 );
             } else {
                 println!("run: {}", run.id);
@@ -257,39 +206,6 @@ pub async fn execute(cli: Cli) -> Result<()> {
                 );
                 if let Some(error) = run.error_code {
                     println!("error: {error}");
-                }
-                if let Some(dicom) = dicom {
-                    println!(
-                        "receipt: {} DICOM series received",
-                        dicom.receipt_received_series
-                    );
-                    println!("processing: {}", dicom.status);
-                    if dicom.processing_total_series > 0 {
-                        println!(
-                            "cluster: {} queued, {} processing, {} processed, {} failed, {} purged",
-                            dicom.queued_series,
-                            dicom.processing_series,
-                            dicom.processed_series,
-                            dicom.failed_series,
-                            dicom.purged_series
-                        );
-                        println!(
-                            "routes: {} functional EPI, {} archive-only",
-                            dicom.functional_epi_series, dicom.archive_only_series
-                        );
-                        if dicom.repairable_series > 0 {
-                            println!(
-                                "repair: {} exact stored series can be repaired; rerun the same folder command",
-                                dicom.repairable_series
-                            );
-                        }
-                        if dicom.archive_only_series > 0 {
-                            println!(
-                                "archive verification: {}/{} complete",
-                                dicom.archive_verified_series, dicom.archive_only_series
-                            );
-                        }
-                    }
                 }
             }
             Ok(())
@@ -365,12 +281,12 @@ mod tests {
 
     #[test]
     fn policy_acceptance_must_name_the_exact_advertised_version() {
-        assert!(validate_explicit_policy_version(None, "open-mri-1.0.0", true).is_err());
+        assert!(validate_explicit_policy_version(None, "open-epi-2.0.0", true).is_err());
         assert!(
-            validate_explicit_policy_version(Some("open-epi-1.0.0"), "open-mri-1.0.0", true)
+            validate_explicit_policy_version(Some("open-mri-1.0.0"), "open-epi-2.0.0", true)
                 .is_err()
         );
-        validate_explicit_policy_version(Some("open-mri-1.0.0"), "open-mri-1.0.0", true).unwrap();
-        validate_explicit_policy_version(None, "open-mri-1.0.0", false).unwrap();
+        validate_explicit_policy_version(Some("open-epi-2.0.0"), "open-epi-2.0.0", true).unwrap();
+        validate_explicit_policy_version(None, "open-epi-2.0.0", false).unwrap();
     }
 }
