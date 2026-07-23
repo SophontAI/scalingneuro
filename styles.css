@@ -271,6 +271,33 @@ button, input { font: inherit; }
   letter-spacing: .06em;
   text-transform: uppercase;
 }
+.scaling-plot { padding-top: 24px; border-top: 1px solid var(--line-soft); }
+.scaling-plot svg { display: block; width: 100%; height: auto; overflow: visible; }
+.plot-grid { fill: none; stroke: var(--line-soft); stroke-width: 1; }
+.plot-axis { fill: none; stroke: color-mix(in srgb, var(--ink) 45%, transparent); stroke-width: 1; }
+.plot-curve { fill: none; stroke: var(--accent); stroke-width: 2.5; }
+.plot-forecast {
+  fill: none;
+  stroke: var(--accent);
+  stroke-width: 2.5;
+  stroke-dasharray: 7 7;
+}
+.plot-frontier {
+  fill: none;
+  stroke: var(--ink-3);
+  stroke-width: 1;
+  stroke-dasharray: 2 5;
+  opacity: .6;
+}
+.plot-points { fill: var(--paper); stroke: var(--ink); stroke-width: 1.5; }
+.plot-current { fill: var(--ink); }
+.plot-future { fill: var(--paper); stroke: var(--accent); stroke-width: 2; }
+.scaling-plot text {
+  fill: var(--ink-3);
+  font: 500 8px var(--mono);
+  letter-spacing: .05em;
+}
+.scaling-plot text.plot-note { fill: var(--accent); letter-spacing: .1em; }
 .section-heading { max-width: 760px; }
 .steps {
   display: grid;

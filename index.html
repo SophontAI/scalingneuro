@@ -19,7 +19,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=EB+Garamond:ital,wght@0,400;0,500;0,600;1,500&amp;family=JetBrains+Mono:wght@400;500&amp;display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="/styles.css?v=25" />
+  <link rel="stylesheet" href="/styles.css?v=26" />
   <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
 </head>
 <body>
@@ -80,7 +80,10 @@
               The public baseline is the estimate across freely accessible archives in
               <a href="https://arxiv.org/abs/2411.18526" target="_blank" rel="noopener">NeuroAI for AI Safety</a>.
               The network bar is 25 centers × 25 hours/week × 52 weeks. The shareable
-              total would be lower after institutional, consent, and privacy review.
+              total would be lower after institutional, consent, and privacy review. The
+              dotted curve extends the data-scaling trend reported in
+              <a href="https://arxiv.org/abs/2510.13768" target="_blank" rel="noopener">CortexMAE</a>;
+              it is not a performance projection.
             </p>
           </details>
         </div>
@@ -109,6 +112,25 @@
               </div>
             </div>
             <p>Each cell represents one center-year</p>
+          </div>
+          <div class="scaling-plot" role="img" aria-label="A CortexMAE-style scaling curve shows model error falling as training data grows: a solid line over public data today, extended by a dotted line toward the lower error that coordinated sharing could make possible.">
+            <svg viewBox="0 0 520 168" aria-hidden="true">
+              <path class="plot-grid" d="M28 24H504M28 74H504M28 124H504" />
+              <path class="plot-axis" d="M28 12V136H510" />
+              <path class="plot-curve" d="M44 33C108 56 174 80 270 100" />
+              <path class="plot-forecast" d="M270 100C344 115 419 130 492 141" />
+              <path class="plot-frontier" d="M270 17V136" />
+              <g class="plot-points">
+                <circle cx="52" cy="36" r="4" />
+                <circle cx="112" cy="57" r="4" />
+                <circle cx="178" cy="81" r="4" />
+                <circle cx="270" cy="100" r="6" class="plot-current" />
+              </g>
+              <circle cx="492" cy="141" r="5" class="plot-future" />
+              <text x="42" y="156">PUBLIC DATA</text>
+              <text x="330" y="156">SHARED INSTITUTIONAL DATA</text>
+              <text class="plot-note" x="158" y="30">MODEL ERROR ↓</text>
+            </svg>
           </div>
         </figure>
       </div>
@@ -143,9 +165,12 @@
           </article>
         </div>
         <p class="boundary">
-          <strong>Functional EPI only.</strong> Structural scans, localizers, diffusion,
-          field maps, secondary captures, and ambiguous series stay on the workstation.
-          Scaling Neuro does not deface images, convert DICOMs to NIfTI, or run preprocessing.
+          <strong>Functional EPI only.</strong> This scope is deliberate: functional EPI
+          is comparatively low resolution and typically lacks the fine-grained facial
+          anatomy found in structural MRI, avoiding the defacing step normally used for
+          structural images. Structural scans, localizers, diffusion, field maps, secondary
+          captures, and ambiguous series stay on the workstation. Identifying metadata is
+          still removed locally; Scaling Neuro does not convert or preprocess the scans.
         </p>
       </div>
     </section>
