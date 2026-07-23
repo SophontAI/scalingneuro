@@ -19,7 +19,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=EB+Garamond:ital,wght@0,400;0,500;0,600;1,500&amp;family=JetBrains+Mono:wght@400;500&amp;display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="/styles.css?v=26" />
+  <link rel="stylesheet" href="/styles.css?v=27" />
   <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
 </head>
 <body>
@@ -165,13 +165,40 @@
           </article>
         </div>
         <p class="boundary">
-          <strong>Functional EPI only.</strong> This scope is deliberate: functional EPI
-          is comparatively low resolution and typically lacks the fine-grained facial
-          anatomy found in structural MRI, avoiding the defacing step normally used for
-          structural images. Structural scans, localizers, diffusion, field maps, secondary
-          captures, and ambiguous series stay on the workstation. Identifying metadata is
-          still removed locally; Scaling Neuro does not convert or preprocess the scans.
+          <strong>Functional EPI only.</strong> By only uploading raw functional scans that
+          have identifiable metadata removed locally, we avoid all the friction associated
+          with uploading brain scans. No task labels mean your study can't be scooped. No
+          structurals mean no worrying about defacing. No BIDS* means no need to describe
+          anything at all other than pointing the script to your folder of DICOMS.
+          <span class="boundary-note">*No disrespect to BIDS, which is an amazing way to
+          organize brain data &amp; is incredibly important to the field!</span>
         </p>
+
+        <aside class="funding-fit" aria-labelledby="funding-fit-title">
+          <div>
+            <p class="eyebrow">For NIH- and NSF-funded studies</p>
+            <h3 id="funding-fit-title">Turn a sharing plan into a repeatable lab workflow.</h3>
+          </div>
+          <div class="funding-copy">
+            <p>
+              NIH requires covered research that generates scientific data to submit and
+              follow a Data Management and Sharing Plan. NSF proposals likewise require a
+              Data Management and Sharing Plan describing how research outputs will be
+              managed and shared.
+            </p>
+            <p>
+              Scaling Neuro gives MRI-producing labs a concrete way to carry out the
+              functional-imaging portion of an institutionally approved plan: deidentify
+              eligible EPI locally, create a durable contribution record, and share the
+              resulting DICOM archive. It supports, but does not replace, consent, IRB
+              review, repository requirements, or award-specific guidance.
+            </p>
+            <div class="funding-links">
+              <a href="https://grants.nih.gov/policy-and-compliance/policy-topics/sharing-policies/dms/policy-overview" target="_blank" rel="noopener">NIH DMS policy <span aria-hidden="true">→</span></a>
+              <a href="https://www.nsf.gov/funding/data-management-plan" target="_blank" rel="noopener">NSF DMS guidance <span aria-hidden="true">→</span></a>
+            </div>
+          </div>
+        </aside>
       </div>
     </section>
 
