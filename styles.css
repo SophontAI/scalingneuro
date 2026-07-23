@@ -297,7 +297,11 @@ button, input { font: inherit; }
   font: 500 8px var(--mono);
   letter-spacing: .05em;
 }
-.scaling-plot text.plot-y-label { letter-spacing: .1em; }
+.scaling-plot text.plot-y-label {
+  fill: var(--ink-2);
+  font-size: 9px;
+  letter-spacing: .08em;
+}
 .section-heading { max-width: 760px; }
 .steps {
   display: grid;
