@@ -15,8 +15,85 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  classify:
+    name: Classify changed files
+    runs-on: ubuntu-latest
+    outputs:
+      full_validation: ${{ steps.scope.outputs.full_validation }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - id: scope
+        name: Choose validation scope
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BEFORE_SHA: ${{ github.event.before }}
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          set -euo pipefail
+
+          if [[ "$EVENT_NAME" == "workflow_dispatch" ]]; then
+            echo "full_validation=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          if [[ "$EVENT_NAME" == "pull_request" ]]; then
+            base="$PR_BASE_SHA"
+          else
+            base="$BEFORE_SHA"
+          fi
+
+          if [[ -z "$base" || "$base" =~ ^0+$ ]] ||
+             ! git cat-file -e "$base^{commit}" 2>/dev/null; then
+            echo "full_validation=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          site_only=true
+          changed_count=0
+          while IFS= read -r path; do
+            [[ -n "$path" ]] || continue
+            changed_count=$((changed_count + 1))
+            case "$path" in
+              index.html|404.html|styles.css|app.js|favicon.svg|og.png|docs/contribution-policy.html|downloads/index.html)
+                ;;
+              *)
+                site_only=false
+                ;;
+            esac
+          done < <(git diff --name-only "$base" "$GITHUB_SHA")
+
+          if [[ "$changed_count" -gt 0 && "$site_only" == "true" ]]; then
+            echo "full_validation=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "full_validation=true" >> "$GITHUB_OUTPUT"
+          fi
+
+  validate-site:
+    name: Validate website
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: worker/package-lock.json
+      - run: npm ci --prefix worker
+      - name: Build and validate the website
+        run: |
+          ./scripts/test-workflow-triggers.sh
+          ./scripts/build-site.sh
+          node --check app.js
+          node --check dist/_worker.js
+          git diff --check
+
   validate:
     name: Validate website, service, and client
+    needs: classify
+    if: needs.classify.outputs.full_validation == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -57,6 +134,8 @@ jobs:
 
   validate-unix-installers:
     name: Validate installer on ${{ matrix.os }}
+    needs: classify
+    if: needs.classify.outputs.full_validation == 'true'
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -68,6 +147,8 @@ jobs:
 
   validate-windows:
     name: Validate Windows privacy and installer
+    needs: classify
+    if: needs.classify.outputs.full_validation == 'true'
     runs-on: windows-2025
     steps:
       - uses: actions/checkout@v6
@@ -84,8 +165,20 @@ jobs:
         run: ./scripts/test-installers.ps1
 
   deploy:
-    if: github.event_name != 'pull_request'
-    needs: [validate, validate-unix-installers, validate-windows]
+    if: >-
+      always() &&
+      github.event_name != 'pull_request' &&
+      needs.classify.result == 'success' &&
+      needs.validate-site.result == 'success' &&
+      (
+        needs.classify.outputs.full_validation != 'true' ||
+        (
+          needs.validate.result == 'success' &&
+          needs.validate-unix-installers.result == 'success' &&
+          needs.validate-windows.result == 'success'
+        )
+      )
+    needs: [classify, validate-site, validate, validate-unix-installers, validate-windows]
     runs-on: ubuntu-latest
     environment:
       name: production
