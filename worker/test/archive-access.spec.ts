@@ -152,11 +152,9 @@ describe("shared EPI archive access", () => {
         `INSERT INTO uploads
            (id, site_id, project_id, device_id, status, archive_prefix,
             request_hash, client_version, consent_policy_version, series_count,
-            total_bytes, created_at, updated_at, expires_at, committed_at,
-            ingest_format, received_at)
+            total_bytes, created_at, updated_at, expires_at, received_at)
          VALUES (?1, ?2, ?3, ?4, 'committed', ?5, ?6, '0.5.0',
-                 'open-epi-2.0.0', 1, 1024, ?7, ?7, ?8, ?7,
-                 'dicom-series-v1', ?7)`,
+                 'open-epi-2.0.0', 1, 1024, ?7, ?7, ?8, ?7)`,
       ).bind(
         uploadId,
         siteId,
@@ -172,12 +170,10 @@ describe("shared EPI archive access", () => {
            (upload_id, series_archive_id, series_id, subject_id, session_id,
             protocol_group_id, bundle_hash, dicom_count, archive_relative_key,
             expected_size, expected_sha256, completed_at, etag, series_kind,
-            archive_route, pixel_data_policy, effective_series_kind,
-            effective_archive_route)
+            archive_route, pixel_data_policy)
          VALUES (?1, ?2, ?3, 'subject', 'session', 'protocol', ?4, 4, ?5,
                  1024, ?6, ?7, 'etag', 'functional_epi',
-                 'functional-epi-v1', 'scanner-native-not-defaced',
-                 'functional_epi', 'functional-epi-v1')`,
+                 'functional-epi-v1', 'scanner-native-not-defaced')`,
       ).bind(
         uploadId,
         seriesArchiveId,
@@ -190,9 +186,9 @@ describe("shared EPI archive access", () => {
       env.DB.prepare(
         `INSERT INTO received_series_reservations
            (upload_id, bundle_id, site_id, project_id, series_id, bundle_hash,
-            input_format, received_at, series_kind, archive_route,
+            received_at, series_kind, archive_route,
             pixel_data_policy)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'dicom-series-v1', ?7,
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7,
                  'functional_epi', 'functional-epi-v1',
                  'scanner-native-not-defaced')`,
       ).bind(

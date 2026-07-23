@@ -1,4 +1,4 @@
-name: Release neuro-sync
+name: Release EPI sync client
 
 on:
   workflow_dispatch:
@@ -72,7 +72,7 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install --yes musl-tools
+          sudo apt-get install --yes binutils file musl-tools
       - uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: 1.85.0
@@ -88,6 +88,9 @@ jobs:
           if [[ "${{ matrix.platform }}" == "macos-universal" ]]; then
             cargo build --locked --release --manifest-path client/Cargo.toml --target x86_64-apple-darwin
           fi
+      - name: Verify the dependency-free Linux client
+        if: runner.os == 'Linux'
+        run: ./scripts/verify-static-linux.sh client/target/x86_64-unknown-linux-musl/release/neuro-sync "${{ needs.validate.outputs.version }}"
       - name: Package
         shell: bash
         env:

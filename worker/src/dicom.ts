@@ -40,7 +40,6 @@ interface UploadRow {
   expires_at: number;
   provisional_expires_at: number | null;
   received_at: number | null;
-  committed_at: number | null;
   withdrawn_at: number | null;
   deidentification_policy_id: string | null;
   deidentification_policy_version: string | null;
@@ -148,8 +147,7 @@ async function getUpload(
 ): Promise<UploadRow> {
   const upload = await env.DB.prepare(
     `SELECT * FROM uploads
-     WHERE id = ?1 AND device_id = ?2 AND ingest_format = 'dicom-series-v1'
-     LIMIT 1`,
+     WHERE id = ?1 AND device_id = ?2 LIMIT 1`,
   )
     .bind(uploadId, deviceId)
     .first<UploadRow>();
@@ -297,7 +295,7 @@ async function credentialsResponse(
   const timestamp = nowSeconds();
   await env.DB.prepare(
     `UPDATE uploads
-     SET status = 'uploading', updated_at = ?1, last_credential_at = ?1
+     SET status = 'uploading', updated_at = ?1
      WHERE id = ?2 AND status IN ('created', 'uploading')`,
   )
     .bind(timestamp, upload.id)
@@ -459,10 +457,9 @@ export async function createDicomUpload(
            (id, site_id, project_id, device_id, status, archive_prefix,
             request_hash, client_version, consent_policy_version,
             series_count, total_bytes, created_at, updated_at, expires_at,
-            ingest_format, deidentification_policy_id,
-            deidentification_policy_version)
+            deidentification_policy_id, deidentification_policy_version)
          VALUES (?1, ?2, ?3, ?4, 'created', ?5, ?6, ?7, ?8,
-                 1, ?9, ?10, ?10, ?11, 'dicom-series-v1', ?12, ?13)`,
+                 1, ?9, ?10, ?10, ?11, ?12, ?13)`,
       ).bind(
         uploadId,
         device.site_id,
@@ -483,12 +480,10 @@ export async function createDicomUpload(
            (upload_id, series_archive_id, series_id, subject_id, session_id,
             protocol_group_id, bundle_hash, dicom_count,
             archive_relative_key, expected_size, expected_sha256,
-            series_kind, archive_route, pixel_data_policy,
-            effective_series_kind, effective_archive_route)
+            series_kind, archive_route, pixel_data_policy)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11,
                  'functional_epi', 'functional-epi-v1',
-                 'scanner-native-not-defaced', 'functional_epi',
-                 'functional-epi-v1')`,
+                 'scanner-native-not-defaced')`,
       ).bind(
         uploadId,
         item.series_archive_id,
@@ -794,9 +789,9 @@ export async function completeDicomUpload(
         env.DB.prepare(
           `INSERT INTO received_series_reservations
              (upload_id, bundle_id, site_id, project_id, series_id,
-              bundle_hash, input_format, received_at, series_kind,
+              bundle_hash, received_at, series_kind,
               archive_route, pixel_data_policy)
-           VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'dicom-series-v1', ?7,
+           VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7,
                    'functional_epi', 'functional-epi-v1',
                    'scanner-native-not-defaced')`,
         ).bind(
@@ -810,8 +805,8 @@ export async function completeDicomUpload(
         ),
         env.DB.prepare(
           `UPDATE uploads
-           SET status = 'committed', received_at = ?1, committed_at = ?1,
-               updated_at = ?1, receipt_token = NULL,
+           SET status = 'committed', received_at = ?1, updated_at = ?1,
+               receipt_token = NULL,
                receipt_expires_at = NULL
            WHERE id = ?2 AND receipt_token = ?3`,
         ).bind(timestamp, upload.id, claim.token),
@@ -848,8 +843,8 @@ export async function completeDicomUpload(
       ) {
         await env.DB.prepare(
           `UPDATE uploads
-           SET status = 'expired', receipt_reconciled_at = ?1,
-               receipt_token = NULL, receipt_expires_at = NULL,
+           SET status = 'expired', receipt_token = NULL,
+               receipt_expires_at = NULL,
                updated_at = ?1
            WHERE id = ?2`,
         )

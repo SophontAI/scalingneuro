@@ -102,7 +102,7 @@ it with their own tools and compute.
 | `schemas/` | Public request, archive, status, and error contracts |
 | `docs/` | Contribution, deidentification, sync, API, onboarding, and release contracts |
 | `installers/` | Dependency-free installer templates |
-| `.github/workflows/` | CI, client release, and Cloudflare deployment |
+| `.github/workflows/` | Validation plus Cloudflare deployment, and manual client release |
 
 ## Local verification
 

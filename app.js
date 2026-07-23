@@ -15,12 +15,44 @@ function updateNavigation() {
     if (item.section.offsetTop <= marker) current = item;
   }
   for (const link of navLinks) {
-    link.classList.toggle("is-current", link === current?.link);
+    const active = link === current?.link;
+    link.classList.toggle("is-current", active);
+    if (active) link.setAttribute("aria-current", "location");
+    else link.removeAttribute("aria-current");
   }
 }
 
 window.addEventListener("scroll", updateNavigation, { passive: true });
 updateNavigation();
+
+const terminalTabs = $$(".term-tab");
+function activateTerminalTab(tab, moveFocus = false) {
+  for (const item of terminalTabs) {
+    const active = item === tab;
+    item.classList.toggle("is-active", active);
+    item.setAttribute("aria-selected", String(active));
+    item.tabIndex = active ? 0 : -1;
+  }
+  for (const pane of $$(".term-pane")) {
+    pane.classList.toggle("is-active", pane.dataset.pane === tab.dataset.tab);
+  }
+  if (moveFocus) tab.focus();
+}
+
+terminalTabs.forEach((tab, index) => {
+  tab.addEventListener("click", () => activateTerminalTab(tab));
+  tab.addEventListener("keydown", (event) => {
+    let next = index;
+    if (event.key === "ArrowRight") next = (index + 1) % terminalTabs.length;
+    else if (event.key === "ArrowLeft") {
+      next = (index - 1 + terminalTabs.length) % terminalTabs.length;
+    } else if (event.key === "Home") next = 0;
+    else if (event.key === "End") next = terminalTabs.length - 1;
+    else return;
+    event.preventDefault();
+    activateTerminalTab(terminalTabs[next], true);
+  });
+});
 
 let toastTimer;
 function showToast(message) {
