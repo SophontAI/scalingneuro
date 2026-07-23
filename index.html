@@ -19,7 +19,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=EB+Garamond:ital,wght@0,400;0,500;0,600;1,500&amp;family=JetBrains+Mono:wght@400;500&amp;display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="/styles.css?v=27" />
+  <link rel="stylesheet" href="/styles.css?v=28" />
   <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
 </head>
 <body>
@@ -129,7 +129,7 @@
               <circle cx="492" cy="141" r="5" class="plot-future" />
               <text x="42" y="156">PUBLIC DATA</text>
               <text x="330" y="156">SHARED INSTITUTIONAL DATA</text>
-              <text class="plot-note" x="158" y="30">MODEL ERROR ↓</text>
+              <text class="plot-y-label" x="-74" y="11" transform="rotate(-90)" text-anchor="middle">Model error</text>
             </svg>
           </div>
         </figure>
@@ -175,28 +175,26 @@
           data over there!</span>
         </p>
 
-        <aside class="funding-fit" aria-labelledby="funding-fit-title">
+        <aside class="sharing-fit" aria-labelledby="sharing-fit-title">
           <div>
-            <p class="eyebrow">For NIH- and NSF-funded studies</p>
-            <h3 id="funding-fit-title">Turn a sharing plan into a repeatable lab workflow.</h3>
+            <p class="eyebrow">Prepare for open sharing</p>
+            <h3 id="sharing-fit-title">Plan once for open sharing.</h3>
           </div>
-          <div class="funding-copy">
+          <div class="sharing-copy">
             <p>
-              NIH requires covered research that generates scientific data to submit and
-              follow a Data Management and Sharing Plan. NSF proposals likewise require a
-              Data Management and Sharing Plan describing how research outputs will be
-              managed and shared.
+              Scaling Neuro uses the same basic sharing process as OpenNeuro: the
+              contributing lab confirms that the data are deidentified and that its ethics
+              and institutional permissions allow public release.
             </p>
             <p>
-              Scaling Neuro gives MRI-producing labs a concrete way to carry out the
-              functional-imaging portion of an institutionally approved plan: deidentify
-              eligible EPI locally, create a durable contribution record, and share the
-              resulting DICOM archive. It supports, but does not replace, consent, IRB
-              review, repository requirements, or award-specific guidance.
+              Starting a new study? We are happy to provide example IRB and participant
+              consent blurbs designed to preserve the option to share deidentified data
+              through open repositories such as Scaling Neuro and OpenNeuro. Your
+              institution should review and approve the final language.
             </p>
-            <div class="funding-links">
-              <a href="https://grants.nih.gov/policy-and-compliance/policy-topics/sharing-policies/dms/policy-overview" target="_blank" rel="noopener">NIH DMS policy <span aria-hidden="true">→</span></a>
-              <a href="https://www.nsf.gov/funding/data-management-plan" target="_blank" rel="noopener">NSF DMS guidance <span aria-hidden="true">→</span></a>
+            <div class="sharing-links">
+              <a href="mailto:admin@sophont.med?subject=Scaling%20Neuro%20IRB%20and%20consent%20examples">Request example language <span aria-hidden="true">→</span></a>
+              <a href="https://docs.openneuro.org/user_guide.html#uploading-your-dataset" target="_blank" rel="noopener">OpenNeuro upload guidance <span aria-hidden="true">→</span></a>
             </div>
           </div>
         </aside>

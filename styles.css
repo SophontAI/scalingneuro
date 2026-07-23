@@ -297,7 +297,7 @@ button, input { font: inherit; }
   font: 500 8px var(--mono);
   letter-spacing: .05em;
 }
-.scaling-plot text.plot-note { fill: var(--accent); letter-spacing: .1em; }
+.scaling-plot text.plot-y-label { letter-spacing: .1em; }
 .section-heading { max-width: 760px; }
 .steps {
   display: grid;
@@ -316,7 +316,6 @@ button, input { font: inherit; }
 .step h3 { margin: 16px 0 9px; font-size: 1.5rem; }
 .step p { margin: 0; font-size: .91rem; line-height: 1.58; }
 .boundary {
-  max-width: 900px;
   margin: 48px 0 0;
   padding: 19px 21px;
   border-left: 3px solid var(--accent);
@@ -326,7 +325,7 @@ button, input { font: inherit; }
 }
 .boundary strong { color: var(--ink); }
 .boundary-note { display: block; margin-top: 8px; color: var(--ink-3); font-size: .82rem; }
-.funding-fit {
+.sharing-fit {
   display: grid;
   grid-template-columns: minmax(0, .72fr) minmax(0, 1.28fr);
   gap: clamp(38px, 7vw, 90px);
@@ -334,11 +333,11 @@ button, input { font: inherit; }
   padding-top: 42px;
   border-top: 1px solid var(--line);
 }
-.funding-fit .eyebrow { margin-bottom: 16px; }
-.funding-fit h3 { max-width: 17ch; font-size: clamp(1.8rem, 3vw, 2.35rem); }
-.funding-copy p { margin-bottom: 16px; font-size: .93rem; line-height: 1.68; }
-.funding-links { display: flex; flex-wrap: wrap; gap: 12px 24px; margin-top: 25px; }
-.funding-links a {
+.sharing-fit .eyebrow { margin-bottom: 16px; }
+.sharing-fit h3 { max-width: 17ch; font-size: clamp(1.8rem, 3vw, 2.35rem); }
+.sharing-copy p { margin-bottom: 16px; font-size: .93rem; line-height: 1.68; }
+.sharing-links { display: flex; flex-wrap: wrap; gap: 12px 24px; margin-top: 25px; }
+.sharing-links a {
   padding-bottom: 4px;
   border-bottom: 1px solid var(--line);
   color: var(--ink);
@@ -347,7 +346,7 @@ button, input { font: inherit; }
   text-decoration: none;
   text-transform: uppercase;
 }
-.funding-links a:hover { border-color: var(--accent); color: var(--accent); }
+.sharing-links a:hover { border-color: var(--accent); color: var(--accent); }
 
 .share-heading { max-width: 840px; margin-bottom: 39px; }
 .share-heading h2 { color: var(--dark-text); font-size: clamp(2.35rem, 5vw, 3.75rem); }
@@ -567,10 +566,10 @@ input:focus { border-color: var(--accent); outline: 2px solid color-mix(in srgb,
 
 @media (max-width: 980px) {
   .nav-links { display: none; }
-  .scale-grid, .funding-fit, .access-grid { grid-template-columns: 1fr; gap: 48px; }
+  .scale-grid, .sharing-fit, .access-grid { grid-template-columns: 1fr; gap: 48px; }
   .steps { grid-template-columns: 1fr 1fr; }
   .scale-figure { max-width: 700px; }
-  .funding-fit h3 { max-width: 20ch; }
+  .sharing-fit h3 { max-width: 20ch; }
 }
 
 @media (max-width: 620px) {
