@@ -373,9 +373,14 @@ button, input { font: inherit; }
 }
 .sharing-links a:hover { border-color: var(--accent); color: var(--accent); }
 
-.share-heading { max-width: 840px; margin-bottom: 39px; }
-.share-heading h2 { color: var(--dark-text); font-size: clamp(2.35rem, 5vw, 3.75rem); }
-.share-heading > p:last-child { color: var(--dark-muted); }
+.share-heading { max-width: none; margin-bottom: 39px; }
+.share-heading h2 {
+  max-width: 1080px;
+  color: var(--dark-text);
+  font-size: clamp(2.35rem, 5vw, 3.75rem);
+  text-wrap: pretty;
+}
+.share-heading > p:last-child { max-width: 900px; color: var(--dark-muted); }
 .adoption-line {
   display: flex;
   flex-wrap: wrap;
