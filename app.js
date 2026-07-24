@@ -86,7 +86,7 @@ function updateInstallPlatform() {
       : "# macOS or Linux";
   }
   if (platformToggle) {
-    platformToggle.textContent = windows ? "Use macOS / Linux" : "Use Windows";
+    platformToggle.textContent = windows ? "macOS / Linux" : "Microsoft Windows";
     platformToggle.setAttribute("aria-pressed", String(windows));
   }
 }
