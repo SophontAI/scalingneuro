@@ -249,6 +249,7 @@ button, input { font: inherit; }
 .bar-public {
   display: grid;
   grid-template-columns: 25fr 14fr 2fr 24fr 20fr;
+  width: 96.59%;
 }
 .bar-public > i + i { border-left: 1px solid color-mix(in srgb, var(--paper) 65%, transparent); }
 .bar-openneuro { background: var(--ink); }
@@ -258,8 +259,8 @@ button, input { font: inherit; }
 .bar-other { background: var(--ink-3); }
 .bar-network {
   display: grid;
-  grid-template-columns: repeat(20, 1fr);
-  width: 47.06%;
+  grid-template-columns: repeat(22, 1fr);
+  width: 100%;
   background: var(--accent);
 }
 .bar-network i { border-right: 1px solid color-mix(in srgb, var(--paper) 45%, transparent); }
