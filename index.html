@@ -19,7 +19,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=EB+Garamond:ital,wght@0,400;0,500;0,600;1,500&amp;family=JetBrains+Mono:wght@400;500&amp;display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="/styles.css?v=33" />
+  <link rel="stylesheet" href="/styles.css?v=34" />
   <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
 </head>
 <body>
@@ -68,40 +68,43 @@
       <div class="wrap scale-grid">
         <div class="scale-copy">
           <p class="eyebrow">The scale opportunity</p>
-          <h2>If 32 centers join our effort, we'd share more data than OpenNeuro&nbsp;/ HCP&nbsp;/ UKBB combined in 1 year.</h2>
+          <h2>If 20 centers join our effort, we'd share more data than OpenNeuro and UKBB combined in 2 years.</h2>
           <p>
-            Aggregating all publicly available fMRI yields ~32K hours of scanning.
-            &gt;1000 hours of fMRI is routinely collected yearly at many universities.
-            Thus, if just 32 universities join Scaling Neuro, we can share over 32K
-            hours of fMRI <em>yearly</em>.
+            Public fMRI archives total roughly 85K hours: 25K from OpenNeuro,
+            14K from UK Biobank, 2K from HCP-YA, 24K from ABCD, and an estimated
+            20K across other sources. More than 1,000 hours of fMRI is routinely
+            collected each year at many universities. At that pace, 20 participating
+            centers could contribute over 40K hours in two years.
           </p>
-          <details class="sources">
-            <summary>Sources and assumptions</summary>
-            <p>
-              The public baseline is the estimate across freely accessible archives in
-              <a href="https://arxiv.org/abs/2411.18526" target="_blank" rel="noopener">NeuroAI for AI Safety</a>.
-              The network bar is 32 centers × 1,000 hours/year. The shareable
-              total would be lower after institutional, consent, and privacy review. The
-              dotted curve extends the data-scaling trend reported in
-              <a href="https://arxiv.org/abs/2510.13768" target="_blank" rel="noopener">CortexMAE</a>;
-              it illustrates the opportunity rather than making a quantitative performance projection.
-            </p>
-          </details>
         </div>
 
-        <figure class="scale-figure" aria-label="Comparison of public fMRI hours with a 32-center sharing network">
+        <figure class="scale-figure" aria-label="Comparison of 85,000 public fMRI hours with the contribution potential of 20 centers over two years">
           <div class="bar-row">
             <div class="bar-label">
               <span>All public fMRI released</span>
-              <strong>~32,000 hours</strong>
+              <strong>~85,000 hours</strong>
             </div>
-            <div class="bar-track"><div class="bar-fill bar-public"></div></div>
-            <p>Across freely accessible archives like OpenNeuro, UKBB, and HCP</p>
+            <div class="bar-track" role="img" aria-label="85,000 public fMRI hours: OpenNeuro 25,000, UK Biobank 14,000, HCP-YA 2,000, ABCD 24,000, and other sources 20,000">
+              <div class="bar-fill bar-public" aria-hidden="true">
+                <i class="bar-openneuro"></i>
+                <i class="bar-ukbb"></i>
+                <i class="bar-hcp"></i>
+                <i class="bar-abcd"></i>
+                <i class="bar-other"></i>
+              </div>
+            </div>
+            <div class="bar-key" aria-label="Public fMRI archive breakdown">
+              <span><i class="bar-openneuro"></i>OpenNeuro 25K</span>
+              <span><i class="bar-ukbb"></i>UKBB 14K</span>
+              <span><i class="bar-hcp"></i>HCP-YA 2K</span>
+              <span><i class="bar-abcd"></i>ABCD 24K</span>
+              <span><i class="bar-other"></i>Other 20K</span>
+            </div>
           </div>
           <div class="bar-row">
             <div class="bar-label">
-              <span>32 centers for one year</span>
-              <strong>~32,000 hours</strong>
+              <span>20 centers over two years</span>
+              <strong>&gt;40,000 hours</strong>
             </div>
             <div class="bar-track">
               <div class="bar-fill bar-network" aria-hidden="true">
@@ -109,38 +112,41 @@
                 <i></i><i></i><i></i><i></i><i></i>
                 <i></i><i></i><i></i><i></i><i></i>
                 <i></i><i></i><i></i><i></i><i></i>
-                <i></i><i></i><i></i><i></i><i></i>
-                <i></i><i></i><i></i><i></i><i></i>
-                <i></i><i></i>
               </div>
             </div>
-            <p>With enough centers on board, we can share more fMRI than all public archives ever released</p>
+            <p>Enough to exceed OpenNeuro and UK Biobank combined</p>
           </div>
-          <div class="scaling-plot" role="img" aria-label="A CortexMAE-style scaling curve marks the vertical dotted line as where we are today: current foundation models are not yet widely useful to fMRI. A dotted extension toward a larger dataset ends at future foundation models that are broadly useful to all fMRI researchers.">
-            <svg viewBox="0 0 520 186" aria-hidden="true">
-              <path class="plot-grid" d="M28 28H504M28 78H504M28 128H504" />
-              <path class="plot-axis" d="M28 14V146H510" />
-              <path class="plot-curve" d="M44 37C108 60 174 84 270 104" />
-              <path class="plot-forecast" d="M270 104C344 119 419 133 492 142" />
-              <text class="plot-frontier-label" x="270" y="12" text-anchor="middle">WHERE WE ARE TODAY</text>
-              <path class="plot-frontier" d="M270 18V146" />
-              <g class="plot-points">
-                <circle cx="52" cy="40" r="4" />
-                <circle cx="112" cy="61" r="4" />
-                <circle cx="178" cy="85" r="4" />
-                <circle cx="270" cy="104" r="6" class="plot-current" />
-              </g>
-              <path class="plot-guide plot-current-guide" d="M280 62V94L274 99" />
-              <text class="plot-callout-title" x="284" y="46">CURRENT FOUNDATION MODELS</text>
-              <text class="plot-callout-note" x="284" y="59">not yet widely useful to fMRI</text>
-              <circle class="plot-target-halo" cx="492" cy="142" r="11" />
-              <circle cx="492" cy="142" r="5" class="plot-future" />
-              <path class="plot-guide plot-target-guide" d="M486 98L491 133" />
-              <text class="plot-callout-title" x="496" y="80" text-anchor="end">FUTURE FOUNDATION MODELS</text>
-              <text class="plot-callout-note" x="496" y="93" text-anchor="end">broadly useful to all fMRI researchers</text>
-              <text class="plot-axis-label" x="270" y="176" text-anchor="middle">Dataset size</text>
-              <text class="plot-axis-label" x="-80" y="11" transform="rotate(-90)" text-anchor="middle">Model error</text>
-            </svg>
+          <div class="plot-block">
+            <div class="scaling-plot" role="img" aria-label="A CortexMAE-style scaling curve marks the vertical dotted line as where we are today: current foundation models are not yet widely useful to fMRI. A dotted extension toward a larger dataset ends at future foundation models that are broadly useful to all fMRI researchers.">
+              <svg viewBox="0 0 520 186" aria-hidden="true">
+                <path class="plot-grid" d="M28 28H504M28 78H504M28 128H504" />
+                <path class="plot-axis" d="M28 14V146H510" />
+                <path class="plot-curve" d="M44 37C108 60 174 84 270 104" />
+                <path class="plot-forecast" d="M270 104C344 119 419 133 492 142" />
+                <text class="plot-frontier-label" x="270" y="12" text-anchor="middle">WHERE WE ARE TODAY</text>
+                <path class="plot-frontier" d="M270 18V146" />
+                <g class="plot-points">
+                  <circle cx="52" cy="40" r="4" />
+                  <circle cx="112" cy="61" r="4" />
+                  <circle cx="178" cy="85" r="4" />
+                  <circle cx="270" cy="104" r="6" class="plot-current" />
+                </g>
+                <path class="plot-guide plot-current-guide" d="M280 62V94L274 99" />
+                <text class="plot-callout-title" x="284" y="46">CURRENT FOUNDATION MODELS</text>
+                <text class="plot-callout-note" x="284" y="59">not yet widely useful to fMRI</text>
+                <circle class="plot-target-halo" cx="492" cy="142" r="11" />
+                <circle cx="492" cy="142" r="5" class="plot-future" />
+                <path class="plot-guide plot-target-guide" d="M486 98L491 133" />
+                <text class="plot-callout-title" x="496" y="80" text-anchor="end">FUTURE FOUNDATION MODELS</text>
+                <text class="plot-callout-note" x="496" y="93" text-anchor="end">broadly useful to all fMRI researchers</text>
+                <text class="plot-axis-label" x="270" y="176" text-anchor="middle">Dataset size</text>
+                <text class="plot-axis-label" x="-80" y="11" transform="rotate(-90)" text-anchor="middle">Model error</text>
+              </svg>
+            </div>
+            <p class="plot-caption">
+              Dotted curve extends the data-scaling trend reported in
+              <a href="https://arxiv.org/abs/2510.13768" target="_blank" rel="noopener">CortexMAE</a>.
+            </p>
           </div>
         </figure>
       </div>
