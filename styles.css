@@ -341,6 +341,7 @@ button, input { font: inherit; }
   color: var(--ink-3);
   font: 8px/1.5 var(--mono);
   letter-spacing: .03em;
+  text-align: center;
 }
 .plot-caption a { border-bottom: 1px solid var(--line); color: var(--ink-2); text-decoration: none; }
 .plot-caption a:hover { border-color: var(--accent); color: var(--accent); }
