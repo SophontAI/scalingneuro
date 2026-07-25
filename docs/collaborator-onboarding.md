@@ -7,11 +7,11 @@ functional MRI data to the shared Scaling Neuro archive.
 ## Install
 
 ```sh
-curl -fsSL https://scalingneuro.com/install.sh | sh
+curl -fsSL https://scalingneuro.org/install.sh | sh
 ```
 
 ```powershell
-irm https://scalingneuro.com/install.ps1 | iex
+irm https://scalingneuro.org/install.ps1 | iex
 ```
 
 The installer downloads one SHA-256-verified package into your user account and
@@ -67,7 +67,7 @@ confirmed outside the tool.
 ## Archive access
 
 Researchers can join the shared effort at
-`https://scalingneuro.com/#access`. The form returns a personal archive token.
+`https://scalingneuro.org/#access`. The form returns a personal archive token.
 The archive contains deidentified functional EPI DICOMs. Each lab downloads and
 preprocesses them independently.
 

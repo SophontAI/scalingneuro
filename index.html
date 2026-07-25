@@ -5,12 +5,12 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Scaling Neuro</title>
   <meta name="description" content="Academic-led infrastructure for sharing approved functional MRI DICOMs and building the open data commons needed to scale brain models." />
-  <link rel="canonical" href="https://scalingneuro.com/" />
+  <link rel="canonical" href="https://scalingneuro.org/" />
   <meta property="og:type" content="website" />
-  <meta property="og:url" content="https://scalingneuro.com/" />
+  <meta property="og:url" content="https://scalingneuro.org/" />
   <meta property="og:title" content="Scaling Neuro" />
   <meta property="og:description" content="Point neuro-sync at a DICOM folder. It finds, deidentifies, and shares the functional EPI series." />
-  <meta property="og:image" content="https://scalingneuro.com/og.png" />
+  <meta property="og:image" content="https://scalingneuro.org/og.png" />
   <meta property="og:image:width" content="1200" />
   <meta property="og:image:height" content="630" />
   <meta property="og:image:alt" content="DICOM folder to EPI signal to shared archive" />
@@ -233,7 +233,7 @@
           </div>
           <div class="term-body">
             <pre class="term-pane is-active" id="pane-install" data-pane="install" role="tabpanel" aria-labelledby="tab-install"><code><span class="comment" id="installPlatform"># macOS or Linux</span>
-<span class="prompt">$</span> <span id="installCommand">curl -fsSL https://scalingneuro.com/install.sh | sh</span>
+<span class="prompt">$</span> <span id="installCommand">curl -fsSL https://scalingneuro.org/install.sh | sh</span>
 <span class="ok">✓</span> neuro-sync 0.5.0 downloaded and SHA-256 verified
 
 <span class="comment"># One command for each approved scanner export</span>
@@ -326,7 +326,7 @@ Report: ~/.local/share/neuro-sync/reports/...</code></pre>
           <p>Save it in your shell, then list the archive:</p>
           <pre><code>export SCALING_NEURO_ACCESS_TOKEN='PASTE_TOKEN'
 curl -H "Authorization: Bearer $SCALING_NEURO_ACCESS_TOKEN" \
-  https://scalingneuro.com/v1/archive</code></pre>
+  https://scalingneuro.org/v1/archive</code></pre>
           <p>Use any listed <code>download_url</code> to download a series:</p>
           <pre><code>curl -L -H "Authorization: Bearer $SCALING_NEURO_ACCESS_TOKEN" \
   DOWNLOAD_URL -o series.dicom.tar.zst

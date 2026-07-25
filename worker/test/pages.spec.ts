@@ -16,15 +16,29 @@ const pagesEnv = {
 };
 
 describe("Pages advanced-mode wrapper", () => {
-  it("redirects only the exact legacy production hostname", async () => {
+  it("redirects the Pages hostname to the canonical production hostname", async () => {
     const response = await pages.fetch(
       new Request("https://scalingneuro.pages.dev/docs?source=legacy"),
       pagesEnv,
       createExecutionContext(),
     );
-    expect(response.status).toBe(301);
+    expect(response.status).toBe(308);
     expect(response.headers.get("location")).toBe(
-      "https://scalingneuro.com/docs?source=legacy",
+      "https://scalingneuro.org/docs?source=legacy",
+    );
+  });
+
+  it("permanently redirects the former production hostname while preserving the URL", async () => {
+    const response = await pages.fetch(
+      new Request("https://scalingneuro.com/v1/archive?source=legacy", {
+        method: "POST",
+      }),
+      pagesEnv,
+      createExecutionContext(),
+    );
+    expect(response.status).toBe(308);
+    expect(response.headers.get("location")).toBe(
+      "https://scalingneuro.org/v1/archive?source=legacy",
     );
   });
 
@@ -56,6 +70,19 @@ describe("Pages advanced-mode wrapper", () => {
     );
     expect(response.status).toBe(404);
     expect(response.headers.get("cache-control")).toBe("no-store");
+  });
+
+  it("serves the API on the canonical production hostname", async () => {
+    const response = await pages.fetch(
+      new Request("https://scalingneuro.org/health"),
+      pagesEnv,
+      createExecutionContext(),
+    );
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({
+      status: "ok",
+      service: "scaling-neuro-sync",
+    });
   });
 
   it("serves the API on loopback for complete local verification", async () => {

@@ -148,7 +148,7 @@ jobs:
           linux_sha=$(sha256sum "release/$linux" | cut -d' ' -f1)
           windows_sha=$(sha256sum "release/$windows" | cut -d' ' -f1)
           ./scripts/render-installers.sh \
-            release "$VERSION" "https://scalingneuro.com/downloads" \
+            release "$VERSION" "https://scalingneuro.org/downloads" \
             "$mac" "$mac_sha" "$linux" "$linux_sha" "$windows" "$windows_sha"
           jq -n \
             --arg version "$VERSION" \

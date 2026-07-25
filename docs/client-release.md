@@ -2,8 +2,8 @@
 
 The public installation paths are:
 
-- `https://scalingneuro.com/install.sh`
-- `https://scalingneuro.com/install.ps1`
+- `https://scalingneuro.org/install.sh`
+- `https://scalingneuro.org/install.ps1`
 
 Each release builds one universal package for Apple-silicon and Intel macOS,
 plus Windows x86-64 and static Linux x86-64 packages. A package contains only

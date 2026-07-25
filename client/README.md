@@ -10,12 +10,12 @@ derived, secondary-capture, malformed, and ambiguous series on the workstation.
 It does not convert DICOMs or run preprocessing.
 
 ```sh
-curl -fsSL https://scalingneuro.com/install.sh | sh
+curl -fsSL https://scalingneuro.org/install.sh | sh
 neuro-sync /path/to/dicom-export
 ```
 
 ```powershell
-irm https://scalingneuro.com/install.ps1 | iex
+irm https://scalingneuro.org/install.ps1 | iex
 neuro-sync "C:\path\to\dicom-export"
 ```
 

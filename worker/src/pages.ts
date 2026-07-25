@@ -12,15 +12,18 @@ export default {
     ctx: ExecutionContext,
   ): Promise<Response> {
     const url = new URL(request.url);
-    if (url.hostname === "scalingneuro.pages.dev") {
-      url.hostname = "scalingneuro.com";
+    if (
+      url.hostname === "scalingneuro.pages.dev" ||
+      url.hostname === "scalingneuro.com"
+    ) {
+      url.hostname = "scalingneuro.org";
       url.protocol = "https:";
       url.port = "";
-      return Response.redirect(url.toString(), 301);
+      return Response.redirect(url.toString(), 308);
     }
     const pathname = url.pathname;
     const isApiHost =
-      url.hostname === "scalingneuro.com" ||
+      url.hostname === "scalingneuro.org" ||
       url.hostname === "localhost" ||
       url.hostname === "127.0.0.1" ||
       url.hostname === "[::1]";

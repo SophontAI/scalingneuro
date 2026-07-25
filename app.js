@@ -65,8 +65,8 @@ function showToast(message) {
 }
 
 const installCommands = {
-  unix: "curl -fsSL https://scalingneuro.com/install.sh | sh",
-  windows: "irm https://scalingneuro.com/install.ps1 | iex",
+  unix: "curl -fsSL https://scalingneuro.org/install.sh | sh",
+  windows: "irm https://scalingneuro.org/install.ps1 | iex",
 };
 const installCommandElement = $("#installCommand");
 const installPlatform = $("#installPlatform");

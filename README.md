@@ -9,17 +9,21 @@ That is the complete data path. Scaling Neuro does not upload structural,
 diffusion, field-map, localizer, secondary-capture, or ambiguous series. It does
 not convert DICOMs to NIfTI, run preprocessing, or use Sophont compute.
 
+Production is [scalingneuro.org](https://scalingneuro.org).
+`scalingneuro.com` and `scalingneuro.pages.dev` are legacy hostnames that
+redirect each request to the same path on the canonical domain.
+
 ## Use neuro-sync
 
 ```sh
 # macOS or Linux
-curl -fsSL https://scalingneuro.com/install.sh | sh
+curl -fsSL https://scalingneuro.org/install.sh | sh
 neuro-sync /path/to/dicom-export
 ```
 
 ```powershell
 # Windows PowerShell
-irm https://scalingneuro.com/install.ps1 | iex
+irm https://scalingneuro.org/install.ps1 | iex
 neuro-sync "C:\path\to\dicom-export"
 ```
 
@@ -70,13 +74,13 @@ object-scoped multipart URLs and never receives reusable R2 credentials.
 ## Shared access
 
 Researchers request access at
-[scalingneuro.com/#access](https://scalingneuro.com/#access). A lab provides a
+[scalingneuro.org/#access](https://scalingneuro.org/#access). A lab provides a
 work email, institution, lab name, and a commitment to participate in the shared
 functional MRI effort. The service returns a personal bearer token.
 
 ```sh
 curl -H "Authorization: Bearer $SCALING_NEURO_ACCESS_TOKEN" \
-  https://scalingneuro.com/v1/archive
+  https://scalingneuro.org/v1/archive
 ```
 
 The archive response lists available series and authenticated download routes.
@@ -85,7 +89,7 @@ Each download route redirects to a short-lived R2 GET URL:
 ```sh
 curl -L -H "Authorization: Bearer $SCALING_NEURO_ACCESS_TOKEN" \
   "$(curl -fsS -H "Authorization: Bearer $SCALING_NEURO_ACCESS_TOKEN" \
-    https://scalingneuro.com/v1/archive | jq -r '.series[0].download_url')" \
+    https://scalingneuro.org/v1/archive | jq -r '.series[0].download_url')" \
   -o series.dicom.tar.zst
 ```
 
