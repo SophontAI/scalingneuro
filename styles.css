@@ -499,18 +499,6 @@ button, input { font: inherit; }
   gap: clamp(56px, 8vw, 110px);
   align-items: start;
 }
-.access-copy a { border-bottom: 1px solid var(--line); color: var(--ink); text-decoration: none; }
-.access-copy a:hover { border-color: var(--accent); color: var(--accent); }
-.plain-list { margin: 34px 0 0; padding: 0; list-style: none; }
-.plain-list li { padding: 12px 0 12px 22px; border-top: 1px solid var(--line); color: var(--ink); font-size: .92rem; }
-.plain-list li::before {
-  content: "✓";
-  display: inline-block;
-  width: 22px;
-  margin-left: -22px;
-  color: var(--accent);
-  font-family: var(--mono);
-}
 .access-form, .access-result {
   padding: clamp(25px, 4vw, 41px);
   border: 1px solid var(--line);
