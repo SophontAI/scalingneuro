@@ -238,6 +238,13 @@ button, input { font: inherit; }
   letter-spacing: -.01em;
   white-space: nowrap;
 }
+.bar-label small {
+  display: block;
+  margin-top: 2px;
+  color: var(--ink-3);
+  font-weight: 400;
+  letter-spacing: .04em;
+}
 .bar-track {
   height: 24px;
   overflow: hidden;
@@ -492,6 +499,8 @@ button, input { font: inherit; }
   gap: clamp(56px, 8vw, 110px);
   align-items: start;
 }
+.access-copy a { border-bottom: 1px solid var(--line); color: var(--ink); text-decoration: none; }
+.access-copy a:hover { border-color: var(--accent); color: var(--accent); }
 .plain-list { margin: 34px 0 0; padding: 0; list-style: none; }
 .plain-list li { padding: 12px 0 12px 22px; border-top: 1px solid var(--line); color: var(--ink); font-size: .92rem; }
 .plain-list li::before {
