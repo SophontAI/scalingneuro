@@ -152,9 +152,9 @@ The Pages Worker requires:
 The R2 token must be limited to Object Read & Write on the Scaling Neuro bucket.
 The notifier Worker has a Cloudflare Email binding restricted to
 `scottibrain@gmail.com` and `archive-access@scalingneuro.org`. Production
-configuration is checked before migrations and deployment. Deploy notifier
-source changes with `npm run deploy:notifier --prefix worker`; the Pages
-deployment then binds to that private Worker.
+configuration is checked before migrations and deployment. The production
+workflow deploys notifier source changes before binding Pages to that private
+Worker.
 
 ## Contracts
 
