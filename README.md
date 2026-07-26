@@ -170,5 +170,4 @@ Worker.
 
 ## License
 
-Scaling Neuro is available under either
-[Apache License 2.0](LICENSE-APACHE) or [MIT](LICENSE-MIT).
+Scaling Neuro is licensed under the [Apache License 2.0](LICENSE).
