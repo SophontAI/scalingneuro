@@ -284,13 +284,6 @@ button, input { font: inherit; }
 }
 .bar-key span { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
 .bar-key i { display: inline-block; width: 8px; height: 8px; border-radius: 1px; }
-.bar-row > p {
-  margin: 0;
-  color: var(--ink-2);
-  font: 500 12px/1.5 var(--mono);
-  letter-spacing: .04em;
-  text-transform: uppercase;
-}
 .plot-block { border-top: 1px solid var(--line-soft); }
 .scaling-plot { padding-top: 24px; }
 .scaling-plot svg { display: block; width: 100%; height: auto; overflow: visible; }
