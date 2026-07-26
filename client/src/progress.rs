@@ -2,6 +2,7 @@ use std::{
     io::{self, IsTerminal, Write},
     time::{Duration, Instant},
 };
+use terminal_size::{Width, terminal_size_of};
 
 const TTY_WIDTH: usize = 24;
 const TTY_REPORT_INTERVAL: Duration = Duration::from_millis(100);
@@ -63,6 +64,7 @@ pub struct Progress {
     started: Instant,
     last_plain_report: Instant,
     tty: bool,
+    terminal_width: Option<usize>,
     finished: bool,
 }
 
@@ -77,6 +79,13 @@ impl Progress {
 
     fn new(label: impl Into<String>, total: Option<u64>, unit: ProgressUnit) -> Self {
         let now = Instant::now();
+        let stderr = io::stderr();
+        let tty = stderr.is_terminal();
+        let terminal_width = tty
+            .then(|| terminal_size_of(stderr))
+            .flatten()
+            .map(|(Width(width), _)| usize::from(width))
+            .filter(|width| *width > 1);
         let mut progress = Self {
             label: label.into(),
             unit,
@@ -85,7 +94,8 @@ impl Progress {
             completed_before_session: 0,
             started: now,
             last_plain_report: now,
-            tty: io::stderr().is_terminal(),
+            tty,
+            terminal_width,
             finished: false,
         };
         progress.draw(true);
@@ -145,7 +155,13 @@ impl Progress {
             self.completed_before_session,
             now - self.started,
         );
-        let line = render_progress(&self.label, self.unit, estimate, self.tty);
+        let line = render_progress_for_terminal(
+            &self.label,
+            self.unit,
+            estimate,
+            self.tty,
+            self.terminal_width,
+        );
         let mut stderr = io::stderr().lock();
         if self.tty {
             let _ = write!(stderr, "\r\x1b[2K{line}");
@@ -235,6 +251,36 @@ pub fn render_progress(
         format!("  {details}")
     };
     format!("{label}{}  {amount}{details}", bar.unwrap_or_default())
+}
+
+fn render_progress_for_terminal(
+    label: &str,
+    unit: ProgressUnit,
+    estimate: ProgressEstimate,
+    tty: bool,
+    terminal_width: Option<usize>,
+) -> String {
+    let Some(max_width) = terminal_width.map(|width| width.saturating_sub(1)) else {
+        return render_progress(label, unit, estimate, tty);
+    };
+    let mut line = render_progress(label, unit, estimate, tty);
+    if tty && line.len() > max_width {
+        line = render_progress(label, unit, estimate, false);
+    }
+    truncate_line(line, max_width)
+}
+
+fn truncate_line(mut line: String, width: usize) -> String {
+    if line.len() <= width {
+        return line;
+    }
+    if width <= 3 {
+        line.truncate(width);
+        return line;
+    }
+    line.truncate(width - 3);
+    line.push_str("...");
+    line
 }
 
 fn format_amount(value: u64, unit: ProgressUnit) -> String {
@@ -378,5 +424,23 @@ mod tests {
         assert!(render_due(true, false, Duration::from_millis(100)));
         assert!(render_due(true, true, Duration::ZERO));
         assert!(!render_due(false, false, Duration::from_secs(14)));
+    }
+
+    #[test]
+    fn tty_progress_fits_the_reported_terminal_width() {
+        let line = render_progress_for_terminal(
+            "Deidentifying EPI series 15/15",
+            ProgressUnit::Bytes,
+            ProgressEstimate::at(
+                300 * 1024 * 1024,
+                Some(418 * 1024 * 1024),
+                Duration::from_secs(9),
+            ),
+            true,
+            Some(100),
+        );
+        assert!(line.len() < 100);
+        assert!(line.contains("300.0 MiB/418.0 MiB"));
+        assert!(line.contains("ETA"));
     }
 }

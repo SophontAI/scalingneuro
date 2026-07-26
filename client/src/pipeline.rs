@@ -1151,7 +1151,15 @@ impl Runtime {
         manifest: &LocalManifest,
         api: &IngestApi,
     ) -> Result<()> {
-        for chunk in self.state.run_uploads(run_id)? {
+        let chunks = self.state.run_uploads(run_id)?;
+        let receipt_total = chunks
+            .iter()
+            .filter(|chunk| !matches!(chunk.status.as_str(), "committed" | "reconciled"))
+            .map(|chunk| chunk.bundle_count as u64)
+            .sum();
+        let mut receipt_progress = (receipt_total > 0)
+            .then(|| Progress::bounded("Recording receipts", receipt_total, ProgressUnit::Series));
+        for chunk in chunks {
             if matches!(chunk.status.as_str(), "committed" | "reconciled") {
                 continue;
             }
@@ -1165,6 +1173,12 @@ impl Runtime {
                 .context("DICOM receipt points outside its manifest")?;
             self.commit_dicom_upload_chunk(run_id, &chunk, bundles, &manifest.client_version, api)
                 .await?;
+            if let Some(progress) = receipt_progress.as_mut() {
+                progress.inc(chunk.bundle_count as u64);
+            }
+        }
+        if let Some(progress) = receipt_progress.as_mut() {
+            progress.finish();
         }
         if self
             .state
@@ -1249,16 +1263,10 @@ impl Runtime {
                         );
                         return Ok(());
                     }
-                    let mut receipt = Progress::bounded(
-                        "Recording receipt",
-                        bundles.len() as u64,
-                        ProgressUnit::Series,
-                    );
                     let status = api.complete_dicom_upload(upload_id, saved.objects).await?;
                     if !dicom_receipt_complete(&status.status) {
                         bail!("DICOM receipt API did not commit the transferred archives");
                     }
-                    receipt.finish();
                     record_dicom_receipt(&self.state, run_id, chunk.chunk_index, bundles, &status)?;
                     tracing::info!("Durable functional EPI archive receipt confirmed");
                     return Ok(());
@@ -1454,18 +1462,12 @@ impl Runtime {
         }
         self.state
             .set_chunk_status(run_id, chunk.chunk_index, "uploaded")?;
-        let mut receipt = Progress::bounded(
-            "Recording receipt",
-            bundles.len() as u64,
-            ProgressUnit::Series,
-        );
         let status = api
             .complete_dicom_upload(&upload_id, request.objects)
             .await?;
         if !dicom_receipt_complete(&status.status) {
             bail!("DICOM receipt API did not commit the completed multipart upload");
         }
-        receipt.finish();
         record_dicom_receipt(&self.state, run_id, chunk.chunk_index, bundles, &status)?;
         tracing::info!("Durable functional EPI archive receipt confirmed");
         Ok(())

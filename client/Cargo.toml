@@ -1,6 +1,6 @@
 [package]
 name = "neuro-sync"
-version = "0.5.5"
+version = "0.5.6"
 edition = "2024"
 rust-version = "1.85"
 description = "Functional EPI DICOM sync client for Scaling Neuro"
@@ -38,6 +38,7 @@ serde_json = "1.0"
 sha2 = "0.10"
 tempfile = "3.20"
 tar = "0.4"
+terminal_size = "0.4.4"
 thiserror = "2.0"
 tokio = { version = "1.47", features = ["full"] }
 tracing = "0.1"
