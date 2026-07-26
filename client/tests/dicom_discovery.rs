@@ -253,15 +253,33 @@ fn discovery_reports_all_files_but_source_identity_tracks_only_dicom_candidates(
     .unwrap();
     assert_eq!(snapshot_progress.last().unwrap().files_seen, 2);
     assert!(discovery.source_snapshot.is_stable_with(&stable));
+    assert!(
+        discovery
+            .source_snapshot
+            .matches_current_with_progress(directory.path(), |_| {})
+            .unwrap()
+    );
 
     std::fs::write(directory.path().join("export-note.txt"), b"changed").unwrap();
     std::fs::write(directory.path().join("README"), b"operator notes").unwrap();
     let notes_changed = snapshot_source_with_progress(directory.path(), |_| {}).unwrap();
     assert!(stable.is_stable_with(&notes_changed));
+    assert!(
+        discovery
+            .source_snapshot
+            .matches_current_with_progress(directory.path(), |_| {})
+            .unwrap()
+    );
 
     std::fs::write(directory.path().join("incomplete.dcm"), b"DICM truncated").unwrap();
     let dicom_candidate_added = snapshot_source_with_progress(directory.path(), |_| {}).unwrap();
     assert!(!stable.is_stable_with(&dicom_candidate_added));
+    assert!(
+        !discovery
+            .source_snapshot
+            .matches_current_with_progress(directory.path(), |_| {})
+            .unwrap()
+    );
 }
 
 #[cfg(unix)]

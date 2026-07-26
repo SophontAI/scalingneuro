@@ -1375,7 +1375,7 @@ dependencies = [
 
 [[package]]
 name = "neuro-sync"
-version = "0.5.4"
+version = "0.5.5"
 dependencies = [
  "anyhow",
  "axum",
@@ -1395,6 +1395,7 @@ dependencies = [
  "hmac",
  "http-body-util",
  "rand 0.9.5",
+ "rayon",
  "reqwest",
  "rusqlite",
  "semver",

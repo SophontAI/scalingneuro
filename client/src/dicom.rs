@@ -3,12 +3,17 @@ use std::{
     fs::File,
     io::Read,
     path::{Path, PathBuf},
+    sync::{
+        Mutex,
+        atomic::{AtomicU64, Ordering},
+    },
     time::{Duration, Instant, SystemTime},
 };
 
 use anyhow::{Context, Result, bail};
 use dicom_core::{Tag, VR, header::Header};
 use dicom_object::{DefaultDicomObject, OpenFileOptions};
+use rayon::prelude::*;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use walkdir::WalkDir;
@@ -278,6 +283,48 @@ impl SourceSnapshot {
         !self.changed_while_reading && !later.changed_while_reading && self.files == later.files
     }
 
+    /// Confirm that the DICOM source represented by this snapshot is still
+    /// current without reparsing every known DICOM header. Existing files need
+    /// only a metadata comparison. Only newly encountered files are parsed to
+    /// determine whether they belong to the DICOM source identity.
+    pub fn matches_current_with_progress(
+        &self,
+        root: &Path,
+        mut report: impl FnMut(u64),
+    ) -> Result<bool> {
+        if self.changed_while_reading || !root.is_dir() {
+            return Ok(false);
+        }
+        let mut expected = self
+            .files
+            .iter()
+            .map(|file| (file.path.as_path(), file))
+            .collect::<HashMap<_, _>>();
+        let mut files_seen = 0_u64;
+        let mut last_progress = Instant::now();
+        for entry in WalkDir::new(root).follow_links(false).into_iter() {
+            let entry = entry.context("could not inspect every entry in the selected folder")?;
+            if !entry.file_type().is_file() {
+                continue;
+            }
+            files_seen += 1;
+            let path = entry.path();
+            if let Some(saved) = expected.remove(path) {
+                if file_fingerprint(path)? != *saved {
+                    return Ok(false);
+                }
+            } else if looks_like_dicom(path) || read_header(path).is_ok() {
+                return Ok(false);
+            }
+            if last_progress.elapsed() >= PROGRESS_INTERVAL {
+                report(files_seen);
+                last_progress = Instant::now();
+            }
+        }
+        report(files_seen);
+        Ok(expected.is_empty())
+    }
+
     pub fn fingerprint(&self, root: &Path) -> Result<SourceFingerprint> {
         self.fingerprint_with_progress(root, |_| {})
     }
@@ -395,7 +442,7 @@ pub struct SnapshotProgress {
 
 pub fn discover_with_progress(
     root: &Path,
-    mut report: impl FnMut(DiscoveryProgress),
+    mut report: impl FnMut(DiscoveryProgress) + Send,
 ) -> Result<Discovery> {
     if !root.is_dir() {
         bail!(
@@ -421,15 +468,75 @@ pub fn discover_with_progress(
         dicom_files: 0,
         series_found: 0,
     });
-    let mut last_progress = Instant::now();
+    struct ObservedSourceFile {
+        path: PathBuf,
+        before: FileFingerprint,
+        header: Result<DicomHeader>,
+        include_in_source_identity: bool,
+        after: FileFingerprint,
+    }
 
-    for path in inventory {
+    let worker_count = std::thread::available_parallelism()
+        .map(usize::from)
+        .unwrap_or(1)
+        .min(8);
+    let pool = rayon::ThreadPoolBuilder::new()
+        .num_threads(worker_count)
+        .thread_name(|index| format!("neuro-sync-dicom-{index}"))
+        .build()
+        .context("could not start parallel DICOM discovery")?;
+    let files_seen = AtomicU64::new(0);
+    let dicom_files = AtomicU64::new(0);
+    let progress = Mutex::new(&mut report);
+    let observations = inventory.chunks(worker_count * 32).flat_map(|batch| {
+        pool.install(|| {
+            batch
+                .par_iter()
+                .map(|path| {
+                    let before = file_fingerprint(path)?;
+                    let header = read_header(path);
+                    let is_dicom = header.is_ok();
+                    let include_in_source_identity = is_dicom || looks_like_dicom(path);
+                    let after = file_fingerprint(path)?;
+                    let mut progress = progress
+                        .lock()
+                        .map_err(|_| anyhow::anyhow!("DICOM discovery progress lock failed"))?;
+                    let files_seen = files_seen.fetch_add(1, Ordering::Relaxed) + 1;
+                    let dicom_files = if is_dicom {
+                        dicom_files.fetch_add(1, Ordering::Relaxed) + 1
+                    } else {
+                        dicom_files.load(Ordering::Relaxed)
+                    };
+                    (*progress)(DiscoveryProgress {
+                        phase: DiscoveryPhase::ReadHeaders,
+                        files_seen,
+                        total_files: Some(total_files),
+                        dicom_files,
+                        series_found: 0,
+                    });
+                    Ok(ObservedSourceFile {
+                        path: path.clone(),
+                        before,
+                        header,
+                        include_in_source_identity,
+                        after,
+                    })
+                })
+                .collect::<Vec<Result<ObservedSourceFile>>>()
+        })
+    });
+
+    for observation in observations {
+        let ObservedSourceFile {
+            path,
+            before,
+            header,
+            include_in_source_identity,
+            after,
+        } = observation?;
         summary.files_seen += 1;
-        let before = file_fingerprint(&path)?;
-        let include_in_source_identity;
-        match read_header(&path) {
+        match header {
             Ok(header) => {
-                include_in_source_identity = true;
                 summary.dicom_files += 1;
                 let study_uid = header.study_uid.clone().unwrap_or_default();
                 let series_uid = header.series_uid.clone().unwrap_or_default();
@@ -673,29 +780,18 @@ pub fn discover_with_progress(
                 });
             }
             Err(error) => {
-                include_in_source_identity = looks_like_dicom(&path);
                 if include_in_source_identity {
                     unreadable_dicom_like_files += 1;
                     tracing::warn!(path = %path.display(), error = %error, "DICOM-like file could not be parsed");
                 }
             }
         }
-        let after = file_fingerprint(&path)?;
         if include_in_source_identity {
             changed_while_reading |= before != after;
             source_files.push(after);
         }
-        if last_progress.elapsed() >= PROGRESS_INTERVAL {
-            report(DiscoveryProgress {
-                phase: DiscoveryPhase::ReadHeaders,
-                files_seen: summary.files_seen,
-                total_files: Some(total_files),
-                dicom_files: summary.dicom_files,
-                series_found: groups.len() as u64,
-            });
-            last_progress = Instant::now();
-        }
     }
+    drop(progress);
 
     let mut series: Vec<_> = groups.into_values().collect();
     for group in &mut series {

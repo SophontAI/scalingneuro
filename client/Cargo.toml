@@ -1,6 +1,6 @@
 [package]
 name = "neuro-sync"
-version = "0.5.4"
+version = "0.5.5"
 edition = "2024"
 rust-version = "1.85"
 description = "Functional EPI DICOM sync client for Scaling Neuro"
@@ -29,6 +29,7 @@ futures = "0.3"
 hex = "0.4"
 hmac = "0.12"
 rand = "0.9"
+rayon = "1.11"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
 rusqlite = { version = "0.37", features = ["bundled"] }
 semver = "1.0"

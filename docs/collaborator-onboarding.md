@@ -4,6 +4,10 @@ You need a completed scanner export folder, temporary local space for one
 compressed EPI series, and institutional authorization to contribute the
 functional MRI data to the shared Scaling Neuro archive.
 
+Transient DICOM preparation uses operating-system local temporary storage by
+default, while resumable checkpoints remain in the user data directory. On
+clusters, `NEURO_SYNC_STAGING_DIR` can select another node-local scratch base.
+
 ## Install
 
 ```sh

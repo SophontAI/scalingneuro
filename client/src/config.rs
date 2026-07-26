@@ -6,6 +6,7 @@ use std::{
 use anyhow::{Context, Result, bail};
 use directories::ProjectDirs;
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 
 use crate::{DEFAULT_API_URL, privacy};
 
@@ -22,27 +23,42 @@ pub struct AppPaths {
 
 impl AppPaths {
     pub fn discover(override_root: Option<&Path>) -> Result<Self> {
-        let root = if let Some(root) = override_root {
-            root.to_path_buf()
-        } else if let Ok(root) = std::env::var("NEURO_SYNC_STATE_DIR") {
-            PathBuf::from(root)
-        } else {
-            ProjectDirs::from("med", "Sophont", "ScalingNeuro")
+        let configured_root = override_root
+            .map(Path::to_path_buf)
+            .or_else(|| std::env::var_os("NEURO_SYNC_STATE_DIR").map(PathBuf::from));
+        let root = match configured_root.as_ref() {
+            Some(root) => root.clone(),
+            None => ProjectDirs::from("med", "Sophont", "ScalingNeuro")
                 .context("could not determine the operating-system data directory")?
                 .data_local_dir()
-                .join("neuro-sync")
+                .join("neuro-sync"),
         };
+        let staging_name = format!("neuro-sync-staging-{}", staging_namespace(&root));
+        let bundles = std::env::var_os("NEURO_SYNC_STAGING_DIR")
+            .map(|base| PathBuf::from(base).join(&staging_name))
+            .unwrap_or_else(|| match configured_root {
+                Some(_) => root.join("bundles"),
+                None => std::env::temp_dir().join(staging_name),
+            });
         Ok(Self {
             config: root.join("config.json"),
             database: root.join("state.sqlite3"),
             lock: root.join("instance.lock"),
             pending_registration: root.join("pending-registration.json"),
-            bundles: root.join("bundles"),
+            bundles,
             reports: root.join("reports"),
             root,
         })
     }
+}
 
+fn staging_namespace(root: &Path) -> String {
+    let mut digest = Sha256::new();
+    digest.update(root.as_os_str().as_encoded_bytes());
+    hex::encode(digest.finalize())[..16].to_owned()
+}
+
+impl AppPaths {
     pub fn initialize(&self) -> Result<()> {
         for path in [&self.root, &self.bundles, &self.reports] {
             fs::create_dir_all(path)

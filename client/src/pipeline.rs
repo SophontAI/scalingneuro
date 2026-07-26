@@ -28,10 +28,7 @@ use crate::{
     },
     classify::classify_header,
     config::{AppPaths, ClientConfig},
-    dicom::{
-        Discovery, DiscoveryPhase, SeriesGroup, SourceSnapshot, discover_with_progress,
-        snapshot_source_with_progress,
-    },
+    dicom::{Discovery, DiscoveryPhase, SeriesGroup, SourceSnapshot, discover_with_progress},
     model::{
         Classification, ClassificationDecision, ClassificationEvidence, HeldSeries, LocalManifest,
         ManifestBundle, ReportBundle, RunReport, SourceSummary,
@@ -53,7 +50,7 @@ const STAGING_HEADROOM_BYTES: u64 = 64 * 1024 * 1024;
 
 #[derive(Debug)]
 struct StagingStorageExhausted {
-    state_root: PathBuf,
+    staging_root: PathBuf,
     required: u64,
     available: u64,
 }
@@ -62,12 +59,12 @@ impl std::fmt::Display for StagingStorageExhausted {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             formatter,
-            "local staging storage is exhausted (requires at least {} bytes ({}), available {} bytes ({}) in {}); free space or rerun with --state-dir <large-scratch-directory> (or set NEURO_SYNC_STATE_DIR)",
+            "local staging storage is exhausted (requires at least {} bytes ({}), available {} bytes ({}) in {}); free local scratch space or set NEURO_SYNC_STAGING_DIR to a larger local directory",
             self.required,
             human_bytes(self.required),
             self.available,
             human_bytes(self.available),
-            self.state_root.display()
+            self.staging_root.display()
         )
     }
 }
@@ -330,10 +327,10 @@ impl Runtime {
                     );
                     let mut comparison =
                         Progress::spinner("Checking completed sync", ProgressUnit::Files);
-                    let current_snapshot =
-                        snapshot_source_with_progress(&canonical_source, |progress| {
-                            comparison.set(progress.files_seen)
-                        })?;
+                    let current_snapshot = discover_with_progress(&canonical_source, |progress| {
+                        comparison.set(progress.files_seen)
+                    })?
+                    .source_snapshot;
                     comparison.finish_at(comparison.completed());
                     let current = fingerprint_source_with_progress(
                         &current_snapshot,
@@ -403,27 +400,36 @@ impl Runtime {
             return Ok(run_id);
         }
         validate_manifest_context(&manifest, &config)?;
-        let saved_fingerprint = self.state.source_fingerprint(&run.id)?;
-        let mut comparison = Progress::spinner("Checking saved progress", ProgressUnit::Files);
-        let current_snapshot =
-            snapshot_source_with_progress(&source, |progress| comparison.set(progress.files_seen))?;
-        comparison.finish_at(comparison.completed());
+        let Some(saved_fingerprint) = self.state.source_fingerprint(&run.id)? else {
+            let run_id = Uuid::new_v4().to_string();
+            tracing::info!(
+                old_run_id = %run.id,
+                new_run_id = %run_id,
+                reason = "source_checkpoint_missing",
+                "The unfinished run has no source identity; safely re-preparing the folder"
+            );
+            self.state
+                .supersede_run(&run.id, &run_id, "source_checkpoint_missing")?;
+            remove_bundle_cache(&self.paths, &run.id);
+            self.process_existing_run(&run_id, source, run.dry_run, config, None)
+                .await?;
+            return Ok(run_id);
+        };
+        let state = self.state.clone();
+        let inspect_id = run.id.clone();
+        let inspect_source = source.clone();
+        let inspection = tokio::task::spawn_blocking(move || {
+            inspect_dicom_source(&state, &inspect_id, &inspect_source, false)
+        })
+        .await
+        .context("local DICOM discovery task stopped unexpectedly")??;
         let current_fingerprint = fingerprint_source_with_progress(
-            &current_snapshot,
+            &inspection.source_snapshot,
             &source,
             "Verifying checkpointed folder contents",
         )?;
-        confirm_source_snapshot_stable(
-            &current_snapshot,
-            &source,
-            "Confirming checkpointed folder stability",
-        )?;
-        let source_reason = match saved_fingerprint.as_ref() {
-            None => Some("source_checkpoint_missing"),
-            Some(saved) if saved != &current_fingerprint => Some("source_changed_since_checkpoint"),
-            Some(_) => None,
-        };
-        if let Some(reason) = source_reason {
+        if saved_fingerprint != current_fingerprint {
+            let reason = "source_changed_since_checkpoint";
             let run_id = Uuid::new_v4().to_string();
             tracing::info!(
                 old_run_id = %run.id,
@@ -449,8 +455,14 @@ impl Runtime {
             previous_status = %run.status,
             "Found a source-matched EPI archive checkpoint; continuing one series at a time"
         );
-        self.process_streaming_dicom_run(&run.id, source, config, Some((manifest, report)))
-            .await?;
+        self.process_streaming_dicom_run(
+            &run.id,
+            source,
+            config,
+            Some((manifest, report)),
+            Some(inspection),
+        )
+        .await?;
         Ok(run.id)
     }
 
@@ -464,7 +476,7 @@ impl Runtime {
     ) -> Result<()> {
         if !dry_run && expected_bundle_ids.is_none() {
             return self
-                .process_streaming_dicom_run(run_id, source, config, None)
+                .process_streaming_dicom_run(run_id, source, config, None, None)
                 .await;
         }
         let state = self.state.clone();
@@ -599,29 +611,35 @@ impl Runtime {
         source: PathBuf,
         config: ClientConfig,
         checkpoint: Option<(LocalManifest, RunReport)>,
+        inspection: Option<InspectedDicomSource>,
     ) -> Result<()> {
         let resuming = checkpoint.is_some();
-        let state = self.state.clone();
-        let inspect_id = run_id.to_owned();
-        let inspect_source = source.clone();
-        let inspection = tokio::task::spawn_blocking(move || {
-            inspect_dicom_source(&state, &inspect_id, &inspect_source, !resuming)
-        })
-        .await
-        .context("local DICOM discovery task stopped unexpectedly")?;
         let inspection = match inspection {
-            Ok(value) => value,
-            Err(error) => {
-                let summary = self
-                    .state
-                    .run(run_id)?
-                    .map(|run| run.summary)
-                    .unwrap_or_default();
-                let status = if resuming { "upload_failed" } else { "failed" };
-                let code = preparation_failure_code(&error);
-                self.state
-                    .update_run(run_id, status, &summary, Some(code))?;
-                return Err(error);
+            Some(inspection) => inspection,
+            None => {
+                let state = self.state.clone();
+                let inspect_id = run_id.to_owned();
+                let inspect_source = source.clone();
+                let inspection = tokio::task::spawn_blocking(move || {
+                    inspect_dicom_source(&state, &inspect_id, &inspect_source, true)
+                })
+                .await
+                .context("local DICOM discovery task stopped unexpectedly")?;
+                match inspection {
+                    Ok(value) => value,
+                    Err(error) => {
+                        let summary = self
+                            .state
+                            .run(run_id)?
+                            .map(|run| run.summary)
+                            .unwrap_or_default();
+                        let status = if resuming { "upload_failed" } else { "failed" };
+                        let code = preparation_failure_code(&error);
+                        self.state
+                            .update_run(run_id, status, &summary, Some(code))?;
+                        return Err(error);
+                    }
+                }
             }
         };
 
@@ -1815,20 +1833,7 @@ fn inspect_dicom_source(
         state.update_run(run_id, "preparing", &discovery.summary, None)?;
     }
     std::thread::sleep(SOURCE_QUIET_INTERVAL);
-    let mut stability_progress = Progress::bounded(
-        "Verifying source",
-        discovery.summary.files_seen,
-        ProgressUnit::Files,
-    );
-    let quiet_snapshot = snapshot_source_with_progress(source, |progress| {
-        stability_progress.set(progress.files_seen);
-    })?;
-    stability_progress.finish();
-    if !discovery.source_snapshot.is_stable_with(&quiet_snapshot) {
-        bail!(
-            "the selected DICOM folder is still changing; wait for the scanner export to finish, then rerun the same neuro-sync <folder> command"
-        );
-    }
+    confirm_source_snapshot_stable(&discovery.source_snapshot, source, "Verifying source")?;
     ensure_no_unreadable_dicom_like_files(discovery.unreadable_dicom_like_files)?;
     let classifications = discovery
         .series
@@ -1846,7 +1851,7 @@ fn inspect_dicom_source(
         started_at,
         summary: discovery.summary,
         unreadable_dicom_like_files: discovery.unreadable_dicom_like_files,
-        source_snapshot: quiet_snapshot,
+        source_snapshot: discovery.source_snapshot,
         series,
     })
 }
@@ -1947,10 +1952,10 @@ fn confirm_source_snapshot_stable(
     label: &str,
 ) -> Result<()> {
     let mut progress = Progress::spinner(label, ProgressUnit::Files);
-    let confirmed =
-        snapshot_source_with_progress(source, |update| progress.set(update.files_seen))?;
+    let stable =
+        snapshot.matches_current_with_progress(source, |files_seen| progress.set(files_seen))?;
     progress.finish_at(progress.completed());
-    if !snapshot.is_stable_with(&confirmed) {
+    if !stable {
         bail!(
             "the selected DICOM folder changed while its content identity was being checked; wait for the export to finish, then rerun the same neuro-sync <folder> command"
         );
@@ -1971,11 +1976,10 @@ fn confirm_final_streaming_source_stability(
         expected_files_seen,
         ProgressUnit::Files,
     );
-    let final_snapshot = snapshot_source_with_progress(source, |progress| {
-        snapshot_progress.set(progress.files_seen)
-    })?;
+    let stable = initial_snapshot
+        .matches_current_with_progress(source, |files_seen| snapshot_progress.set(files_seen))?;
     snapshot_progress.finish();
-    if !initial_snapshot.is_stable_with(&final_snapshot) {
+    if !stable {
         bail!(
             "the selected DICOM folder changed during sync; no new durable receipts were committed. Rerun the same neuro-sync <folder> command after the export is complete"
         );
@@ -2098,9 +2102,9 @@ async fn prepare_one_dicom_series(
         progress.finish_at(progress.completed());
         match result {
             Err(error) if is_storage_exhaustion(&error) => {
-                let available = fs2::available_space(&paths.root).unwrap_or(0);
+                let available = fs2::available_space(&paths.bundles).unwrap_or(0);
                 Err(StagingStorageExhausted {
-                    state_root: paths.root,
+                    staging_root: paths.bundles,
                     required: staging_required,
                     available,
                 }
@@ -2120,8 +2124,8 @@ fn ensure_series_staging_capacity(paths: &AppPaths, group: &SeriesGroup) -> Resu
         .map(|path| fs::metadata(path).map(|metadata| metadata.len()))
         .collect::<std::io::Result<Vec<_>>>()?;
     let required = required_series_staging_bytes(sizes)?;
-    let available = fs2::available_space(&paths.root)?;
-    validate_staging_capacity(&paths.root, required, available)?;
+    let available = fs2::available_space(&paths.bundles)?;
+    validate_staging_capacity(&paths.bundles, required, available)?;
     Ok(required)
 }
 
@@ -2148,10 +2152,10 @@ fn required_series_staging_bytes(sizes: impl IntoIterator<Item = u64>) -> Result
         .context("DICOM staging-space requirement overflow")
 }
 
-fn validate_staging_capacity(state_root: &Path, required: u64, available: u64) -> Result<()> {
+fn validate_staging_capacity(staging_root: &Path, required: u64, available: u64) -> Result<()> {
     if available < required {
         return Err(StagingStorageExhausted {
-            state_root: state_root.to_path_buf(),
+            staging_root: staging_root.to_path_buf(),
             required,
             available,
         }
@@ -2343,7 +2347,18 @@ async fn verify_prepared_objects_for_bundles(bundles: &[ManifestBundle]) -> Resu
 }
 
 fn same_prepared_bundle(left: &ManifestBundle, right: &ManifestBundle) -> Result<bool> {
-    Ok(serde_json::to_value(left)? == serde_json::to_value(right)?)
+    fn durable_identity(bundle: &ManifestBundle) -> Result<serde_json::Value> {
+        let mut value = serde_json::to_value(bundle)?;
+        if let Some(archive) = value
+            .get_mut("archive")
+            .and_then(serde_json::Value::as_object_mut)
+        {
+            archive.remove("local_path");
+        }
+        Ok(value)
+    }
+
+    Ok(durable_identity(left)? == durable_identity(right)?)
 }
 
 fn prepared_archive_path(bundle: &ManifestBundle) -> PathBuf {
@@ -2359,11 +2374,11 @@ fn cleanup_prepared_bundle(paths: &AppPaths, run_id: &str, bundle: &ManifestBund
         .archive
         .as_ref()
         .context("DICOM bundle has no prepared archive")?;
-    let expected_directory = paths.bundles.join(run_id).join(&bundle.bundle_id);
-    let expected_archive = expected_directory.join("dicom.tar.zst");
-    if Path::new(&archive.object.local_path) != expected_archive {
-        bail!("refused to clean a prepared archive outside its run staging directory");
-    }
+    let expected_directory = bundle_staging_roots(paths)
+        .into_iter()
+        .map(|root| root.join(run_id).join(&bundle.bundle_id))
+        .find(|directory| Path::new(&archive.object.local_path) == directory.join("dicom.tar.zst"))
+        .context("refused to clean a prepared archive outside its run staging directory")?;
     match fs::remove_dir_all(&expected_directory) {
         Ok(()) => Ok(()),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
@@ -2381,27 +2396,42 @@ fn cleanup_orphaned_bundle_archives(
     run_id: &str,
     manifest: &LocalManifest,
 ) -> Result<()> {
-    let root = paths.bundles.join(run_id);
-    fs::create_dir_all(&root)?;
     let referenced = manifest
         .bundles
         .iter()
         .map(|bundle| bundle.bundle_id.as_str())
         .collect::<HashSet<_>>();
-    for entry in fs::read_dir(&root)? {
-        let entry = entry?;
-        let name = entry.file_name();
-        let retained = name.to_str().is_some_and(|name| referenced.contains(name));
-        if retained {
+    for staging_root in bundle_staging_roots(paths) {
+        let root = staging_root.join(run_id);
+        if staging_root == paths.bundles {
+            fs::create_dir_all(&root)?;
+        } else if !root.is_dir() {
             continue;
         }
-        if entry.file_type()?.is_dir() {
-            fs::remove_dir_all(entry.path())?;
-        } else {
-            fs::remove_file(entry.path())?;
+        for entry in fs::read_dir(&root)? {
+            let entry = entry?;
+            let name = entry.file_name();
+            let retained = name.to_str().is_some_and(|name| referenced.contains(name));
+            if retained {
+                continue;
+            }
+            if entry.file_type()?.is_dir() {
+                fs::remove_dir_all(entry.path())?;
+            } else {
+                fs::remove_file(entry.path())?;
+            }
         }
     }
     Ok(())
+}
+
+fn bundle_staging_roots(paths: &AppPaths) -> Vec<PathBuf> {
+    let mut roots = vec![paths.bundles.clone()];
+    let legacy = paths.root.join("bundles");
+    if legacy != paths.bundles {
+        roots.push(legacy);
+    }
+    roots
 }
 
 fn human_bytes(bytes: u64) -> String {
@@ -2458,11 +2488,14 @@ fn prepare_run(
         discovery.summary.files_seen,
         ProgressUnit::Files,
     );
-    let quiet_snapshot = snapshot_source_with_progress(source, |progress| {
-        stability_progress.set(progress.files_seen);
-    })?;
+    let source_stable =
+        discovery
+            .source_snapshot
+            .matches_current_with_progress(source, |files_seen| {
+                stability_progress.set(files_seen);
+            })?;
     stability_progress.finish();
-    if !discovery.source_snapshot.is_stable_with(&quiet_snapshot) {
+    if !source_stable {
         return finish_unstable_preparation(
             paths,
             state,
@@ -2473,7 +2506,7 @@ fn prepare_run(
             &pseudonymizer,
         );
     }
-    let source_snapshot = quiet_snapshot;
+    let source_snapshot = discovery.source_snapshot.clone();
     ensure_no_unreadable_dicom_like_files(discovery.unreadable_dicom_like_files)?;
     let source_fingerprint =
         fingerprint_source_with_progress(&source_snapshot, source, "Hashing source")?;
@@ -2556,9 +2589,9 @@ fn prepare_run(
             }
             Err(error) if is_storage_exhaustion(&error) => {
                 return Err(StagingStorageExhausted {
-                    state_root: paths.root.clone(),
+                    staging_root: paths.bundles.clone(),
                     required: staging_required,
-                    available: fs2::available_space(&paths.root).unwrap_or(0),
+                    available: fs2::available_space(&paths.bundles).unwrap_or(0),
                 }
                 .into());
             }
@@ -2596,11 +2629,11 @@ fn prepare_run(
         discovery.summary.files_seen,
         ProgressUnit::Files,
     );
-    let final_snapshot = snapshot_source_with_progress(source, |progress| {
-        final_stability_progress.set(progress.files_seen);
+    let final_stable = source_snapshot.matches_current_with_progress(source, |files_seen| {
+        final_stability_progress.set(files_seen);
     })?;
     final_stability_progress.finish();
-    if !source_snapshot.is_stable_with(&final_snapshot) {
+    if !final_stable {
         let _ = fs::remove_dir_all(&bundle_root);
         return finish_unstable_preparation(
             paths,
@@ -2928,9 +2961,11 @@ fn recover_interrupted_preparations(paths: &AppPaths, state: &StateStore) -> Res
 }
 
 fn remove_bundle_cache(paths: &AppPaths, run_id: &str) {
-    if let Err(error) = fs::remove_dir_all(paths.bundles.join(run_id)) {
-        if error.kind() != std::io::ErrorKind::NotFound {
-            tracing::warn!(run_id, "could not remove local bundle cache");
+    for root in bundle_staging_roots(paths) {
+        if let Err(error) = fs::remove_dir_all(root.join(run_id)) {
+            if error.kind() != std::io::ErrorKind::NotFound {
+                tracing::warn!(run_id, "could not remove local bundle cache");
+            }
         }
     }
 }
@@ -2939,11 +2974,60 @@ fn remove_bundle_cache(paths: &AppPaths, run_id: &str) {
 mod tests {
     use super::*;
 
+    fn prepared_bundle(local_path: &str) -> ManifestBundle {
+        ManifestBundle {
+            bundle_id: "bundle".into(),
+            series_id: "series".into(),
+            subject_id: "subject".into(),
+            session_id: "session".into(),
+            protocol_group_id: "protocol".into(),
+            series_kind: "functional_epi".into(),
+            archive_route: "functional-epi-v1".into(),
+            pixel_data_policy: "scanner-native-not-defaced".into(),
+            archive: Some(crate::model::ManifestArchiveObject {
+                object: crate::model::ManifestObject {
+                    relative_key: "bundle/dicom.tar.zst".into(),
+                    local_path: local_path.into(),
+                    size: 12,
+                    sha256: "a".repeat(64),
+                },
+                format: "dicom-tar-zstd".into(),
+                dicom_instance_count: 1,
+                deidentification_profile: DICOM_METADATA_POLICY_ID.into(),
+                deidentification_profile_version: DICOM_METADATA_POLICY_VERSION.into(),
+            }),
+            source_dicom_count: 1,
+            classification: Classification {
+                decision: ClassificationDecision::Accepted,
+                kind: "functional_epi".into(),
+                confidence: 1.0,
+                evidence: Vec::new(),
+            },
+            qc: crate::model::QcResult {
+                passed: true,
+                checks: Vec::new(),
+                warnings: Vec::new(),
+            },
+        }
+    }
+
+    #[test]
+    fn regenerated_bundle_identity_ignores_ephemeral_staging_path() {
+        let old = prepared_bundle("/home/user/.local/share/neuro-sync/bundles/archive");
+        let regenerated = prepared_bundle("/tmp/neuro-sync-staging/archive");
+        assert!(same_prepared_bundle(&old, &regenerated).unwrap());
+
+        let mut changed = regenerated;
+        changed.archive.as_mut().unwrap().object.sha256 = "b".repeat(64);
+        assert!(!same_prepared_bundle(&old, &changed).unwrap());
+    }
+
     #[test]
     fn final_streaming_stability_detects_a_changed_folder() {
         let directory = tempfile::tempdir().unwrap();
         std::fs::write(directory.path().join("one.dcm"), b"first").unwrap();
-        let initial = snapshot_source_with_progress(directory.path(), |_| {}).unwrap();
+        let initial =
+            crate::dicom::snapshot_source_with_progress(directory.path(), |_| {}).unwrap();
 
         confirm_final_streaming_source_stability(&initial, directory.path(), 1).unwrap();
 
