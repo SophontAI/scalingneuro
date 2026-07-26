@@ -791,8 +791,6 @@ pub fn discover_with_progress(
             source_files.push(after);
         }
     }
-    drop(progress);
-
     let mut series: Vec<_> = groups.into_values().collect();
     for group in &mut series {
         group.instances.sort_by(|left, right| {
