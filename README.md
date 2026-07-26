@@ -100,15 +100,19 @@ it with their own tools and compute.
 
 ## Repository
 
+Scaling Neuro is open source so researchers can inspect the complete path from
+local DICOM selection and rewriting through archive receipt. We are not
+currently accepting external pull requests.
+
 | Path | Role |
 |---|---|
-| `client/` | Rust CLI, EPI selection, local DICOM rewriting, deterministic archives, checkpoints, multipart sync |
-| `worker/` | Cloudflare Pages Worker plus private archive-request notifier, registration, upload receipts, D1 state, R2 URL signing |
-| `worker/migrations/` | Ordered production D1 migrations |
-| `schemas/` | Public request, archive, status, and error contracts |
-| `docs/` | Contribution, deidentification, sync, API, onboarding, and release contracts |
-| `installers/` | Dependency-free installer templates |
-| `.github/workflows/` | Validation plus Cloudflare deployment, and manual client release |
+| [`client/`](client/) | Rust CLI, EPI selection, local DICOM rewriting, deterministic archives, checkpoints, multipart sync |
+| [`worker/`](worker/) | Cloudflare Pages Worker plus private archive-request notifier, registration, upload receipts, D1 state, R2 URL signing |
+| [`worker/migrations/`](worker/migrations/) | Ordered production D1 migrations |
+| [`schemas/`](schemas/) | Public request, archive, status, and error contracts |
+| [`docs/`](docs/) | Contribution, deidentification, sync, API, onboarding, and release contracts |
+| [`installers/`](installers/) | Dependency-free installer templates |
+| [`.github/workflows/`](.github/workflows/) | Validation plus Cloudflare deployment, and manual client release |
 
 ## Local verification
 
