@@ -57,7 +57,7 @@ jobs:
             [[ -n "$path" ]] || continue
             changed_count=$((changed_count + 1))
             case "$path" in
-              index.html|404.html|styles.css|app.js|favicon.svg|og.png|docs/contribution-policy.html|downloads/index.html)
+              index.html|404.html|styles.css|app.js|favicon.svg|og.png|docs/contribution-policy.html|docs/de-identification-procedure.html|downloads/index.html)
                 ;;
               *)
                 site_only=false

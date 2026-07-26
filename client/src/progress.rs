@@ -193,23 +193,19 @@ pub fn render_progress(
             } else {
                 estimate.completed.min(total) as f64 * 100.0 / total as f64
             };
-            format!(
-                "{}/{} ({percentage:.1}%)",
-                format_amount(estimate.completed, unit),
-                format_amount(total, unit)
-            )
+            format_bounded_amount(estimate.completed, total, unit, percentage)
         }
         None => format_amount(estimate.completed, unit),
     };
     let elapsed = format_duration(estimate.elapsed);
     let rate = estimate
         .rate_per_second
-        .map(|rate| format!("{} /s", format_rate(rate, unit)))
-        .unwrap_or_else(|| "rate calculating".into());
-    let eta = match (estimate.total, estimate.eta) {
-        (Some(_), Some(eta)) => format!("ETA {}", format_duration(eta)),
-        (Some(_), None) => "ETA calculating".into(),
-        (None, _) => format!("elapsed {elapsed}"),
+        .map(|rate| format!("{}/s", format_rate(rate, unit)));
+    let timing = match (estimate.total, estimate.eta) {
+        (Some(total), _) if estimate.completed >= total => Some(format!("elapsed {elapsed}")),
+        (Some(_), Some(eta)) => Some(format!("ETA {}", format_duration(eta))),
+        (Some(_), None) => None,
+        (None, _) => Some(format!("elapsed {elapsed}")),
     };
     let bar = if tty {
         estimate.total.map(|total| {
@@ -228,10 +224,17 @@ pub fn render_progress(
     } else {
         None
     };
-    format!(
-        "{label}{}  {amount}  {rate}  {eta}",
-        bar.unwrap_or_default()
-    )
+    let details = [rate, timing]
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>()
+        .join("  ");
+    let details = if details.is_empty() {
+        String::new()
+    } else {
+        format!("  {details}")
+    };
+    format!("{label}{}  {amount}{details}", bar.unwrap_or_default())
 }
 
 fn format_amount(value: u64, unit: ProgressUnit) -> String {
@@ -239,6 +242,23 @@ fn format_amount(value: u64, unit: ProgressUnit) -> String {
         ProgressUnit::Bytes => format_bytes(value as f64),
         ProgressUnit::Files => format!("{value} files"),
         ProgressUnit::Series => format!("{value} series"),
+    }
+}
+
+fn format_bounded_amount(
+    completed: u64,
+    total: u64,
+    unit: ProgressUnit,
+    percentage: f64,
+) -> String {
+    match unit {
+        ProgressUnit::Bytes => format!(
+            "{}/{} ({percentage:.1}%)",
+            format_bytes(completed as f64),
+            format_bytes(total as f64)
+        ),
+        ProgressUnit::Files => format!("{completed}/{total} files ({percentage:.1}%)"),
+        ProgressUnit::Series => format!("{completed}/{total} series ({percentage:.1}%)"),
     }
 }
 
@@ -322,8 +342,21 @@ mod tests {
         assert!(line.contains("[======                  ]"));
         assert!(line.contains("5.0 MiB/20.0 MiB"));
         assert!(line.contains("(25.0%)"));
-        assert!(line.contains("2.5 MiB /s"));
+        assert!(line.contains("2.5 MiB/s"));
         assert!(line.contains("ETA 00:06"));
+    }
+
+    #[test]
+    fn completed_progress_reports_elapsed_time_instead_of_zero_eta() {
+        let line = render_progress(
+            "Reading DICOMs",
+            ProgressUnit::Files,
+            ProgressEstimate::at(100, Some(100), Duration::from_secs(12)),
+            true,
+        );
+        assert!(line.contains("100/100 files (100.0%)"));
+        assert!(line.contains("elapsed 00:12"));
+        assert!(!line.contains("ETA 00:00"));
     }
 
     #[test]

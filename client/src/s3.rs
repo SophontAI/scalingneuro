@@ -65,11 +65,8 @@ impl MultipartUploader {
         for object in objects {
             verify_local_object_size(Path::new(&object.local_path), object.size).await?;
         }
-        let mut progress = Progress::bounded(
-            "Uploading functional EPI DICOM archives",
-            total_bytes,
-            ProgressUnit::Bytes,
-        );
+        let mut progress =
+            Progress::bounded("Uploading EPI archives", total_bytes, ProgressUnit::Bytes);
         let descriptor_map: HashMap<_, _> = descriptors
             .iter()
             .map(|item| (item.key.as_str(), item))

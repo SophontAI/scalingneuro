@@ -329,7 +329,7 @@ impl Runtime {
                         "Checking whether this folder changed since its completed sync"
                     );
                     let mut comparison =
-                        Progress::spinner("Checking completed folder", ProgressUnit::Files);
+                        Progress::spinner("Checking completed sync", ProgressUnit::Files);
                     let current_snapshot =
                         snapshot_source_with_progress(&canonical_source, |progress| {
                             comparison.set(progress.files_seen)
@@ -404,7 +404,7 @@ impl Runtime {
         }
         validate_manifest_context(&manifest, &config)?;
         let saved_fingerprint = self.state.source_fingerprint(&run.id)?;
-        let mut comparison = Progress::spinner("Checking checkpointed source", ProgressUnit::Files);
+        let mut comparison = Progress::spinner("Checking saved progress", ProgressUnit::Files);
         let current_snapshot =
             snapshot_source_with_progress(&source, |progress| comparison.set(progress.files_seen))?;
         comparison.finish_at(comparison.completed());
@@ -1238,7 +1238,7 @@ impl Runtime {
                         return Ok(());
                     }
                     let mut receipt = Progress::bounded(
-                        "Recording archive receipt",
+                        "Recording receipt",
                         bundles.len() as u64,
                         ProgressUnit::Series,
                     );
@@ -1443,7 +1443,7 @@ impl Runtime {
         self.state
             .set_chunk_status(run_id, chunk.chunk_index, "uploaded")?;
         let mut receipt = Progress::bounded(
-            "Recording archive receipt",
+            "Recording receipt",
             bundles.len() as u64,
             ProgressUnit::Series,
         );
@@ -1679,11 +1679,7 @@ fn verify_prepared_object_files(objects: &[crate::model::ManifestObject]) -> Res
             .checked_add(object.size)
             .context("prepared archive byte total overflow")
     })?;
-    let mut progress = Progress::bounded(
-        "Verifying prepared archive hashes",
-        total,
-        ProgressUnit::Bytes,
-    );
+    let mut progress = Progress::bounded("Verifying archive hashes", total, ProgressUnit::Bytes);
     let mut buffer = vec![0_u8; 1024 * 1024];
     for object in objects {
         let path = Path::new(&object.local_path);
@@ -1802,16 +1798,14 @@ fn inspect_dicom_source(
         state.update_run(run_id, "discovering", &SourceSummary::default(), None)?;
     }
     let mut discovery_phase = DiscoveryPhase::Inventory;
-    let mut discovery_progress =
-        Progress::spinner("Inventorying source files", ProgressUnit::Files);
+    let mut discovery_progress = Progress::spinner("Finding files", ProgressUnit::Files);
     let discovery = discover_with_progress(source, |progress| {
         if progress.phase != discovery_phase {
             let total = progress
                 .total_files
                 .expect("header discovery always reports its inventory total");
             discovery_progress.finish_at(total);
-            discovery_progress =
-                Progress::bounded("Reading DICOM headers", total, ProgressUnit::Files);
+            discovery_progress = Progress::bounded("Reading DICOMs", total, ProgressUnit::Files);
             discovery_phase = progress.phase;
         }
         discovery_progress.set(progress.files_seen);
@@ -1828,7 +1822,7 @@ fn inspect_dicom_source(
     }
     std::thread::sleep(SOURCE_QUIET_INTERVAL);
     let mut stability_progress = Progress::bounded(
-        "Confirming source stability",
+        "Verifying source",
         discovery.summary.files_seen,
         ProgressUnit::Files,
     );
@@ -1937,11 +1931,7 @@ fn checkpoint_new_streaming_run(
     write_json(&manifest_path, manifest)?;
     write_json(&report_path, report)?;
     state.set_artifacts(run_id, &manifest_path, &report_path)?;
-    let fingerprint = fingerprint_source_with_progress(
-        source_snapshot,
-        source,
-        "Fingerprinting source contents",
-    )?;
+    let fingerprint = fingerprint_source_with_progress(source_snapshot, source, "Hashing source")?;
     state.set_source_fingerprint(run_id, &fingerprint)?;
     state.update_run(run_id, "prepared", &manifest.source_summary, None)
 }
@@ -1981,7 +1971,7 @@ fn confirm_final_streaming_source_identity(
     expected_files_seen: u64,
 ) -> Result<()> {
     let mut snapshot_progress = Progress::bounded(
-        "Final source stability check",
+        "Final source check",
         expected_files_seen,
         ProgressUnit::Files,
     );
@@ -2118,7 +2108,7 @@ async fn prepare_one_dicom_series(
             Ok::<_, std::io::Error>(total.saturating_add(fs::metadata(path)?.len()))
         })?;
         let mut progress = Progress::bounded(
-            format!("Preparing functional EPI DICOM series {position}/{total}"),
+            format!("Deidentifying EPI series {position}/{total}"),
             source_bytes,
             ProgressUnit::Bytes,
         );
@@ -2464,16 +2454,14 @@ fn prepare_run(
     let started_at = Utc::now().to_rfc3339();
     state.update_run(run_id, "discovering", &SourceSummary::default(), None)?;
     let mut discovery_phase = DiscoveryPhase::Inventory;
-    let mut discovery_progress =
-        Progress::spinner("Inventorying source files", ProgressUnit::Files);
+    let mut discovery_progress = Progress::spinner("Finding files", ProgressUnit::Files);
     let discovery = discover_with_progress(source, |progress| {
         if progress.phase != discovery_phase {
             let total = progress
                 .total_files
                 .expect("header discovery always reports its inventory total");
             discovery_progress.finish_at(total);
-            discovery_progress =
-                Progress::bounded("Reading DICOM headers", total, ProgressUnit::Files);
+            discovery_progress = Progress::bounded("Reading DICOMs", total, ProgressUnit::Files);
             discovery_phase = progress.phase;
         }
         discovery_progress.set(progress.files_seen);
@@ -2490,7 +2478,7 @@ fn prepare_run(
     state.update_run(run_id, "preparing", &summary, None)?;
     let pseudonymizer = Pseudonymizer::from_base64(&config.pseudonym_key_b64)?;
     let mut stability_progress = Progress::bounded(
-        "Confirming source stability",
+        "Verifying source",
         discovery.summary.files_seen,
         ProgressUnit::Files,
     );
@@ -2511,11 +2499,8 @@ fn prepare_run(
     }
     let source_snapshot = quiet_snapshot;
     ensure_no_unreadable_dicom_like_files(discovery.unreadable_dicom_like_files)?;
-    let source_fingerprint = fingerprint_source_with_progress(
-        &source_snapshot,
-        source,
-        "Fingerprinting source contents",
-    )?;
+    let source_fingerprint =
+        fingerprint_source_with_progress(&source_snapshot, source, "Hashing source")?;
     let bundle_root = paths.bundles.join(run_id);
     fs::create_dir_all(&bundle_root)?;
     let mut bundles = Vec::new();
@@ -2542,7 +2527,7 @@ fn prepare_run(
             Ok::<_, anyhow::Error>(total.saturating_add(fs::metadata(path)?.len()))
         })?;
     let mut archive_progress = Progress::bounded(
-        "Preparing privacy-cleared EPI DICOM archives",
+        "Deidentifying EPI series",
         preparation_bytes,
         ProgressUnit::Bytes,
     );
@@ -2631,7 +2616,7 @@ fn prepare_run(
 
     std::thread::sleep(SOURCE_QUIET_INTERVAL);
     let mut final_stability_progress = Progress::bounded(
-        "Final source stability check",
+        "Final source check",
         discovery.summary.files_seen,
         ProgressUnit::Files,
     );

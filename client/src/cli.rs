@@ -149,7 +149,7 @@ pub async fn execute(cli: Cli) -> Result<()> {
                 bail!("selected source is not a folder");
             }
             if !dry_run {
-                let mut config = crate::config::ClientConfig::load(&runtime.paths)?;
+                let config = crate::config::ClientConfig::load(&runtime.paths)?;
                 let contribution = runtime.contribution_info(&config.api_url).await?;
                 let automated_authorization = confirm_authorized;
                 validate_explicit_policy_version(
@@ -163,7 +163,8 @@ pub async fn execute(cli: Cli) -> Result<()> {
                 } else {
                     crate::terminal::confirm_authorized_upload(
                         &folder,
-                        &contribution.consent_policy_version,
+                        &config.project_name,
+                        &contribution.policy_url,
                     )?
                 };
                 if !authorized {
@@ -171,16 +172,13 @@ pub async fn execute(cli: Cli) -> Result<()> {
                     return Ok(());
                 }
                 if config.consent_policy_version != contribution.consent_policy_version {
-                    config = runtime
+                    runtime
                         .accept_contribution_policy(&config, &contribution.consent_policy_version)
                         .await?;
-                    println!(
-                        "Contribution policy updated to {}.",
-                        config.consent_policy_version
-                    );
+                    println!("Contribution policy accepted: {}", contribution.policy_url);
                 }
             }
-            println!("\nSyncing {}…", folder.display());
+            println!("\nSyncing {}\n", folder.display());
             let run_id = runtime.sync_folder(folder, dry_run).await?;
             crate::terminal::print_run_summary(&runtime, &run_id, &mut std::io::stdout())
         }

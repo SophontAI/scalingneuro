@@ -12,7 +12,7 @@ use crate::{
     pipeline::{ContributorDetails, Runtime},
 };
 
-const POLICY_SUMMARY: &str = "Scaling Neuro uploads only functional echo-planar imaging time series identified from DICOM metadata. Structural scans, localizers, diffusion, field maps, secondary captures, non-image objects, and ambiguous series stay local.\nThe original DICOMs remain unchanged. Uploaded copies preserve EPI Pixel Data and useful acquisition metadata while removing direct identifiers, dates, source UIDs and paths, institution/station/operator fields, free text, overlays, graphics, and unsafe private data on this workstation.\nYou must be authorized by your institution to contribute the selected functional MRI data to a shared research archive. This confirmation does not replace participant consent, IRB review, a data-use agreement, or institutional review. A lab may request device revocation or upload withdrawal through admin@sophont.med using the pseudonymous upload ID in its local report.";
+const POLICY_SUMMARY: &str = "Only confirmed functional EPI series are uploaded; everything else stays local.\nSource DICOMs stay unchanged. Uploaded copies preserve Pixel Data and essential acquisition metadata; identifiers and unsafe metadata are removed locally.\n\nInstitutional authorization is required. This does not replace participant consent, IRB review, data-use agreements, or other institutional review.\nWithdrawal: admin@sophont.med (include the upload ID from the local report).";
 
 pub async fn run(runtime: Runtime) -> Result<()> {
     run_for_optional_folder(runtime, None).await
@@ -47,8 +47,7 @@ async fn run_with_io(
     api_url: &str,
     selected_folder: Option<PathBuf>,
 ) -> Result<()> {
-    writeln!(output, "Scaling Neuro · functional EPI DICOM sync")?;
-    writeln!(output, "No browser is needed or opened.\n")?;
+    writeln!(output, "Scaling Neuro · functional EPI DICOM sync\n")?;
 
     let mut config = if runtime.paths.config.is_file() {
         ClientConfig::load(&runtime.paths)?
@@ -61,47 +60,36 @@ async fn run_with_io(
     };
 
     let contribution = runtime.contribution_info(&config.api_url).await?;
+    writeln!(output, "Contribution policy  {}\n", contribution.policy_url)?;
     if config.consent_policy_version != contribution.consent_policy_version {
-        writeln!(
-            output,
-            "Scaling Neuro has updated its contribution policy from {} to {}.",
-            config.consent_policy_version, contribution.consent_policy_version
-        )?;
-        writeln!(output, "Policy: {}", contribution.policy_url)?;
         writeln!(output, "{POLICY_SUMMARY}\n")?;
         if !prompt_yes_no(
             input,
             output,
-            "Accept the current policy and confirm authorization to share the selected functional MRI data?",
+            "Accept the current policy and confirm authorization?",
             false,
         )? {
-            writeln!(output, "Policy update declined. Nothing was uploaded.")?;
+            writeln!(output, "Policy declined. Nothing was uploaded.")?;
             return Ok(());
         }
-        writeln!(output, "Updating this workstation's policy acceptance…")?;
+        write!(output, "Saving policy acceptance…")?;
         output.flush()?;
         config = runtime
             .accept_contribution_policy(&config, &contribution.consent_policy_version)
             .await?;
+        writeln!(output, " done\n")?;
     }
-
-    writeln!(output, "Project: {}", config.project_name)?;
-    writeln!(
-        output,
-        "Contribution policy: {}\n",
-        config.consent_policy_version
-    )?;
 
     let folder = match selected_folder {
         Some(folder) => folder,
         None => prompt_folder(input, output)?,
     };
-    if !confirm_upload(input, output, &folder, &config.consent_policy_version)? {
+    if !confirm_upload(input, output, &folder, &config.project_name)? {
         writeln!(output, "Cancelled. Nothing was uploaded.")?;
         return Ok(());
     }
 
-    writeln!(output, "\nSyncing {}…", folder.display())?;
+    writeln!(output, "\nSyncing {}\n", folder.display())?;
     let run_id = runtime.sync_folder(folder, false).await?;
     print_run_summary(&runtime, &run_id, output)
 }
@@ -112,21 +100,18 @@ async fn register_interactively(
     output: &mut impl Write,
     api_url: &str,
 ) -> Result<Option<ClientConfig>> {
-    writeln!(output, "One-time lab registration")?;
-    writeln!(output, "Connecting to Scaling Neuro…")?;
+    writeln!(output, "One-time setup")?;
+    write!(output, "Connecting to Scaling Neuro…")?;
     output.flush()?;
     let contribution = runtime.contribution_info(api_url).await?;
+    writeln!(output, " done\n")?;
     if !contribution.registration_open {
         bail!("public contribution registration is temporarily paused");
     }
 
-    writeln!(output, "Project: {}", contribution.project_name)?;
-    writeln!(
-        output,
-        "Policy: {} ({})",
-        contribution.consent_policy_version, contribution.policy_url
-    )?;
-    writeln!(output, "{POLICY_SUMMARY}\n")?;
+    writeln!(output, "Project  {}", contribution.project_name)?;
+    writeln!(output, "Policy   {}", contribution.policy_url)?;
+    writeln!(output, "\n{POLICY_SUMMARY}\n")?;
 
     let contact_name = prompt_required(input, output, "Your name")?;
     let contact_email = prompt_required(input, output, "Work email")?;
@@ -140,17 +125,16 @@ async fn register_interactively(
         false,
     )?;
 
-    writeln!(output, "\n{POLICY_SUMMARY}")?;
     if !prompt_yes_no(
         input,
         output,
-        "Do you accept this policy and confirm authorization to contribute the selected functional MRI data?",
+        "Accept the current policy and confirm authorization?",
         false,
     )? {
         return Ok(None);
     }
 
-    writeln!(output, "Registering this workstation…")?;
+    write!(output, "Registering workstation…")?;
     output.flush()?;
     let config = runtime
         .register(
@@ -167,14 +151,19 @@ async fn register_interactively(
             crate::cli::default_device_name(),
         )
         .await?;
+    writeln!(output, " done\n")?;
     writeln!(
         output,
-        "Registered. This workstation now has a private upload identity.\n"
+        "This workstation is ready to sync approved EPI data.\n"
     )?;
     Ok(Some(config))
 }
 
-pub fn confirm_authorized_upload(folder: &Path, policy_version: &str) -> Result<bool> {
+pub fn confirm_authorized_upload(
+    folder: &Path,
+    project_name: &str,
+    policy_url: &str,
+) -> Result<bool> {
     if !io::stdin().is_terminal() || !io::stdout().is_terminal() {
         bail!(
             "non-interactive upload requires --confirm-authorized; use it only after confirming the selected functional MRI data are approved under the contribution policy"
@@ -182,22 +171,23 @@ pub fn confirm_authorized_upload(folder: &Path, policy_version: &str) -> Result<
     }
     let mut input = BufReader::new(io::stdin());
     let mut output = io::stdout();
-    confirm_upload(&mut input, &mut output, folder, policy_version)
+    writeln!(output, "Contribution policy  {policy_url}\n")?;
+    confirm_upload(&mut input, &mut output, folder, project_name)
 }
 
 fn confirm_upload(
     input: &mut impl BufRead,
     output: &mut impl Write,
     folder: &Path,
-    policy_version: &str,
+    project_name: &str,
 ) -> Result<bool> {
-    writeln!(output, "Selected folder: {}", folder.display())?;
-    writeln!(output, "Policy: {policy_version}")?;
-    writeln!(output, "{POLICY_SUMMARY}")?;
+    writeln!(output, "Ready to sync")?;
+    writeln!(output, "  Folder   {}", folder.display())?;
+    writeln!(output, "  Project  {project_name}\n")?;
     prompt_yes_no(
         input,
         output,
-        "Confirm the functional MRI data in this folder are institutionally approved and begin sync?",
+        "Confirm this folder is institutionally approved for contribution?",
         false,
     )
 }
@@ -511,9 +501,16 @@ mod tests {
         .unwrap();
 
         let output = String::from_utf8(output).unwrap();
-        assert!(output.contains("No browser is needed or opened."));
-        assert!(output.contains("Registered. This workstation now has a private upload identity."));
-        assert!(output.contains("Selected folder:"));
+        assert!(!output.contains("No browser is needed or opened."));
+        assert!(output.contains("This workstation is ready to sync approved EPI data."));
+        assert!(output.contains("Ready to sync"));
+        assert!(output.contains("  Folder   "));
+        assert_eq!(
+            output
+                .matches("Only confirmed functional EPI series are uploaded")
+                .count(),
+            1
+        );
         assert!(!output.contains("DICOM folder (type or paste"));
         assert!(output.contains("Cancelled. Nothing was uploaded."));
         assert!(ClientConfig::load(&runtime.paths).is_ok());
@@ -600,10 +597,19 @@ mod tests {
         .unwrap();
 
         let output = String::from_utf8(output).unwrap();
-        assert!(output.contains("updated its contribution policy"));
-        assert!(output.contains("selected functional MRI data"));
-        assert!(output.contains("Contribution policy: open-epi-2.0.0"));
-        assert!(output.contains("Project: Scaling Neuro shared EPI archive"));
+        assert!(!output.contains("open-epi-1.0.0 → open-epi-2.0.0"));
+        assert!(
+            output
+                .contains("Contribution policy  https://scalingneuro.com/docs/contribution-policy")
+        );
+        assert!(output.contains("Accept the current policy and confirm authorization?"));
+        assert!(output.contains("  Project  Scaling Neuro shared EPI archive"));
+        assert_eq!(
+            output
+                .matches("Only confirmed functional EPI series are uploaded")
+                .count(),
+            1
+        );
         assert!(output.contains("Cancelled. Nothing was uploaded."));
         let persisted = ClientConfig::load(&runtime.paths).unwrap();
         assert_eq!(persisted.consent_policy_version, "open-epi-2.0.0");

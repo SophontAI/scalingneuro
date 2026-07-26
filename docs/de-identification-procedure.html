@@ -1,0 +1,73 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>De-identification procedure | Scaling Neuro</title>
+  <meta name="description" content="How neuro-sync removes identifying DICOM metadata locally before sharing functional EPI series." />
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+  <style>
+    :root{--paper:#f7f6f1;--ink:#192033;--muted:#565d6e;--line:#d7d5ce;--accent:#a34b53}*{box-sizing:border-box}body{margin:0;background:var(--paper);color:var(--muted);font:18px/1.65 Georgia,serif}main{width:min(760px,calc(100% - 40px));margin:auto;padding:54px 0 100px}a{color:inherit;text-underline-offset:4px}.brand{color:var(--ink);font-weight:700;text-decoration:none}h1,h2{color:var(--ink);line-height:1.08}h1{margin:64px 0 16px;font-size:clamp(40px,7vw,66px);letter-spacing:-.03em}h2{margin:42px 0 10px;font-size:28px}.version{display:inline-block;padding:7px 10px;border:1px solid var(--line);border-radius:999px;color:var(--accent);font:12px/1.2 ui-monospace,monospace;letter-spacing:.06em}li{margin:9px 0}.notice{margin-top:44px;padding:3px 0 3px 20px;border-left:4px solid var(--accent)}
+  </style>
+</head>
+<body>
+<main>
+  <a class="brand" href="/">Scaling Neuro</a>
+  <h1>De-identification procedure</h1>
+  <div class="version">procedure 2.0.0 · functional EPI</div>
+
+  <h2>Runs locally before upload</h2>
+  <p>neuro-sync reads the selected scanner export without changing the source
+  folder. Only series confirmed as functional echo-planar imaging by standard
+  DICOM metadata and repeated temporal structure can enter the
+  de-identification process. Structural scans, localizers, diffusion, field
+  maps, secondary captures, and ambiguous series stay on the workstation.</p>
+
+  <h2>Rewrites each selected DICOM</h2>
+  <p>The client creates a new DICOM object for every selected EPI instance. It
+  walks nested sequences recursively and uses a default-deny allowlist,
+  retaining only the elements required to decode and interpret the functional
+  acquisition. Unknown standard fields and unreviewed private fields are
+  removed.</p>
+
+  <h2>Removes identifying metadata</h2>
+  <ul>
+    <li>Patient names, identifiers, demographics, accession values, and clinical identifiers</li>
+    <li>Dates, times, ages, addresses, telephone numbers, and free text</li>
+    <li>Institution, department, station, device serial, operator, and physician information</li>
+    <li>Study, series, protocol, image, and comment descriptions</li>
+    <li>Source paths, filenames, media identifiers, overlays, and graphics</li>
+    <li>Private creators and blocks that are not explicitly reconstructed from validated fields</li>
+  </ul>
+
+  <h2>Replaces identities and references</h2>
+  <p>Patient identity and the UIDs that connect patients, studies, series,
+  instances, frames of reference, and referenced instances are replaced with
+  deterministic, site-scoped pseudonyms. This preserves the relationships
+  needed to interpret a series without retaining the source identifiers.</p>
+
+  <h2>Preserves functional image data</h2>
+  <p>Pixel Data is preserved in its original transfer syntax. neuro-sync does
+  not convert, resample, crop, mask, or preprocess the images. The functional
+  EPI-only boundary keeps high-resolution structural and localizer images out
+  of the archive.</p>
+
+  <h2>Fails closed</h2>
+  <p>A series stays local when neuro-sync encounters declared burned-in
+  annotation, overlays or graphics, unsupported image objects, malformed Pixel
+  Data, inconsistent series identity, or unsupported enhanced or packed-image
+  geometry.</p>
+
+  <h2>Audits the result</h2>
+  <p>Every rewritten object is reopened and checked against the same recursive
+  allowlist before it can enter an archive. Each accepted series is packaged as
+  a deterministic <code>dicom.tar.zst</code> archive with a canonical manifest
+  and SHA-256 hashes, then uploaded through short-lived, object-scoped transfer
+  URLs.</p>
+
+  <p class="notice">Labs should also review the
+  <a href="/docs/contribution-policy">Functional EPI contribution policy</a>
+  before syncing data.</p>
+</main>
+</body>
+</html>

@@ -36,14 +36,12 @@ fn dry_run_prepares_privacy_cleared_dicom_archives_without_network() {
     let stderr = String::from_utf8_lossy(&output.stderr);
     let progress_output = format!("{stdout}\n{stderr}");
     assert!(stdout.contains("Syncing"));
-    assert!(
-        progress_output.contains("DICOM discovery complete"),
-        "output={progress_output}"
-    );
-    assert!(progress_output.contains("Confirming source stability"));
-    assert!(progress_output.contains("Preparing privacy-cleared EPI DICOM archives"));
-    assert!(progress_output.contains("Final source stability check"));
-    assert!(progress_output.contains("Privacy preparation complete"));
+    assert!(!progress_output.contains("DICOM discovery complete"));
+    assert!(progress_output.contains("Verifying source"));
+    assert!(progress_output.contains("Deidentifying EPI series"));
+    assert!(progress_output.contains("Final source check"));
+    assert!(!progress_output.contains("Privacy preparation complete"));
+    assert!(stdout.contains("Status: dry_run_complete"));
     let reports = fs::read_dir(state.join("reports"))
         .unwrap()
         .filter_map(Result::ok)

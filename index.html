@@ -168,7 +168,7 @@
           <article class="step">
             <span>02 · Local privacy</span>
             <h3>Protect</h3>
-            <p>Remove direct identifiers, dates, paths, free text, and unsafe private metadata locally. Preserve Pixel Data.</p>
+            <p>Remove direct identifiers, dates, paths, free text, and unsafe private metadata locally while preserving Pixel Data. Read the <a href="/docs/de-identification-procedure">de-identification procedure</a>.</p>
           </article>
           <article class="step">
             <span>03 · Shared archive</span>
@@ -241,7 +241,7 @@
           <div class="term-body">
             <pre class="term-pane is-active" id="pane-install" data-pane="install" role="tabpanel" aria-labelledby="tab-install"><code><span class="comment" id="installPlatform"># macOS or Linux</span>
 <span class="prompt">$</span> <span id="installCommand">curl -fsSL https://scalingneuro.org/install.sh | sh</span>
-<span class="ok">✓</span> neuro-sync 0.5.0 downloaded and SHA-256 verified
+<span class="ok">✓</span> neuro-sync 0.5.1 downloaded and SHA-256 verified
 
 <span class="comment"># One command for each approved scanner export</span>
 <span class="prompt">$</span> neuro-sync /path/to/dicom-folder
@@ -249,7 +249,7 @@
 <span class="ok">✓</span> Interrupted work resumes from the same folder command</code></pre>
             <pre class="term-pane" id="pane-run" data-pane="run" role="tabpanel" aria-labelledby="tab-run"><code><span class="prompt">$</span> neuro-sync ./new_session_dicoms
 
-<span class="muted">Reading DICOM headers</span>          <span class="ok">complete</span>
+<span class="muted">Reading DICOMs</span>                  <span class="ok">complete</span>
 <span class="muted">Functional EPI series</span>          4
 <span class="muted">Other series left local</span>        11
 <span class="muted">Deidentified DICOM archives</span>    <span class="ok">uploaded</span>
@@ -345,6 +345,7 @@ shasum -a 256 series.dicom.tar.zst</code></pre>
     <div class="wrap footer-inner">
       <p>Scaling Neuro</p>
       <p>Academic-led infrastructure for shared functional MRI data. Archive storage sponsored by <a href="https://sophont.med" target="_blank" rel="noopener">Sophont</a>.</p>
+      <a href="/docs/de-identification-procedure">De-identification procedure</a>
       <a href="/docs/contribution-policy">Contribution policy</a>
     </div>
   </footer>

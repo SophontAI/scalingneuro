@@ -19,6 +19,7 @@ install -m 0644 \
 install -m 0644 "$ROOT_DIR/downloads/index.html" "$DIST_DIR/downloads/"
 install -m 0644 \
   "$ROOT_DIR/docs/contribution-policy.html" \
+  "$ROOT_DIR/docs/de-identification-procedure.html" \
   "$ROOT_DIR/docs/dicom-deidentification-policy.md" \
   "$DIST_DIR/docs/"
 
