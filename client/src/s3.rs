@@ -28,7 +28,7 @@ use crate::{
 };
 
 const MAX_PARTS: u64 = 10_000;
-const DICOM_OBJECT_CONCURRENCY: usize = 3;
+const DICOM_PART_CONCURRENCY: usize = 3;
 const UPLOAD_BODY_CHUNK_SIZE: usize = 256 * 1024;
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
@@ -102,7 +102,8 @@ impl MultipartUploader {
                     Ok::<_, anyhow::Error>(completed)
                 }
             })
-            .buffer_unordered(DICOM_OBJECT_CONCURRENCY)
+            // Current EPI sessions contain one archive object.
+            .buffer_unordered(1)
             .try_collect::<Vec<_>>();
         tokio::pin!(transfer);
         let mut completed = loop {
@@ -209,9 +210,8 @@ impl MultipartUploader {
                         .await
                 }
             })
-            // R2 applies a one-write-per-second-per-key limit. Keep parts for
-            // one object sequential; retryable 429s receive a fresh grant.
-            .buffer_unordered(1);
+            // A small fixed limit uses the connection without unbounded memory.
+            .buffer_unordered(DICOM_PART_CONCURRENCY);
         while let Some(part) = uploaded.next().await {
             part?;
         }

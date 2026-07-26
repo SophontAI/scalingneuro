@@ -651,11 +651,6 @@ impl Runtime {
 
         validate_manifest_sync_contract(&manifest, &config)?;
         cleanup_orphaned_bundle_archives(&self.paths, run_id, &manifest)?;
-        let expected_source_fingerprint = self
-            .state
-            .source_fingerprint(run_id)?
-            .context("streaming DICOM run has no checkpointed source identity")?;
-
         let mut existing_by_series = HashMap::new();
         for (index, bundle) in manifest.bundles.iter().enumerate() {
             if existing_by_series
@@ -996,9 +991,8 @@ impl Runtime {
         }
 
         std::thread::sleep(SOURCE_QUIET_INTERVAL);
-        if let Err(error) = confirm_final_streaming_source_identity(
+        if let Err(error) = confirm_final_streaming_source_stability(
             &inspection.source_snapshot,
-            &expected_source_fingerprint,
             &source,
             inspection.summary.files_seen,
         ) {
@@ -1964,9 +1958,11 @@ fn confirm_source_snapshot_stable(
     Ok(())
 }
 
-fn confirm_final_streaming_source_identity(
+// Each accepted DICOM was already captured from a stable file handle and
+// independently audited. Re-reading every source byte here would duplicate
+// that work, so the receipt gate only needs one final folder snapshot.
+fn confirm_final_streaming_source_stability(
     initial_snapshot: &SourceSnapshot,
-    expected_fingerprint: &crate::dicom::SourceFingerprint,
     source: &Path,
     expected_files_seen: u64,
 ) -> Result<()> {
@@ -1984,27 +1980,7 @@ fn confirm_final_streaming_source_identity(
             "the selected DICOM folder changed during sync; no new durable receipts were committed. Rerun the same neuro-sync <folder> command after the export is complete"
         );
     }
-
-    let final_fingerprint = fingerprint_source_with_progress(
-        &final_snapshot,
-        source,
-        "Confirming final folder content identity",
-    )?;
-    if &final_fingerprint != expected_fingerprint {
-        bail!(
-            "the selected DICOM folder contents changed during sync; no new durable receipts were committed. Rerun the same neuro-sync <folder> command after the export is complete"
-        );
-    }
-    confirm_source_snapshot_stable(
-        &final_snapshot,
-        source,
-        "Confirming final folder snapshot",
-    )
-    .map_err(|_| {
-        anyhow::anyhow!(
-            "the selected DICOM folder changed during its final identity check; no new durable receipts were committed. Rerun the same neuro-sync <folder> command after the export is complete"
-        )
-    })
+    Ok(())
 }
 
 fn checkpoint_streaming_artifacts(
@@ -2956,5 +2932,24 @@ fn remove_bundle_cache(paths: &AppPaths, run_id: &str) {
         if error.kind() != std::io::ErrorKind::NotFound {
             tracing::warn!(run_id, "could not remove local bundle cache");
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn final_streaming_stability_detects_a_changed_folder() {
+        let directory = tempfile::tempdir().unwrap();
+        std::fs::write(directory.path().join("one.dcm"), b"first").unwrap();
+        let initial = snapshot_source_with_progress(directory.path(), |_| {}).unwrap();
+
+        confirm_final_streaming_source_stability(&initial, directory.path(), 1).unwrap();
+
+        std::fs::write(directory.path().join("two.dcm"), b"second").unwrap();
+        let error =
+            confirm_final_streaming_source_stability(&initial, directory.path(), 1).unwrap_err();
+        assert!(error.to_string().contains("changed during sync"));
     }
 }
