@@ -159,8 +159,18 @@ describe("new PI EPI archive journey", () => {
       lab_name: "Example Lab",
       participation_commitment: true,
     });
-    expect(access.status).toBe(201);
-    const { access_token: accessToken } = await access.json<{
+    expect(access.status).toBe(202);
+    const { request_id: accessRequestId } = await access.json<{
+      request_id: string;
+    }>();
+    const approval = await call(
+      "POST",
+      `/v1/admin/archive-access-requests/${accessRequestId}/approve`,
+      undefined,
+      "test-archive-access-admin-token-0000000000000000",
+    );
+    expect(approval.status).toBe(200);
+    const { access_token: accessToken } = await approval.json<{
       access_token: string;
     }>();
     const archive = await call(

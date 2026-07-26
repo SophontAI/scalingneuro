@@ -253,6 +253,42 @@ export async function encryptArchiveAccessEmail(
   );
 }
 
+export async function decryptArchiveAccessEmail(
+  ciphertext: string,
+  registrationId: string,
+  base64EncryptionKey: string,
+): Promise<string> {
+  return decryptBoundText(
+    ciphertext,
+    `scaling-neuro/archive-access/v1/${registrationId}`,
+    base64EncryptionKey,
+  );
+}
+
+export async function encryptArchiveAccessRequestEmail(
+  email: string,
+  requestId: string,
+  base64EncryptionKey: string,
+): Promise<string> {
+  return encryptBoundText(
+    email,
+    `scaling-neuro/archive-access-request/v1/${requestId}`,
+    base64EncryptionKey,
+  );
+}
+
+export async function decryptArchiveAccessRequestEmail(
+  ciphertext: string,
+  requestId: string,
+  base64EncryptionKey: string,
+): Promise<string> {
+  return decryptBoundText(
+    ciphertext,
+    `scaling-neuro/archive-access-request/v1/${requestId}`,
+    base64EncryptionKey,
+  );
+}
+
 export async function decryptSiteKey(
   ciphertext: string,
   siteId: string,

@@ -2,6 +2,10 @@
 # Generate SITE_KEY_ENCRYPTION_KEY_B64 with: openssl rand -base64 32
 SITE_KEY_ENCRYPTION_KEY_B64="replace-with-32-random-bytes-in-base64"
 
+# Admin-only bearer token for reviewing archive access requests.
+# Generate with: openssl rand -base64 48
+ARCHIVE_ACCESS_ADMIN_TOKEN="replace-with-admin-bearer-token"
+
 # S3 secret for a dedicated parent token scoped to Object Read & Write on only this bucket.
 # The Worker uses it only to sign short-lived URLs for one exact multipart part
 # or one authenticated archive download.

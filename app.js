@@ -111,7 +111,6 @@ $("#copyBtn")?.addEventListener("click", async () => {
 const accessForm = $("#accessForm");
 const accessResult = $("#accessResult");
 const formStatus = $("#formStatus");
-let issuedAccessToken = "";
 
 accessForm?.addEventListener("submit", async (event) => {
   event.preventDefault();
@@ -126,7 +125,7 @@ accessForm?.addEventListener("submit", async (event) => {
   };
 
   submit.disabled = true;
-  formStatus.textContent = "Creating archive access…";
+  formStatus.textContent = "Submitting access request…";
   try {
     const response = await fetch("/v1/archive-access", {
       method: "POST",
@@ -135,27 +134,20 @@ accessForm?.addEventListener("submit", async (event) => {
     });
     const payload = await response.json();
     if (!response.ok) {
-      throw new Error(payload?.error?.message || "Access could not be created");
+      throw new Error(
+        payload?.error?.message || "Access request could not be submitted",
+      );
     }
-    issuedAccessToken = payload.access_token;
-    $("#accessToken").textContent = issuedAccessToken;
+    accessForm.reset();
     accessForm.hidden = true;
     accessResult.hidden = false;
     accessResult.scrollIntoView({ behavior: "smooth", block: "center" });
   } catch (error) {
     formStatus.textContent =
-      error instanceof Error ? error.message : "Access could not be created";
+      error instanceof Error
+        ? error.message
+        : "Access request could not be submitted";
   } finally {
     submit.disabled = false;
-  }
-});
-
-$("#copyToken")?.addEventListener("click", async () => {
-  if (!issuedAccessToken) return;
-  try {
-    await navigator.clipboard.writeText(issuedAccessToken);
-    showToast("Archive token copied");
-  } catch {
-    showToast("Copy failed. Select the token manually.");
   }
 });

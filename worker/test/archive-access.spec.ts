@@ -36,27 +36,125 @@ function accessRequest(email: string): Record<string, unknown> {
   };
 }
 
+const ADMIN_TOKEN = "test-archive-access-admin-token-0000000000000000";
+
+async function submitAndApprove(email: string): Promise<{
+  access_token: string;
+  token_type: string;
+  archive_url: string;
+}> {
+  const submitted = await call(
+    "POST",
+    "/v1/archive-access",
+    accessRequest(email),
+  );
+  expect(submitted.status).toBe(202);
+  const pending = await submitted.json<{
+    request_id: string;
+    status: string;
+  }>();
+  expect(pending.status).toBe("pending_review");
+  const approved = await call(
+    "POST",
+    `/v1/admin/archive-access-requests/${pending.request_id}/approve`,
+    undefined,
+    ADMIN_TOKEN,
+  );
+  expect(approved.status).toBe(200);
+  return approved.json<{
+    access_token: string;
+    token_type: string;
+    archive_url: string;
+  }>();
+}
+
 describe("shared EPI archive access", () => {
-  it("grants archive access after the participation form", async () => {
+  it("holds the public form for review and grants access only after approval", async () => {
     const email = `archive+${crypto.randomUUID()}@example.edu`;
     const response = await call(
       "POST",
       "/v1/archive-access",
       accessRequest(email),
     );
-    expect(response.status).toBe(201);
-    const grant = await response.json<{
+    expect(response.status).toBe(202);
+    const pending = await response.json<{
+      request_id: string;
+      status: string;
+      message: string;
+    }>();
+    expect(pending).toMatchObject({
+      status: "pending_review",
+      message:
+        "Your request is pending review. We will email next steps to your work address.",
+    });
+    expect(pending).not.toHaveProperty("access_token");
+
+    const stored = await env.DB.prepare(
+      `SELECT email_hash, email_ciphertext, status
+       FROM archive_access_requests
+       WHERE lab_name = ?1 LIMIT 1`,
+    )
+      .bind("Example Neuroimaging Lab")
+      .first<{
+        email_hash: string;
+        email_ciphertext: string;
+        status: string;
+      }>();
+    expect(stored?.email_hash).not.toContain(email.toLowerCase());
+    expect(stored?.email_ciphertext).not.toContain(email.toLowerCase());
+    expect(stored?.status).toBe("pending");
+    expect(
+      await env.DB.prepare(
+        `SELECT COUNT(*) AS count FROM archive_access_registrations
+         WHERE email_hash = ?1`,
+      )
+        .bind(stored?.email_hash)
+        .first<{ count: number }>(),
+    ).toEqual({ count: 0 });
+
+    const unauthenticatedList = await call(
+      "GET",
+      "/v1/admin/archive-access-requests",
+    );
+    expect(unauthenticatedList.status).toBe(401);
+    const review = await call(
+      "GET",
+      "/v1/admin/archive-access-requests",
+      undefined,
+      ADMIN_TOKEN,
+    );
+    expect(review.status).toBe(200);
+    expect(await review.json()).toMatchObject({
+      requests: [
+        {
+          request_id: pending.request_id,
+          status: "pending",
+          contact_email: email.toLowerCase(),
+          institution_name: "Example University",
+          lab_name: "Example Neuroimaging Lab",
+        },
+      ],
+    });
+
+    const approval = await call(
+      "POST",
+      `/v1/admin/archive-access-requests/${pending.request_id}/approve`,
+      undefined,
+      ADMIN_TOKEN,
+    );
+    expect(approval.status).toBe(200);
+    const grant = await approval.json<{
       access_token: string;
       token_type: string;
       archive_url: string;
     }>();
     expect(grant).toMatchObject({
       token_type: "Bearer",
-      archive_url: "https://scalingneuro.com/v1/archive",
+      archive_url: "https://scalingneuro.org/v1/archive",
     });
     expect(grant.access_token).toMatch(/^sn_access_[A-Za-z0-9_-]{43}$/u);
 
-    const stored = await env.DB.prepare(
+    const registration = await env.DB.prepare(
       `SELECT token_hash, email_hash, email_ciphertext
        FROM archive_access_registrations
        WHERE lab_name = ?1 LIMIT 1`,
@@ -67,16 +165,29 @@ describe("shared EPI archive access", () => {
         email_hash: string;
         email_ciphertext: string;
       }>();
-    expect(stored?.token_hash).not.toContain(grant.access_token);
-    expect(stored?.email_hash).not.toContain(email.toLowerCase());
-    expect(stored?.email_ciphertext).not.toContain(email.toLowerCase());
+    expect(registration?.token_hash).not.toContain(grant.access_token);
+    expect(registration?.email_hash).not.toContain(email.toLowerCase());
+    expect(registration?.email_ciphertext).not.toContain(email.toLowerCase());
 
-    const archive = await call("GET", "/v1/archive", undefined, grant.access_token);
+    const archive = await call(
+      "GET",
+      "/v1/archive",
+      undefined,
+      grant.access_token,
+    );
     expect(archive.status).toBe(200);
     expect(await archive.json()).toEqual({
       format: "dicom-tar-zstd",
       series: [],
     });
+
+    const repeatedApproval = await call(
+      "POST",
+      `/v1/admin/archive-access-requests/${pending.request_id}/approve`,
+      undefined,
+      ADMIN_TOKEN,
+    );
+    expect(repeatedApproval.status).toBe(409);
   });
 
   it("requires an explicit lab participation commitment", async () => {
@@ -89,14 +200,33 @@ describe("shared EPI archive access", () => {
     });
   });
 
-  it("rotates the token when the same work email submits again", async () => {
+  it("does not rotate an active token until a resubmission is approved", async () => {
     const email = `rotate+${crypto.randomUUID()}@example.edu`;
-    const first = await (
-      await call("POST", "/v1/archive-access", accessRequest(email))
-    ).json<{ access_token: string }>();
-    const second = await (
-      await call("POST", "/v1/archive-access", accessRequest(email))
-    ).json<{ access_token: string }>();
+    const first = await submitAndApprove(email);
+    const resubmitted = await call(
+      "POST",
+      "/v1/archive-access",
+      accessRequest(email),
+    );
+    expect(resubmitted.status).toBe(202);
+    const pending = await resubmitted.json<{ request_id: string }>();
+
+    const stillActive = await call(
+      "GET",
+      "/v1/archive",
+      undefined,
+      first.access_token,
+    );
+    expect(stillActive.status).toBe(200);
+
+    const secondResponse = await call(
+      "POST",
+      `/v1/admin/archive-access-requests/${pending.request_id}/approve`,
+      undefined,
+      ADMIN_TOKEN,
+    );
+    expect(secondResponse.status).toBe(200);
+    const second = await secondResponse.json<{ access_token: string }>();
     expect(second.access_token).not.toBe(first.access_token);
 
     const oldAccess = await call(
@@ -115,11 +245,37 @@ describe("shared EPI archive access", () => {
     expect(newAccess.status).toBe(200);
   });
 
+  it("rejects a pending request without issuing credentials", async () => {
+    const email = `reject+${crypto.randomUUID()}@example.edu`;
+    const submitted = await call(
+      "POST",
+      "/v1/archive-access",
+      accessRequest(email),
+    );
+    const pending = await submitted.json<{ request_id: string }>();
+    const rejection = await call(
+      "POST",
+      `/v1/admin/archive-access-requests/${pending.request_id}/reject`,
+      undefined,
+      ADMIN_TOKEN,
+    );
+    expect(rejection.status).toBe(200);
+    expect(await rejection.json()).toMatchObject({ status: "rejected" });
+    expect(
+      await env.DB.prepare(
+        `SELECT COUNT(*) AS count
+         FROM archive_access_registrations r
+         JOIN archive_access_requests q ON q.email_hash = r.email_hash
+         WHERE q.id = ?1`,
+      )
+        .bind(pending.request_id)
+        .first<{ count: number }>(),
+    ).toEqual({ count: 0 });
+  });
+
   it("lists and redirects to a signed download for a committed EPI archive", async () => {
     const email = `download+${crypto.randomUUID()}@example.edu`;
-    const grant = await (
-      await call("POST", "/v1/archive-access", accessRequest(email))
-    ).json<{ access_token: string }>();
+    const grant = await submitAndApprove(email);
     const siteId = crypto.randomUUID();
     const projectId = crypto.randomUUID();
     const deviceId = crypto.randomUUID();

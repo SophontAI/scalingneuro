@@ -1,8 +1,11 @@
 import {
-  createArchiveAccess,
+  approveArchiveAccessRequest,
   listArchive,
+  listArchiveAccessRequests,
   parseArchiveAccessRequest,
+  rejectArchiveAccessRequest,
   signArchiveDownload,
+  submitArchiveAccessRequest,
 } from "./archive-access";
 import {
   checkpointDicomUpload,
@@ -51,6 +54,14 @@ const dicomPartRoute = new RegExp(
 const dicomStatusRoute = new RegExp(`^/v1/dicom-uploads/${UUID}$`, "u");
 const archiveDownloadRoute = new RegExp(
   `^/v1/archive/${UUID}/${SERIES_ARCHIVE_ID}/download$`,
+  "u",
+);
+const archiveAccessApproveRoute = new RegExp(
+  `^/v1/admin/archive-access-requests/${UUID}/approve$`,
+  "u",
+);
+const archiveAccessRejectRoute = new RegExp(
+  `^/v1/admin/archive-access-requests/${UUID}/reject$`,
   "u",
 );
 
@@ -148,6 +159,7 @@ function routeLabel(pathname: string): string {
       "/v1/dicom-uploads",
       "/v1/archive-access",
       "/v1/archive",
+      "/v1/admin/archive-access-requests",
     ].includes(pathname)
   ) {
     return pathname;
@@ -165,6 +177,12 @@ function routeLabel(pathname: string): string {
   if (dicomStatusRoute.test(pathname)) return "/v1/dicom-uploads/:id";
   if (archiveDownloadRoute.test(pathname)) {
     return "/v1/archive/:upload/:series/download";
+  }
+  if (archiveAccessApproveRoute.test(pathname)) {
+    return "/v1/admin/archive-access-requests/:id/approve";
+  }
+  if (archiveAccessRejectRoute.test(pathname)) {
+    return "/v1/admin/archive-access-requests/:id/reject";
   }
   return "unknown";
 }
@@ -217,12 +235,43 @@ export async function fetchHandler(
     }
     if (request.method === "POST" && path === "/v1/archive-access") {
       return json(
-        await createArchiveAccess(
+        await submitArchiveAccessRequest(
           env,
           parseArchiveAccessRequest(await requestJson(request)),
         ),
         requestId,
-        201,
+        202,
+      );
+    }
+    if (
+      request.method === "GET" &&
+      path === "/v1/admin/archive-access-requests"
+    ) {
+      return json(await listArchiveAccessRequests(request, env), requestId);
+    }
+    const archiveAccessApproveId = idMatch(
+      archiveAccessApproveRoute,
+      path,
+    );
+    if (request.method === "POST" && archiveAccessApproveId) {
+      return json(
+        await approveArchiveAccessRequest(
+          request,
+          env,
+          archiveAccessApproveId,
+        ),
+        requestId,
+      );
+    }
+    const archiveAccessRejectId = idMatch(archiveAccessRejectRoute, path);
+    if (request.method === "POST" && archiveAccessRejectId) {
+      return json(
+        await rejectArchiveAccessRequest(
+          request,
+          env,
+          archiveAccessRejectId,
+        ),
+        requestId,
       );
     }
     if (request.method === "GET" && path === "/v1/archive") {

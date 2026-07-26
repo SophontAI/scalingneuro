@@ -1,7 +1,10 @@
 import {
+  decryptArchiveAccessRequestEmail,
   encryptArchiveAccessEmail,
+  encryptArchiveAccessRequestEmail,
   randomAccessToken,
   sha256Hex,
+  utf8Bytes,
 } from "./crypto";
 import { AppError } from "./errors";
 import type { Env } from "./env";
@@ -11,6 +14,7 @@ const EMAIL =
   /^[A-Za-z0-9.!#$%&'*+/=?^_`{|}~-]+@[A-Za-z0-9](?:[A-Za-z0-9.-]{0,251}[A-Za-z0-9])?$/u;
 const SERIES_ARCHIVE_ID = /^[a-f0-9]{24}$/u;
 const MAX_ARCHIVE_ROWS = 200;
+const MAX_REVIEW_ROWS = 100;
 
 export interface ArchiveAccessRequest {
   contact_name: string;
@@ -23,6 +27,21 @@ export interface ArchiveAccessRequest {
 interface ArchiveAccessRow {
   id: string;
   revoked_at: number | null;
+}
+
+type ArchiveAccessReviewStatus = "pending" | "approved" | "rejected";
+
+interface ArchiveAccessRequestRow {
+  id: string;
+  email_hash: string;
+  email_ciphertext: string;
+  contact_name: string;
+  institution_name: string;
+  lab_name: string;
+  status: ArchiveAccessReviewStatus;
+  created_at: number;
+  updated_at: number;
+  reviewed_at: number | null;
 }
 
 interface ArchiveSeriesRow {
@@ -106,47 +125,43 @@ export function parseArchiveAccessRequest(
   };
 }
 
-export async function createArchiveAccess(
+export async function submitArchiveAccessRequest(
   env: Env,
   input: ArchiveAccessRequest,
 ): Promise<Record<string, unknown>> {
   const emailHash = await sha256Hex(input.contact_email);
   const existing = await env.DB.prepare(
-    `SELECT id FROM archive_access_registrations
+    `SELECT id FROM archive_access_requests
      WHERE email_hash = ?1 LIMIT 1`,
   )
     .bind(emailHash)
     .first<{ id: string }>();
   const id = existing?.id ?? crypto.randomUUID();
-  const token = randomAccessToken();
-  const [tokenHash, emailCiphertext] = await Promise.all([
-    sha256Hex(token),
-    encryptArchiveAccessEmail(
-      input.contact_email,
-      id,
-      env.SITE_KEY_ENCRYPTION_KEY_B64,
-    ),
-  ]);
+  const emailCiphertext = await encryptArchiveAccessRequestEmail(
+    input.contact_email,
+    id,
+    env.SITE_KEY_ENCRYPTION_KEY_B64,
+  );
   const timestamp = nowSeconds();
   await env.DB.prepare(
-    `INSERT INTO archive_access_registrations
-       (id, token_hash, email_hash, email_ciphertext, contact_name,
-        institution_name, lab_name, participation_commitment,
-        created_at, updated_at, revoked_at)
-     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 1, ?8, ?8, NULL)
+    `INSERT INTO archive_access_requests
+       (id, email_hash, email_ciphertext, contact_name, institution_name,
+        lab_name, participation_commitment, status, created_at, updated_at,
+        reviewed_at, approved_registration_id)
+     VALUES (?1, ?2, ?3, ?4, ?5, ?6, 1, 'pending', ?7, ?7, NULL, NULL)
      ON CONFLICT(email_hash) DO UPDATE SET
-       token_hash = excluded.token_hash,
        email_ciphertext = excluded.email_ciphertext,
        contact_name = excluded.contact_name,
        institution_name = excluded.institution_name,
        lab_name = excluded.lab_name,
        participation_commitment = 1,
+       status = 'pending',
        updated_at = excluded.updated_at,
-       revoked_at = NULL`,
+       reviewed_at = NULL,
+       approved_registration_id = NULL`,
   )
     .bind(
       id,
-      tokenHash,
       emailHash,
       emailCiphertext,
       input.contact_name,
@@ -156,10 +171,252 @@ export async function createArchiveAccess(
     )
     .run();
   return {
+    request_id: id,
+    status: "pending_review",
+    message:
+      "Your request is pending review. We will email next steps to your work address.",
+  };
+}
+
+function adminBearerToken(request: Request): string {
+  const authorization = request.headers.get("authorization");
+  if (!authorization?.startsWith("Bearer ")) {
+    throw new AppError("UNAUTHORIZED", 401, "Admin authentication is required");
+  }
+  const token = authorization.slice("Bearer ".length);
+  if (token.length < 32 || token.length > 256 || /\s/u.test(token)) {
+    throw new AppError("UNAUTHORIZED", 401, "Admin authentication is invalid");
+  }
+  return token;
+}
+
+async function authenticateArchiveAccessAdmin(
+  request: Request,
+  env: Env,
+): Promise<void> {
+  const [providedHash, expectedHash] = await Promise.all([
+    sha256Hex(adminBearerToken(request)),
+    sha256Hex(env.ARCHIVE_ACCESS_ADMIN_TOKEN),
+  ]);
+  const workersSubtle = crypto.subtle as SubtleCrypto & {
+    timingSafeEqual(
+      first: Uint8Array<ArrayBuffer>,
+      second: Uint8Array<ArrayBuffer>,
+    ): boolean;
+  };
+  if (
+    !workersSubtle.timingSafeEqual(
+      utf8Bytes(providedHash),
+      utf8Bytes(expectedHash),
+    )
+  ) {
+    throw new AppError("UNAUTHORIZED", 401, "Admin authentication is invalid");
+  }
+}
+
+function isoTime(value: number | null): string | null {
+  return value === null ? null : new Date(value * 1000).toISOString();
+}
+
+async function requestForAdministration(
+  env: Env,
+  row: ArchiveAccessRequestRow,
+): Promise<Record<string, unknown>> {
+  const contactEmail = await decryptArchiveAccessRequestEmail(
+    row.email_ciphertext,
+    row.id,
+    env.SITE_KEY_ENCRYPTION_KEY_B64,
+  );
+  return {
+    request_id: row.id,
+    status: row.status,
+    contact_name: row.contact_name,
+    contact_email: contactEmail,
+    institution_name: row.institution_name,
+    lab_name: row.lab_name,
+    submitted_at: isoTime(row.created_at),
+    updated_at: isoTime(row.updated_at),
+    reviewed_at: isoTime(row.reviewed_at),
+  };
+}
+
+export async function listArchiveAccessRequests(
+  request: Request,
+  env: Env,
+): Promise<Record<string, unknown>> {
+  await authenticateArchiveAccessAdmin(request, env);
+  const requestedStatus = new URL(request.url).searchParams.get("status");
+  if (
+    requestedStatus !== null &&
+    !["pending", "approved", "rejected", "all"].includes(requestedStatus)
+  ) {
+    throw new AppError(
+      "INVALID_REQUEST",
+      400,
+      "Status must be pending, approved, rejected, or all",
+    );
+  }
+  const status = requestedStatus ?? "pending";
+  const statement =
+    status === "all"
+      ? env.DB.prepare(
+          `SELECT id, email_hash, email_ciphertext, contact_name,
+                  institution_name, lab_name, status, created_at, updated_at,
+                  reviewed_at
+           FROM archive_access_requests
+           ORDER BY created_at ASC
+           LIMIT ?1`,
+        ).bind(MAX_REVIEW_ROWS)
+      : env.DB.prepare(
+          `SELECT id, email_hash, email_ciphertext, contact_name,
+                  institution_name, lab_name, status, created_at, updated_at,
+                  reviewed_at
+           FROM archive_access_requests
+           WHERE status = ?1
+           ORDER BY created_at ASC
+           LIMIT ?2`,
+        ).bind(status, MAX_REVIEW_ROWS);
+  const rows = (await statement.all<ArchiveAccessRequestRow>()).results;
+  return {
+    requests: await Promise.all(
+      rows.map((row) => requestForAdministration(env, row)),
+    ),
+  };
+}
+
+async function archiveAccessRequestRow(
+  env: Env,
+  requestId: string,
+): Promise<ArchiveAccessRequestRow> {
+  const row = await env.DB.prepare(
+    `SELECT id, email_hash, email_ciphertext, contact_name, institution_name,
+            lab_name, status, created_at, updated_at, reviewed_at
+     FROM archive_access_requests
+     WHERE id = ?1
+     LIMIT 1`,
+  )
+    .bind(requestId)
+    .first<ArchiveAccessRequestRow>();
+  if (!row) {
+    throw new AppError("NOT_FOUND", 404, "Archive access request was not found");
+  }
+  return row;
+}
+
+export async function approveArchiveAccessRequest(
+  request: Request,
+  env: Env,
+  requestId: string,
+): Promise<Record<string, unknown>> {
+  await authenticateArchiveAccessAdmin(request, env);
+  const accessRequest = await archiveAccessRequestRow(env, requestId);
+  if (accessRequest.status !== "pending") {
+    throw new AppError(
+      "CONFLICT",
+      409,
+      "Only a pending archive access request can be approved",
+    );
+  }
+  const contactEmail = await decryptArchiveAccessRequestEmail(
+    accessRequest.email_ciphertext,
+    accessRequest.id,
+    env.SITE_KEY_ENCRYPTION_KEY_B64,
+  );
+  const existingRegistration = await env.DB.prepare(
+    `SELECT id FROM archive_access_registrations
+     WHERE email_hash = ?1
+     LIMIT 1`,
+  )
+    .bind(accessRequest.email_hash)
+    .first<{ id: string }>();
+  const registrationId = existingRegistration?.id ?? crypto.randomUUID();
+  const token = randomAccessToken();
+  const [tokenHash, registrationEmailCiphertext] = await Promise.all([
+    sha256Hex(token),
+    encryptArchiveAccessEmail(
+      contactEmail,
+      registrationId,
+      env.SITE_KEY_ENCRYPTION_KEY_B64,
+    ),
+  ]);
+  const timestamp = nowSeconds();
+  const results = await env.DB.batch([
+    env.DB.prepare(
+      `INSERT INTO archive_access_registrations
+         (id, token_hash, email_hash, email_ciphertext, contact_name,
+          institution_name, lab_name, participation_commitment,
+          created_at, updated_at, revoked_at)
+       SELECT ?1, ?2, r.email_hash, ?3, r.contact_name, r.institution_name,
+              r.lab_name, 1, ?4, ?4, NULL
+       FROM archive_access_requests r
+       WHERE r.id = ?5 AND r.status = 'pending'
+       ON CONFLICT(email_hash) DO UPDATE SET
+         token_hash = excluded.token_hash,
+         email_ciphertext = excluded.email_ciphertext,
+         contact_name = excluded.contact_name,
+         institution_name = excluded.institution_name,
+         lab_name = excluded.lab_name,
+         participation_commitment = 1,
+         updated_at = excluded.updated_at,
+         revoked_at = NULL`,
+    ).bind(
+      registrationId,
+      tokenHash,
+      registrationEmailCiphertext,
+      timestamp,
+      requestId,
+    ),
+    env.DB.prepare(
+      `UPDATE archive_access_requests
+       SET status = 'approved', updated_at = ?1, reviewed_at = ?1,
+           approved_registration_id = ?2
+       WHERE id = ?3 AND status = 'pending'`,
+    ).bind(timestamp, registrationId, requestId),
+  ]);
+  if (results[0]?.meta.changes !== 1 || results[1]?.meta.changes !== 1) {
+    throw new AppError(
+      "CONFLICT",
+      409,
+      "Archive access request is no longer pending",
+    );
+  }
+  return {
+    request_id: requestId,
+    status: "approved",
+    contact_name: accessRequest.contact_name,
+    contact_email: contactEmail,
+    institution_name: accessRequest.institution_name,
+    lab_name: accessRequest.lab_name,
     access_token: token,
     token_type: "Bearer",
-    archive_url: "https://scalingneuro.com/v1/archive",
+    archive_url: "https://scalingneuro.org/v1/archive",
   };
+}
+
+export async function rejectArchiveAccessRequest(
+  request: Request,
+  env: Env,
+  requestId: string,
+): Promise<Record<string, unknown>> {
+  await authenticateArchiveAccessAdmin(request, env);
+  const timestamp = nowSeconds();
+  const result = await env.DB.prepare(
+    `UPDATE archive_access_requests
+     SET status = 'rejected', updated_at = ?1, reviewed_at = ?1,
+         approved_registration_id = NULL
+     WHERE id = ?2 AND status = 'pending'`,
+  )
+    .bind(timestamp, requestId)
+    .run();
+  if (result.meta.changes !== 1) {
+    const existing = await archiveAccessRequestRow(env, requestId);
+    throw new AppError(
+      "CONFLICT",
+      409,
+      `Only a pending archive access request can be rejected; current status is ${existing.status}`,
+    );
+  }
+  return { request_id: requestId, status: "rejected" };
 }
 
 function bearerToken(request: Request): string {

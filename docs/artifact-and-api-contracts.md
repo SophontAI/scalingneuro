@@ -25,9 +25,14 @@ separate participation form:
 }
 ```
 
-The archive access response contains a bearer token once. D1 stores only its
-SHA-256 digest. The normalized work email is separately hashed for lookup and
-encrypted for administration.
+The public response is `202 Accepted` with a pseudonymous request ID and
+`pending_review` status. It never contains a bearer token. The normalized work
+email is hashed for lookup and encrypted for administration.
+
+An operator reviews pending requests with `scripts/archive-access-admin.sh`.
+The private admin routes require a separate production secret. Approval mints
+and returns a personal bearer token once, stores only its SHA-256 digest in D1,
+and marks the request approved. Rejection never creates archive credentials.
 
 ## Device routes
 
@@ -57,10 +62,10 @@ the scientific object body or starts downstream work.
 - `GET /v1/archive`
 - `GET /v1/archive/{upload_id}/{series_archive_id}/download`
 
-Both require the bearer token returned by the participation form. Listing
-returns committed, non-withdrawn functional EPI series only. Each download
-route redirects to a short-lived signed R2 GET URL. Size and SHA-256 are
-included in the listing so researchers can verify each downloaded archive.
+Both require the bearer token emailed after an access request is approved.
+Listing returns committed, non-withdrawn functional EPI series only. Each
+download route redirects to a short-lived signed R2 GET URL. Size and SHA-256
+are included in the listing so researchers can verify each downloaded archive.
 
 ## Published schemas
 

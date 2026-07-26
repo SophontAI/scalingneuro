@@ -294,7 +294,8 @@ Report: ~/.local/share/neuro-sync/reports/...</code></pre>
             in this shared functional MRI effort. Scaling Neuro promises that
             contributed datasets will remain in the open research commons and will
             never be reserved or gated for exclusive commercial or private access.
-            Submit the form once to receive a personal access token.
+            Submit the form for review. If approved, we will email your personal
+            access token and next steps to your work address.
           </p>
         </div>
 
@@ -323,27 +324,19 @@ Report: ~/.local/share/neuro-sync/reports/...</code></pre>
             <input name="participation_commitment" type="checkbox" required />
             <span>Our lab will participate in this shared functional MRI data effort.</span>
           </label>
-          <button class="button" type="submit">Get archive access</button>
-          <p class="form-note">Your work email is used only to administer archive access and coordinate this effort.</p>
+          <button class="button" type="submit">Submit access request</button>
+          <p class="form-note">Your work email is used only to review and administer archive access and coordinate this effort.</p>
           <p class="form-status" id="formStatus" role="status" aria-live="polite"></p>
         </form>
 
         <div class="access-result" id="accessResult" hidden>
-          <p class="eyebrow">Access granted</p>
-          <h3>Save this token now.</h3>
-          <p>It is shown once. Treat it like a password.</p>
-          <div class="token-row">
-            <code id="accessToken"></code>
-            <button type="button" id="copyToken">Copy</button>
-          </div>
-          <p>Save it in your shell, then list the archive:</p>
-          <pre><code>export SCALING_NEURO_ACCESS_TOKEN='PASTE_TOKEN'
-curl -H "Authorization: Bearer $SCALING_NEURO_ACCESS_TOKEN" \
-  https://scalingneuro.org/v1/archive</code></pre>
-          <p>Use any listed <code>download_url</code> to download a series:</p>
-          <pre><code>curl -L -H "Authorization: Bearer $SCALING_NEURO_ACCESS_TOKEN" \
-  DOWNLOAD_URL -o series.dicom.tar.zst
-shasum -a 256 series.dicom.tar.zst</code></pre>
+          <p class="eyebrow">Request received</p>
+          <h3>Please await an email with next steps.</h3>
+          <p>
+            We will review your work email and lab information. If approved,
+            the email will include your personal access token and archive
+            instructions.
+          </p>
         </div>
       </div>
     </section>
@@ -361,6 +354,6 @@ shasum -a 256 series.dicom.tar.zst</code></pre>
   </footer>
 
   <div class="toast" id="toast" role="status" aria-live="polite"></div>
-  <script type="module" src="/app.js?v=21"></script>
+  <script type="module" src="/app.js?v=22"></script>
 </body>
 </html>

@@ -76,7 +76,9 @@ object-scoped multipart URLs and never receives reusable R2 credentials.
 Researchers request access at
 [scalingneuro.org/#access](https://scalingneuro.org/#access). A lab provides a
 work email, institution, lab name, and a commitment to participate in the shared
-functional MRI effort. The service returns a personal bearer token.
+functional MRI effort. The service records a pending request but does not issue
+credentials from the public form. After the request is reviewed, an approved
+researcher receives a personal bearer token and archive instructions by email.
 
 ```sh
 curl -H "Authorization: Bearer $SCALING_NEURO_ACCESS_TOKEN" \

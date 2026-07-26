@@ -1,16 +1,18 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://scalingneuro.com/schemas/archive-access-response-v1.schema.json",
-  "title": "Scaling Neuro archive access response v1",
+  "title": "Scaling Neuro archive access request response v1",
   "type": "object",
   "additionalProperties": false,
-  "required": ["access_token", "token_type", "archive_url"],
+  "required": ["request_id", "status", "message"],
   "properties": {
-    "access_token": {
+    "request_id": {
       "type": "string",
-      "pattern": "^sn_access_[A-Za-z0-9_-]{43}$"
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
     },
-    "token_type": { "const": "Bearer" },
-    "archive_url": { "const": "https://scalingneuro.com/v1/archive" }
+    "status": { "const": "pending_review" },
+    "message": {
+      "const": "Your request is pending review. We will email next steps to your work address."
+    }
   }
 }

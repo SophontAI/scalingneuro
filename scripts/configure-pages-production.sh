@@ -10,6 +10,7 @@ wrangler_config=${SCALING_NEURO_WRANGLER_CONFIG:-"$repository_root/worker/wrangl
 endpoint="https://api.cloudflare.com/client/v4/accounts/${CLOUDFLARE_ACCOUNT_ID}/pages/projects/${PROJECT_NAME}"
 authorization="Authorization: Bearer ${CLOUDFLARE_API_TOKEN}"
 required_secrets='[
+  "ARCHIVE_ACCESS_ADMIN_TOKEN",
   "R2_PARENT_SECRET_ACCESS_KEY",
   "SITE_KEY_ENCRYPTION_KEY_B64"
 ]'
@@ -156,6 +157,7 @@ jq --exit-status \
   ($production.r2_buckets | keys) == ["ARCHIVE"] and
   $production.r2_buckets.ARCHIVE.name == $r2_bucket and
   ($production.env_vars | keys | sort) == [
+    "ARCHIVE_ACCESS_ADMIN_TOKEN",
     "CREDENTIAL_TTL_SECONDS",
     "R2_ACCOUNT_ID",
     "R2_BUCKET_NAME",
@@ -180,6 +182,7 @@ jq --exit-status \
     type: "plain_text", value: $upload_ttl
   } and
   $production.env_vars.R2_PARENT_SECRET_ACCESS_KEY.type == "secret_text" and
+  $production.env_vars.ARCHIVE_ACCESS_ADMIN_TOKEN.type == "secret_text" and
   $production.env_vars.SITE_KEY_ENCRYPTION_KEY_B64.type == "secret_text" and
   $preview.fail_open == false and
   $production.compatibility_date == $compatibility_date and
@@ -194,4 +197,4 @@ jq --exit-status \
   ($preview_hash == "" or $preview.wrangler_config_hash == $preview_hash)
 ' <<<"$verified" >/dev/null
 
-echo "Reconciled the production D1, R2, and minimal EPI archive secrets."
+echo "Reconciled the production D1, R2, and archive access secrets."

@@ -79,6 +79,9 @@ jq --null-input \
             R2_PARENT_SECRET_ACCESS_KEY: {
               type: "secret_text", value: "R2_SECRET_SENTINEL"
             },
+            ARCHIVE_ACCESS_ADMIN_TOKEN: {
+              type: "secret_text", value: "ADMIN_SECRET_SENTINEL"
+            },
             SITE_KEY_ENCRYPTION_KEY_B64: {
               type: "secret_text", value: "SITE_SECRET_SENTINEL"
             }
@@ -125,7 +128,9 @@ run_gate() {
 }
 
 run_gate "$scratch/drift.json" "$scratch/valid.json" "$scratch/patch.json"
-if grep -Eq 'R2_SECRET_SENTINEL|SITE_SECRET_SENTINEL' "$scratch/payload"; then
+if grep -Eq \
+  'R2_SECRET_SENTINEL|ADMIN_SECRET_SENTINEL|SITE_SECRET_SENTINEL' \
+  "$scratch/payload"; then
   echo "Configuration payload leaked a secret" >&2
   exit 1
 fi
@@ -140,11 +145,12 @@ jq --exit-status '
   $production.d1_databases.LEGACY == null and
   $production.env_vars.LEGACY == null and
   ($production.env_vars | has("R2_PARENT_SECRET_ACCESS_KEY") | not) and
+  ($production.env_vars | has("ARCHIVE_ACCESS_ADMIN_TOKEN") | not) and
   ($production.env_vars | has("SITE_KEY_ENCRYPTION_KEY_B64") | not) and
   .deployment_configs.preview.env_vars.OLD == null
 ' "$scratch/payload" >/dev/null
 
-jq 'del(.result.deployment_configs.production.env_vars.SITE_KEY_ENCRYPTION_KEY_B64)' \
+jq 'del(.result.deployment_configs.production.env_vars.ARCHIVE_ACCESS_ADMIN_TOKEN)' \
   "$scratch/drift.json" >"$scratch/missing.json"
 if run_gate "$scratch/missing.json" "$scratch/valid.json" "$scratch/patch.json"; then
   echo "Missing production secret was accepted" >&2

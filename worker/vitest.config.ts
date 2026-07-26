@@ -18,6 +18,8 @@ export default defineConfig({
           R2_ACCOUNT_ID: "test-account",
           R2_PARENT_ACCESS_KEY_ID: "test-parent-key",
           R2_BUCKET_NAME: "scaling-neuro-test",
+          ARCHIVE_ACCESS_ADMIN_TOKEN:
+            "test-archive-access-admin-token-0000000000000000",
           R2_PARENT_SECRET_ACCESS_KEY: "test-parent-secret-access-key",
           SITE_KEY_ENCRYPTION_KEY_B64:
             "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=",

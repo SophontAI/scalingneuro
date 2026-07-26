@@ -49,7 +49,9 @@ receipt. No background job is created.
 
 ## Shared use
 
-A researcher receives archive access after submitting the participation form.
+A participation form creates a pending archive access request. It does not
+issue credentials. After the work email, institution, and lab information are
+reviewed, an approved researcher receives a personal access token by email.
 The archive API lists committed, non-withdrawn functional EPI series and issues
 short-lived download URLs. The downloaded artifact is the deidentified DICOM
 archive. Each lab chooses its own conversion, preprocessing, compute, and
