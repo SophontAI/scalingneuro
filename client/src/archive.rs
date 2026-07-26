@@ -806,8 +806,7 @@ fn prepare_sanitized_dicom<F: FnMut(u64)>(
         bail!("DICOM contains overlay or graphic data and was held locally");
     }
     let valid_image_type = object
-        .element(Tag(0x0008, 0x0008))
-        .ok()
+        .get(Tag(0x0008, 0x0008))
         .filter(|element| element.vr() == VR::CS)
         .and_then(|element| element.to_str().ok())
         .and_then(|value| canonical_image_type(value.as_ref(), image_type_profile))
@@ -816,8 +815,7 @@ fn prepare_sanitized_dicom<F: FnMut(u64)>(
         bail!("DICOM ImageType failed positional validation");
     }
     let burned_in = object
-        .element(Tag(0x0028, 0x0301))
-        .ok()
+        .get(Tag(0x0028, 0x0301))
         .and_then(|element| element.to_str().ok())
         .map(|value| value.trim_matches([' ', '\0']).to_owned());
     match burned_in.as_deref() {
@@ -1386,8 +1384,7 @@ fn sanitize_dataset(
             == Some("Philips Medical Systems")
         && root_text(&source, LUT_LABEL, VR::SH).as_deref() == Some("Philips");
     let manufacturer = source
-        .element(Tag(0x0008, 0x0070))
-        .ok()
+        .get(Tag(0x0008, 0x0070))
         .and_then(|element| element.to_str().ok())
         .and_then(|value| canonical_manufacturer(value.as_ref()))
         .or_else(|| inherited_manufacturer.map(str::to_owned));
@@ -3075,8 +3072,7 @@ enum MrImageTypeProfile {
 
 fn object_mr_image_type_profile(object: &InMemDicomObject) -> MrImageTypeProfile {
     match object
-        .element(Tag(0x0008, 0x0016))
-        .ok()
+        .get(Tag(0x0008, 0x0016))
         .and_then(|element| element.to_str().ok())
         .map(|value| value.trim_matches([' ', '\0']).to_owned())
         .as_deref()
@@ -3739,7 +3735,7 @@ fn validate_pixel_transforms(
     if depth > MAX_SEQUENCE_DEPTH {
         bail!("DICOM sequence nesting exceeds the local sanitizer limit");
     }
-    if object.element(REAL_WORLD_VALUE_MAPPING_SEQUENCE).is_ok() {
+    if object.get(REAL_WORLD_VALUE_MAPPING_SEQUENCE).is_some() {
         bail!("DICOM RealWorldValueMapping is not supported by the privacy writer");
     }
 
@@ -3803,7 +3799,7 @@ fn validate_pixel_transforms(
     ];
     if UNSUPPORTED_TRANSFORMS
         .iter()
-        .any(|tag| object.element(*tag).is_ok())
+        .any(|tag| object.get(*tag).is_some())
     {
         bail!("DICOM contains an unsupported pixel transform");
     }
@@ -3813,7 +3809,7 @@ fn validate_pixel_transforms(
         && root_text(object, Tag(0x0008, 0x0070), VR::LO).as_deref()
             == Some("Philips Medical Systems")
         && root_text(object, LUT_LABEL, VR::SH).as_deref() == Some("Philips");
-    if object.element(LUT_LABEL).is_ok()
+    if object.get(LUT_LABEL).is_some()
         && !(philips_enhanced_root_lut_label
             || stage == PixelTransformValidationStage::Source
                 && context.philips_dd005_lut_label_allowed_here
@@ -3822,13 +3818,13 @@ fn validate_pixel_transforms(
         bail!("DICOM contains an unsupported pixel transform");
     }
     if stage == PixelTransformValidationStage::Sanitized
-        && object.element(WINDOW_CENTER_WIDTH_EXPLANATION).is_ok()
+        && object.get(WINDOW_CENTER_WIDTH_EXPLANATION).is_some()
     {
         bail!("sanitized DICOM contains unsupported window explanation text");
     }
 
     let rescale_present =
-        [RESCALE_INTERCEPT, RESCALE_SLOPE, RESCALE_TYPE].map(|tag| object.element(tag).is_ok());
+        [RESCALE_INTERCEPT, RESCALE_SLOPE, RESCALE_TYPE].map(|tag| object.get(tag).is_some());
     if rescale_present.iter().any(|present| *present)
         && (!context.rescale_allowed_here
             || !rescale_present.iter().all(|present| *present)
@@ -3837,8 +3833,8 @@ fn validate_pixel_transforms(
         bail!("DICOM contains an incomplete or invalid rescale transform");
     }
 
-    let window_center = object.element(WINDOW_CENTER).ok();
-    let window_width = object.element(WINDOW_WIDTH).ok();
+    let window_center = object.get(WINDOW_CENTER);
+    let window_width = object.get(WINDOW_WIDTH);
     match (window_center, window_width) {
         (None, None) => {}
         (Some(center), Some(width))
@@ -3875,7 +3871,7 @@ fn validate_pixel_transforms(
             )?;
             if ![RESCALE_INTERCEPT, RESCALE_SLOPE, RESCALE_TYPE]
                 .iter()
-                .all(|tag| item.element(*tag).is_ok())
+                .all(|tag| item.get(*tag).is_some())
             {
                 bail!("DICOM contains an incomplete PixelValueTransformationSequence");
             }
@@ -3902,7 +3898,7 @@ fn validate_pixel_transforms(
             )?;
             if ![WINDOW_CENTER, WINDOW_WIDTH]
                 .iter()
-                .all(|tag| item.element(*tag).is_ok())
+                .all(|tag| item.get(*tag).is_some())
             {
                 bail!("DICOM contains an incomplete FrameVOILUTSequence");
             }
@@ -3953,13 +3949,13 @@ fn validate_source_dimension_index_pointers(object: &InMemDicomObject) -> Result
         return Ok(());
     };
     for item in indexes {
-        if item.element(DIMENSION_INDEX_PRIVATE_CREATOR).is_ok()
-            || item.element(FUNCTIONAL_GROUP_PRIVATE_CREATOR).is_ok()
+        if item.get(DIMENSION_INDEX_PRIVATE_CREATOR).is_some()
+            || item.get(FUNCTIONAL_GROUP_PRIVATE_CREATOR).is_some()
         {
             bail!("DICOM uses unsupported private Enhanced MR dimension pointers");
         }
         for pointer_tag in [DIMENSION_INDEX_POINTER, FUNCTIONAL_GROUP_POINTER] {
-            if item.element(pointer_tag).is_ok()
+            if item.get(pointer_tag).is_some()
                 && root_at(item, pointer_tag).is_none_or(|pointer| pointer.group() % 2 == 1)
             {
                 bail!("DICOM uses an invalid or private Enhanced MR dimension pointer");
@@ -4095,7 +4091,7 @@ fn validate_simple_referenced_image_sequence(
         .filter(|items| !items.is_empty() && items.len() <= MAX_SEQUENCE_ITEMS)
         .context("DICOM Referenced Image Sequence is empty or exceeds the bounded item limit")?;
     for item in items {
-        let source_group_length = item.element(RETIRED_GROUP_LENGTH).ok();
+        let source_group_length = item.get(RETIRED_GROUP_LENGTH);
         let expected_count = 2 + usize::from(
             stage == ReferenceValidationStage::Source && source_group_length.is_some(),
         );
@@ -4166,8 +4162,8 @@ fn validate_referenced_image_sequence(
                 )
             })
             || stage == ReferenceValidationStage::Sanitized
-                && (item.element(Tag(0x2005, 0x0014)).is_ok()
-                    || item.element(Tag(0x2005, 0x1411)).is_ok())
+                && (item.get(Tag(0x2005, 0x0014)).is_some()
+                    || item.get(Tag(0x2005, 0x1411)).is_some())
         {
             bail!("DICOM Referenced Image Sequence has unsupported item semantics");
         }
@@ -4340,7 +4336,7 @@ fn validate_source_enhanced_mr_surface(
         Tag(0x0020, 0x9163),
         Tag(0x0020, 0x9228),
     ] {
-        if object.element(tag).is_ok() {
+        if object.get(tag).is_some() {
             bail!("Enhanced MR concatenations are not yet supported atomically");
         }
     }
@@ -4367,9 +4363,9 @@ fn validate_source_functional_group_container(
     profile: MrImageTypeProfile,
     shared: bool,
 ) -> Result<()> {
-    let philips_creator = container.element(Tag(0x2005, 0x0014)).ok();
-    let philips_shared = container.element(Tag(0x2005, 0x140e)).ok();
-    let philips_per_frame = container.element(Tag(0x2005, 0x140f)).ok();
+    let philips_creator = container.get(Tag(0x2005, 0x0014));
+    let philips_shared = container.get(Tag(0x2005, 0x140e));
+    let philips_per_frame = container.get(Tag(0x2005, 0x140f));
     if philips_creator.is_some() || philips_shared.is_some() || philips_per_frame.is_some() {
         if profile != MrImageTypeProfile::Enhanced
             || root_text(container, Tag(0x2005, 0x0014), VR::LO).as_deref()
@@ -4546,7 +4542,7 @@ fn validate_philips_shared_functional_group_duplicate(
         Tag(0x0018, 0x9094),
         Tag(0x0018, 0x9169),
     ] {
-        if item.element(tag).ok().is_none_or(|element| {
+        if item.get(tag).is_none_or(|element| {
             element.vr() != VR::CS
                 || !matches!(element.value(), Value::Primitive(PrimitiveValue::Empty))
         }) {
@@ -4619,8 +4615,7 @@ fn validate_philips_per_frame_functional_group_duplicate(
         rebuild_philips_per_frame_scale_sequence(element.value()),
         PhilipsPerFrameScaleSequence::Rebuilt(_)
     ) || items[0]
-        .element(Tag(0x2005, 0x0010))
-        .ok()
+        .get(Tag(0x2005, 0x0010))
         .and_then(|creator| creator.to_str().ok())
         .is_none_or(|creator| creator.trim_matches([' ', '\0']) != "Philips MR Imaging DD 001")
     {
@@ -4666,8 +4661,8 @@ fn rebuild_multi_coil_receive_sequence(
     };
     let has_multi_coil_surface = items.iter().any(|item| {
         root_text(item, RECEIVE_COIL_TYPE, VR::CS).as_deref() == Some("MULTICOIL")
-            || item.element(MULTI_COIL_DEFINITION_SEQUENCE).is_ok()
-            || item.element(MULTI_COIL_CONFIGURATION).is_ok()
+            || item.get(MULTI_COIL_DEFINITION_SEQUENCE).is_some()
+            || item.get(MULTI_COIL_CONFIGURATION).is_some()
     });
     if !has_multi_coil_surface {
         return Ok(None);
@@ -4695,8 +4690,7 @@ fn rebuild_multi_coil_receive_sequence(
         .context("Enhanced MR multi-coil receive name is not an exact generic alias")?;
     if name != "MULTI_COIL"
         || source
-            .element(RECEIVE_COIL_MANUFACTURER_NAME)
-            .ok()
+            .get(RECEIVE_COIL_MANUFACTURER_NAME)
             .is_none_or(|manufacturer| {
                 manufacturer.vr() != VR::LO || !matches!(manufacturer.value(), Value::Primitive(_))
             })
@@ -4708,8 +4702,7 @@ fn rebuild_multi_coil_receive_sequence(
         .filter(|value| matches!(value.as_str(), "YES" | "NO"))
         .context("Enhanced MR multi-coil receive macro has invalid quadrature semantics")?;
     let definition = source
-        .element(MULTI_COIL_DEFINITION_SEQUENCE)
-        .ok()
+        .get(MULTI_COIL_DEFINITION_SEQUENCE)
         .filter(|definition| definition.vr() == VR::SQ)
         .and_then(|definition| definition.value().items())
         .filter(|items| !items.is_empty() && items.len() <= MAX_MULTI_COIL_ELEMENTS)
@@ -4772,8 +4765,7 @@ fn rebuild_surface_transmit_coil_sequence(
         return Ok(None);
     };
     let has_source_alias = items.iter().any(|item| {
-        item.element(TRANSMIT_COIL_NAME)
-            .ok()
+        item.get(TRANSMIT_COIL_NAME)
             .and_then(|name| name.to_str().ok())
             .is_some_and(|name| name.trim_matches([' ', '\0']) == "S")
     });
@@ -4913,7 +4905,7 @@ fn validate_source_asl_conditionals(object: &InMemDicomObject, depth: usize) -> 
     ];
     if CONDITIONAL_CHILDREN
         .iter()
-        .any(|tag| object.element(*tag).is_ok())
+        .any(|tag| object.get(*tag).is_some())
     {
         bail!("DICOM contains ASL conditional metadata outside its required macro");
     }
@@ -4956,11 +4948,11 @@ fn validate_source_asl_item(object: &InMemDicomObject, depth: usize) -> Result<(
         {
             bail!("DICOM contains an incomplete or invalid ASL crusher group");
         }
-    } else if crusher_flow.is_some() || object.element(Tag(0x0018, 0x925b)).is_ok() {
+    } else if crusher_flow.is_some() || object.get(Tag(0x0018, 0x925b)).is_some() {
         bail!("DICOM ASL crusher children contradict a NO flag");
     }
 
-    let bolus_sequence = object.element(Tag(0x0018, 0x925d)).ok();
+    let bolus_sequence = object.get(Tag(0x0018, 0x925d));
     if bolus == "YES" {
         let Some(sequence) = bolus_sequence.filter(|element| element.vr() == VR::SQ) else {
             bail!("DICOM contains an incomplete ASL bolus cut-off group");
@@ -4995,7 +4987,7 @@ fn validate_source_asl_item(object: &InMemDicomObject, depth: usize) -> Result<(
 }
 
 fn direct_fd_vm1(object: &InMemDicomObject, tag: Tag) -> Option<f64> {
-    let element = object.element(tag).ok()?;
+    let element = object.get(tag)?;
     if element.vr() != VR::FD {
         return None;
     }
@@ -5010,7 +5002,7 @@ fn direct_fd_vm1(object: &InMemDicomObject, tag: Tag) -> Option<f64> {
 }
 
 fn direct_ul_vm1(object: &InMemDicomObject, tag: Tag) -> Option<u32> {
-    let element = object.element(tag).ok()?;
+    let element = object.get(tag)?;
     if element.vr() != VR::UL {
         return None;
     }
@@ -5021,7 +5013,7 @@ fn direct_ul_vm1(object: &InMemDicomObject, tag: Tag) -> Option<u32> {
 }
 
 fn direct_lo(object: &InMemDicomObject, tag: Tag, allow_empty: bool) -> Option<String> {
-    let element = object.element(tag).ok()?;
+    let element = object.get(tag)?;
     if element.vr() != VR::LO {
         return None;
     }
@@ -5044,8 +5036,7 @@ fn valid_rescale_triplet(object: &InMemDicomObject) -> bool {
         return false;
     };
     let Some(kind) = object
-        .element(RESCALE_TYPE)
-        .ok()
+        .get(RESCALE_TYPE)
         .filter(|element| element.vr() == VR::LO)
         .and_then(|element| element.to_str().ok())
         .and_then(|value| canonical_rescale_type(value.as_ref()))
@@ -5092,7 +5083,7 @@ fn decimal_values(
     minimum_vm: usize,
     maximum_vm: usize,
 ) -> Option<Vec<f64>> {
-    let element = object.element(tag).ok()?.to_owned();
+    let element = object.get(tag)?.to_owned();
     if element.vr() != VR::DS {
         return None;
     }
@@ -5115,8 +5106,7 @@ fn decimal_values(
 
 fn declares_original_primary(object: &InMemDicomObject) -> bool {
     let values = object
-        .element(Tag(0x0008, 0x0008))
-        .ok()
+        .get(Tag(0x0008, 0x0008))
         .and_then(|element| element.to_multi_str().ok())
         .unwrap_or_default();
     let has = |expected: &str| {
@@ -5167,7 +5157,7 @@ fn insert_required_type_two_attributes(object: &mut InMemDicomObject) {
         if tag == Tag(0x0018, 0x0081) && !classic_mr {
             continue;
         }
-        if object.element(tag).is_err() {
+        if object.get(tag).is_none() {
             object.put(DataElement::new(tag, vr, PrimitiveValue::Empty));
         }
     }
@@ -5484,7 +5474,7 @@ fn validate_enhanced_mr_iod_contract(object: &InMemDicomObject, sop_class: &str)
         || dimension_indexes.is_some()
         || frame_contents
             .iter()
-            .any(|item| item.element(DIMENSION_INDEX_VALUES).is_ok());
+            .any(|item| item.get(DIMENSION_INDEX_VALUES).is_some());
     if dimensions_required || dimensions_present {
         let dimension_organizations = dimension_organizations
             .filter(|items| !items.is_empty())
@@ -5523,7 +5513,7 @@ fn validate_enhanced_mr_iod_contract(object: &InMemDicomObject, sop_class: &str)
         }
     } else if frame_contents
         .iter()
-        .any(|item| item.element(DIMENSION_INDEX_VALUES).is_ok())
+        .any(|item| item.get(DIMENSION_INDEX_VALUES).is_some())
     {
         bail!("Legacy Converted MR retained Dimension Index Values without dimensions");
     }
@@ -5576,7 +5566,7 @@ fn required_code_value(object: &InMemDicomObject, tag: Tag) -> Option<String> {
 }
 
 fn exact_fd_values(object: &InMemDicomObject, tag: Tag, vm: usize) -> Option<Vec<f64>> {
-    let element = object.element(tag).ok()?;
+    let element = object.get(tag)?;
     if element.vr() != VR::FD {
         return None;
     }
@@ -5591,7 +5581,7 @@ fn exact_fd_values(object: &InMemDicomObject, tag: Tag, vm: usize) -> Option<Vec
 }
 
 fn valid_type_two_empty(object: &InMemDicomObject, tag: Tag, vr: VR) -> bool {
-    object.element(tag).ok().is_some_and(|element| {
+    object.get(tag).is_some_and(|element| {
         element.vr() == vr && matches!(element.value(), Value::Primitive(PrimitiveValue::Empty))
     })
 }
@@ -5875,8 +5865,8 @@ fn validate_mr_receive_coil_item(item: &InMemDicomObject) -> Result<()> {
                 bail!("Enhanced MR multi-coil definition is not atomically canonicalized");
             }
         }
-    } else if item.element(MULTI_COIL_DEFINITION_SEQUENCE).is_ok()
-        || item.element(MULTI_COIL_CONFIGURATION).is_ok()
+    } else if item.get(MULTI_COIL_DEFINITION_SEQUENCE).is_some()
+        || item.get(MULTI_COIL_CONFIGURATION).is_some()
     {
         bail!("Enhanced MR non-multi receive coil retained multi-coil metadata");
     }
@@ -5942,9 +5932,9 @@ fn required_functional_group_items<'a>(
     per_frame: &'a [InMemDicomObject],
     tag: Tag,
 ) -> Option<Vec<&'a InMemDicomObject>> {
-    if shared.element(tag).is_ok() {
+    if shared.get(tag).is_some() {
         let items = exact_sequence_items(shared, tag)?;
-        if items.len() != 1 || per_frame.iter().any(|frame| frame.element(tag).is_ok()) {
+        if items.len() != 1 || per_frame.iter().any(|frame| frame.get(tag).is_some()) {
             return None;
         }
         return Some(vec![&items[0]]);
@@ -5965,7 +5955,7 @@ fn required_per_frame_functional_group_items<'a>(
     per_frame: &'a [InMemDicomObject],
     tag: Tag,
 ) -> Option<Vec<&'a InMemDicomObject>> {
-    if shared.element(tag).is_ok() {
+    if shared.get(tag).is_some() {
         return None;
     }
     let mut output = Vec::with_capacity(per_frame.len());
@@ -5990,11 +5980,9 @@ fn validate_legacy_converted_macro_shells(
         bail!("Legacy Converted MR has unsupported non-empty shared converted attributes");
     }
     if shared
-        .element(UNASSIGNED_PER_FRAME_CONVERTED_ATTRIBUTES_SEQUENCE)
-        .is_ok()
-        || shared
-            .element(CONVERSION_SOURCE_ATTRIBUTES_SEQUENCE)
-            .is_ok()
+        .get(UNASSIGNED_PER_FRAME_CONVERTED_ATTRIBUTES_SEQUENCE)
+        .is_some()
+        || shared.get(CONVERSION_SOURCE_ATTRIBUTES_SEQUENCE).is_some()
     {
         bail!("Legacy Converted MR has a converted-attribute macro in the wrong context");
     }
@@ -6005,9 +5993,9 @@ fn validate_legacy_converted_macro_shells(
             bail!("Legacy Converted MR has unsupported non-empty per-frame converted attributes");
         }
         if frame
-            .element(UNASSIGNED_SHARED_CONVERTED_ATTRIBUTES_SEQUENCE)
-            .is_ok()
-            || frame.element(CONVERSION_SOURCE_ATTRIBUTES_SEQUENCE).is_ok()
+            .get(UNASSIGNED_SHARED_CONVERTED_ATTRIBUTES_SEQUENCE)
+            .is_some()
+            || frame.get(CONVERSION_SOURCE_ATTRIBUTES_SEQUENCE).is_some()
         {
             bail!("Legacy Converted MR has unsupported conversion-source metadata");
         }
@@ -6016,7 +6004,7 @@ fn validate_legacy_converted_macro_shells(
 }
 
 fn exact_sequence_items(object: &InMemDicomObject, tag: Tag) -> Option<&[InMemDicomObject]> {
-    let element = object.element(tag).ok()?;
+    let element = object.get(tag)?;
     (element.vr() == VR::SQ)
         .then(|| element.value().items())
         .flatten()
@@ -6050,7 +6038,7 @@ fn valid_dimension_index_item(
     {
         return false;
     }
-    let group_pointer_present = item.element(FUNCTIONAL_GROUP_POINTER).is_ok();
+    let group_pointer_present = item.get(FUNCTIONAL_GROUP_POINTER).is_some();
     let group_pointer = root_at(item, FUNCTIONAL_GROUP_POINTER);
     if group_pointer_present && group_pointer.is_none() {
         return false;
@@ -6070,8 +6058,7 @@ fn valid_dimension_index_item(
     // the other standard no-group-pointer form.
     valid_functional_group_reference(shared, per_frame, index_pointer, None)
         || root
-            .element(index_pointer)
-            .ok()
+            .get(index_pointer)
             .is_some_and(|element| element.vr() != VR::SQ)
 }
 
@@ -6083,11 +6070,11 @@ fn valid_functional_group_reference(
 ) -> bool {
     let valid_group = |container: &InMemDicomObject| {
         exact_sequence_items(container, group_tag).is_some_and(|items| {
-            items.len() == 1 && target_tag.is_none_or(|target| items[0].element(target).is_ok())
+            items.len() == 1 && target_tag.is_none_or(|target| items[0].get(target).is_some())
         })
     };
-    let shared_has_group = shared.element(group_tag).is_ok();
-    let per_frame_has_group = |frame: &InMemDicomObject| frame.element(group_tag).is_ok();
+    let shared_has_group = shared.get(group_tag).is_some();
+    let per_frame_has_group = |frame: &InMemDicomObject| frame.get(group_tag).is_some();
     if shared_has_group {
         valid_group(shared) && per_frame.iter().all(|frame| !per_frame_has_group(frame))
     } else {
@@ -6125,7 +6112,7 @@ fn validate_pixel_module(object: &InMemDicomObject, sop_class: &str) -> Result<u
         || samples != 1
         || !matches!(pixel_representation, 0 | 1)
         || high_bit.checked_add(1) != Some(bits_stored)
-        || object.element(Tag(0x0028, 0x0006)).is_ok()
+        || object.get(Tag(0x0028, 0x0006)).is_some()
     {
         return Err(invalid());
     }
@@ -6162,7 +6149,7 @@ fn validate_pixel_module(object: &InMemDicomObject, sop_class: &str) -> Result<u
 }
 
 fn root_us(object: &InMemDicomObject, tag: Tag) -> Option<u16> {
-    let element = object.element(tag).ok()?;
+    let element = object.get(tag)?;
     if element.vr() != VR::US {
         return None;
     }
@@ -6173,7 +6160,7 @@ fn root_us(object: &InMemDicomObject, tag: Tag) -> Option<u16> {
 }
 
 fn root_at(object: &InMemDicomObject, tag: Tag) -> Option<Tag> {
-    let element = object.element(tag).ok()?;
+    let element = object.get(tag)?;
     if element.vr() != VR::AT {
         return None;
     }
@@ -6184,7 +6171,7 @@ fn root_at(object: &InMemDicomObject, tag: Tag) -> Option<Tag> {
 }
 
 fn root_text(object: &InMemDicomObject, tag: Tag, vr: VR) -> Option<String> {
-    let element = object.element(tag).ok()?;
+    let element = object.get(tag)?;
     if element.vr() != vr {
         return None;
     }
@@ -6214,7 +6201,7 @@ fn optional_number_of_frames(object: &InMemDicomObject) -> Option<Option<u64>> {
 }
 
 fn audit_dataset(object: &InMemDicomObject, subject_id: &str, depth: usize) -> Result<()> {
-    if depth == 0 && object.element(Tag(0x0008, 0x0008)).is_err() {
+    if depth == 0 && object.get(Tag(0x0008, 0x0008)).is_none() {
         bail!("sanitized DICOM omitted required ImageType");
     }
     if depth == 0 {

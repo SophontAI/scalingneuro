@@ -1272,10 +1272,9 @@ pub fn read_header(path: &Path) -> Result<DicomHeader> {
         diffusion_b_value: float(&object, Tag(0x0018, 0x9087)),
         asl_technique: string(&object, Tag(0x0018, 0x9250)),
         burned_in_annotation: string(&object, Tag(0x0028, 0x0301)),
-        siemens_csa_image_header_present: object.element(Tag(0x0029, 0x1010)).is_ok(),
+        siemens_csa_image_header_present: object.get(Tag(0x0029, 0x1010)).is_some(),
         siemens_csa_image_header_sanitizable: object
-            .element(Tag(0x0029, 0x0010))
-            .ok()
+            .get(Tag(0x0029, 0x0010))
             .and_then(|element| element.to_str().ok())
             .is_some_and(|value| {
                 value
@@ -1283,16 +1282,15 @@ pub fn read_header(path: &Path) -> Result<DicomHeader> {
                     .eq_ignore_ascii_case("SIEMENS CSA HEADER")
             })
             && object
-                .element(Tag(0x0029, 0x1010))
-                .ok()
+                .get(Tag(0x0029, 0x1010))
                 .and_then(|element| element.to_bytes().ok())
                 .is_some_and(|bytes| {
                     crate::archive::sanitize_siemens_csa_image_header(bytes.as_ref()).is_some()
                 }),
         overlay_or_graphics: contains_overlay_or_graphics(&object, 0),
-        has_extended_offset_table: object.element(Tag(0x7FE0, 0x0001)).is_ok()
-            || object.element(Tag(0x7FE0, 0x0002)).is_ok(),
-        has_per_frame_functional_groups: object.element(Tag(0x5200, 0x9230)).is_ok(),
+        has_extended_offset_table: object.get(Tag(0x7FE0, 0x0001)).is_some()
+            || object.get(Tag(0x7FE0, 0x0002)).is_some(),
+        has_per_frame_functional_groups: object.get(Tag(0x5200, 0x9230)).is_some(),
         acquisition,
     })
 }
@@ -1323,8 +1321,7 @@ fn philips_dynamic_scan_begin_time(object: &DefaultDicomObject) -> Option<f64> {
                 && tag.element() & 0x00ff == 0x00a0
                 && element.vr() == VR::FL
                 && object
-                    .element(creator_tag)
-                    .ok()
+                    .get(creator_tag)
                     .and_then(|creator| creator.to_str().ok())
                     .is_some_and(|creator| {
                         creator
@@ -1351,8 +1348,7 @@ fn philips_dynamic_scan_begin_time_tag_present(object: &DefaultDicomObject) -> b
         tag.group() == 0x2005
             && tag.element() & 0x00ff == 0x00a0
             && object
-                .element(creator_tag)
-                .ok()
+                .get(creator_tag)
                 .and_then(|creator| creator.to_str().ok())
                 .is_some_and(|creator| {
                     creator
@@ -1371,8 +1367,7 @@ fn philips_number_of_slices(object: &DefaultDicomObject) -> Option<i64> {
                 && tag.element() & 0x00ff == 0x0018
                 && element.vr() == VR::SL
                 && object
-                    .element(creator_tag)
-                    .ok()
+                    .get(creator_tag)
                     .and_then(|creator| creator.to_str().ok())
                     .is_some_and(|creator| {
                         creator
@@ -1495,8 +1490,7 @@ fn private_creator_matches(
 ) -> bool {
     let creator_tag = Tag(private_tag.group(), private_tag.element() >> 8);
     object
-        .element(creator_tag)
-        .ok()
+        .get(creator_tag)
         .and_then(|creator| creator.to_str().ok())
         .is_some_and(|creator| {
             creator
@@ -2011,8 +2005,7 @@ fn reviewed_private_diffusion_metadata_contract(
         siemens_tag_signature,
     );
     let siemens_csa_contract = object
-        .element(Tag(0x0029, 0x1010))
-        .ok()
+        .get(Tag(0x0029, 0x1010))
         .filter(|_| private_creator_matches(object, Tag(0x0029, 0x1010), "SIEMENS CSA HEADER"))
         .and_then(|element| element.to_bytes().ok())
         .map(|bytes| siemens_csa_diffusion_contract(bytes.as_ref()))
@@ -2449,7 +2442,7 @@ fn public_diffusion_gradient(object: &dicom_object::InMemDicomObject) -> Option<
     if let Some(values) = direct_numbers(object, Tag(0x0018, 0x9089), VR::FD, 3) {
         return values.try_into().ok();
     }
-    let items = object.element(Tag(0x0018, 0x9076)).ok()?.value().items()?;
+    let items = object.get(Tag(0x0018, 0x9076))?.value().items()?;
     (items.len() == 1)
         .then(|| direct_numbers(&items[0], Tag(0x0018, 0x9089), VR::FD, 3))
         .flatten()?
@@ -2463,7 +2456,7 @@ fn public_diffusion_b_matrix(object: &dicom_object::InMemDicomObject) -> Option<
     if direct.iter().all(Option::is_some) {
         return Some(direct.map(|values| values.expect("all matrix members checked")[0]));
     }
-    let items = object.element(Tag(0x0018, 0x9601)).ok()?.value().items()?;
+    let items = object.get(Tag(0x0018, 0x9601))?.value().items()?;
     (items.len() == 1).then_some(())?;
     [0x9602, 0x9603, 0x9604, 0x9605, 0x9606, 0x9607]
         .map(|element| direct_numbers(&items[0], Tag(0x0018, element), VR::FD, 1))
@@ -2496,11 +2489,7 @@ fn public_diffusion_signature(item: &dicom_object::InMemDicomObject) -> Option<D
 fn public_diffusion_macro_signature(
     container: &dicom_object::InMemDicomObject,
 ) -> Option<DiffusionSignature> {
-    let items = container
-        .element(Tag(0x0018, 0x9117))
-        .ok()?
-        .value()
-        .items()?;
+    let items = container.get(Tag(0x0018, 0x9117))?.value().items()?;
     (items.len() == 1)
         .then(|| public_diffusion_signature(&items[0]))
         .flatten()
@@ -2524,7 +2513,7 @@ fn enhanced_public_diffusion_signatures(
     let (origins, shared_item, per_frame_items) = enhanced_frame_origins(object)?;
     let mut signatures = Vec::new();
     if let Some(shared_item) = shared_item {
-        if shared_item.element(Tag(0x0018, 0x9117)).is_ok() {
+        if shared_item.get(Tag(0x0018, 0x9117)).is_some() {
             push_unique_diffusion_signature(
                 &mut signatures,
                 public_diffusion_macro_signature(shared_item)?,
@@ -2561,7 +2550,7 @@ fn public_diffusion_metadata_contract(
         Tag(0x0018, 0x9607),
     ]
     .into_iter()
-    .any(|tag| object.element(tag).is_ok());
+    .any(|tag| object.get(tag).is_some());
     let recursive_present = contains_recursive_tag(object, Tag(0x0018, 0x9117), 0)
         || contains_recursive_tag(object, Tag(0x0018, 0x9087), 0)
         || contains_recursive_tag(object, Tag(0x0018, 0x9075), 0)
@@ -2586,7 +2575,7 @@ fn public_diffusion_metadata_contract(
     let signatures = if valid {
         match storage_kind {
             MrSopStorageKind::Classic => {
-                let signature = if object.element(Tag(0x0018, 0x9117)).is_ok() {
+                let signature = if object.get(Tag(0x0018, 0x9117)).is_some() {
                     public_diffusion_macro_signature(object)
                 } else {
                     public_diffusion_signature(object)
@@ -2644,7 +2633,7 @@ fn public_asl_metadata_contract(object: &dicom_object::InMemDicomObject) -> AslC
     let recursive_macro_present = contains_recursive_tag(object, Tag(0x0018, 0x9251), 0)
         || contains_recursive_tag(object, Tag(0x0018, 0x9257), 0);
     let direct_macro_present =
-        object.element(Tag(0x0018, 0x9251)).is_ok() || object.element(Tag(0x0018, 0x9257)).is_ok();
+        object.get(Tag(0x0018, 0x9251)).is_some() || object.get(Tag(0x0018, 0x9257)).is_some();
     let storage_kind = mr_sop_storage_kind(object);
     let (present, valid) = match storage_kind {
         MrSopStorageKind::Classic => (
@@ -2685,7 +2674,7 @@ fn public_asl_metadata_contract(object: &dicom_object::InMemDicomObject) -> AslC
                 let mut collected_shared = false;
                 if let Ok(shared) = object.element(Tag(0x5200, 0x9229)) {
                     if let Some(items) = shared.value().items() {
-                        if items.len() == 1 && items[0].element(Tag(0x0018, 0x9251)).is_ok() {
+                        if items.len() == 1 && items[0].get(Tag(0x0018, 0x9251)).is_some() {
                             collected_shared = true;
                             if !collect_direct_asl_contexts(&items[0], &mut contexts) {
                                 return AslContract {
@@ -2904,8 +2893,7 @@ fn direct_frame_origin_state(
         return FrameOriginState::Invalid;
     }
     let Some(value) = items[0]
-        .element(Tag(0x0008, 0x9007))
-        .ok()
+        .get(Tag(0x0008, 0x9007))
         .filter(|element| element.vr() == VR::CS)
         .and_then(|element| element.to_str().ok())
         .and_then(|value| {
@@ -2934,8 +2922,7 @@ fn direct_root_image_origin(
     legacy: bool,
 ) -> Option<String> {
     let value = object
-        .element(Tag(0x0008, 0x0008))
-        .ok()
+        .get(Tag(0x0008, 0x0008))
         .filter(|element| element.vr() == VR::CS)
         .and_then(|element| element.to_str().ok())?;
     crate::archive::canonical_enhanced_mr_type_for_scientific_contract(
@@ -3039,7 +3026,7 @@ fn one_or_more_valid_asl_items(items: &[dicom_object::InMemDicomObject]) -> bool
 }
 
 fn valid_classic_public_diffusion_root(object: &dicom_object::InMemDicomObject) -> bool {
-    if object.element(Tag(0x0018, 0x9117)).is_ok() {
+    if object.get(Tag(0x0018, 0x9117)).is_some() {
         let has_loose_fields = [
             Tag(0x0018, 0x9087),
             Tag(0x0018, 0x9075),
@@ -3054,7 +3041,7 @@ fn valid_classic_public_diffusion_root(object: &dicom_object::InMemDicomObject) 
             Tag(0x0018, 0x9607),
         ]
         .into_iter()
-        .any(|tag| object.element(tag).is_ok());
+        .any(|tag| object.get(tag).is_some());
         return !has_loose_fields
             && direct_macro_state(
                 object,
@@ -3117,7 +3104,7 @@ fn direct_numeric_state(
     vm: usize,
     valid: impl Fn(&[f64]) -> bool,
 ) -> MacroState {
-    if object.element(tag).is_err() {
+    if object.get(tag).is_none() {
         return MacroState::Absent;
     }
     if direct_numbers(object, tag, vr, vm).is_some_and(|values| valid(&values)) {
@@ -3277,7 +3264,7 @@ fn valid_public_diffusion_b_matrix(item: &dicom_object::InMemDicomObject) -> boo
 }
 
 fn integer_from_object(object: &dicom_object::InMemDicomObject, tag: Tag) -> Option<i64> {
-    object.element(tag).ok()?.to_int::<i64>().ok()
+    object.get(tag)?.to_int::<i64>().ok()
 }
 
 fn contains_recursive_tag(object: &dicom_object::InMemDicomObject, tag: Tag, depth: usize) -> bool {
@@ -3330,9 +3317,7 @@ fn valid_public_asl_item(item: &dicom_object::InMemDicomObject) -> bool {
 
 fn valid_public_asl_crusher_group(item: &dicom_object::InMemDicomObject, crusher: &str) -> bool {
     match crusher {
-        "NO" => {
-            item.element(Tag(0x0018, 0x925A)).is_err() && item.element(Tag(0x0018, 0x925B)).is_err()
-        }
+        "NO" => item.get(Tag(0x0018, 0x925A)).is_none() && item.get(Tag(0x0018, 0x925B)).is_none(),
         "YES" => {
             direct_numbers(item, Tag(0x0018, 0x925A), VR::FD, 1)
                 .is_some_and(|values| values[0] >= 0.0)
@@ -3345,7 +3330,7 @@ fn valid_public_asl_crusher_group(item: &dicom_object::InMemDicomObject, crusher
 
 fn valid_public_asl_bolus_cutoff_group(item: &dicom_object::InMemDicomObject, bolus: &str) -> bool {
     match bolus {
-        "NO" => item.element(Tag(0x0018, 0x925D)).is_err(),
+        "NO" => item.get(Tag(0x0018, 0x925D)).is_none(),
         "YES" => {
             let Ok(sequence) = item.element(Tag(0x0018, 0x925D)) else {
                 return false;
@@ -3384,7 +3369,7 @@ fn direct_code(
     tag: Tag,
     allowed: &[&str],
 ) -> Option<String> {
-    let element = object.element(tag).ok()?;
+    let element = object.get(tag)?;
     if element.vr() != VR::CS {
         return None;
     }
@@ -3397,7 +3382,7 @@ fn direct_code(
 }
 
 fn direct_text(object: &dicom_object::InMemDicomObject, tag: Tag, vr: VR) -> Option<String> {
-    let element = object.element(tag).ok()?;
+    let element = object.get(tag)?;
     if element.vr() != vr {
         return None;
     }
@@ -3435,7 +3420,7 @@ fn direct_numbers(
     vr: VR,
     vm: usize,
 ) -> Option<Vec<f64>> {
-    let element = object.element(tag).ok()?;
+    let element = object.get(tag)?;
     if element.vr() != vr {
         return None;
     }
@@ -3450,7 +3435,7 @@ fn direct_unsigned_integer(
     tag: Tag,
     vr: VR,
 ) -> Option<u64> {
-    let element = object.element(tag).ok()?;
+    let element = object.get(tag)?;
     if element.vr() != vr {
         return None;
     }
@@ -3656,8 +3641,7 @@ fn all_float_equal(values: &[f64], tolerance: f64) -> bool {
 
 fn string(object: &DefaultDicomObject, tag: Tag) -> Option<String> {
     object
-        .element(tag)
-        .ok()?
+        .get(tag)?
         .to_str()
         .ok()
         .map(|value| value.trim_matches([' ', '\0']).to_owned())
@@ -3666,8 +3650,7 @@ fn string(object: &DefaultDicomObject, tag: Tag) -> Option<String> {
 
 fn multi_string(object: &DefaultDicomObject, tag: Tag) -> Vec<String> {
     object
-        .element(tag)
-        .ok()
+        .get(tag)
         .and_then(|element| element.to_multi_str().ok())
         .map(|values| {
             values
@@ -3680,16 +3663,11 @@ fn multi_string(object: &DefaultDicomObject, tag: Tag) -> Vec<String> {
 }
 
 fn integer(object: &DefaultDicomObject, tag: Tag) -> Option<i64> {
-    object.element(tag).ok()?.to_int::<i64>().ok()
+    object.get(tag)?.to_int::<i64>().ok()
 }
 
 fn float(object: &DefaultDicomObject, tag: Tag) -> Option<f64> {
-    object
-        .element(tag)
-        .ok()?
-        .to_float64()
-        .ok()
-        .filter(|v| v.is_finite())
+    object.get(tag)?.to_float64().ok().filter(|v| v.is_finite())
 }
 
 fn recursive_string(
