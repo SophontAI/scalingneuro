@@ -40,6 +40,7 @@ chmod 0755 "$scratch/bin/curl"
 
 d1_id=$(jq --raw-output '.d1_databases[0].database_id' "$config")
 r2_bucket=$(jq --raw-output '.r2_buckets[0].bucket_name' "$config")
+notifier_service=$(jq --raw-output '.services[0].service' "$config")
 r2_account=$(jq --raw-output '.vars.R2_ACCOUNT_ID' "$config")
 r2_key=$(jq --raw-output '.vars.R2_PARENT_ACCESS_KEY_ID' "$config")
 credential_ttl=$(jq --raw-output '.vars.CREDENTIAL_TTL_SECONDS' "$config")
@@ -50,6 +51,7 @@ compatibility_flags=$(jq --compact-output '.compatibility_flags' "$config")
 jq --null-input \
   --arg d1 "$d1_id" \
   --arg bucket "$r2_bucket" \
+  --arg notifier "$notifier_service" \
   --arg account "$r2_account" \
   --arg key "$r2_key" \
   --arg credential_ttl "$credential_ttl" \
@@ -68,6 +70,11 @@ jq --null-input \
           wrangler_config_hash: "production-hash",
           d1_databases: {DB: {id: $d1}},
           r2_buckets: {ARCHIVE: {name: $bucket}},
+          services: {
+            ARCHIVE_ACCESS_NOTIFIER: {
+              service: $notifier, environment: "production"
+            }
+          },
           env_vars: {
             R2_ACCOUNT_ID: {type: "plain_text", value: $account},
             R2_PARENT_ACCESS_KEY_ID: {type: "plain_text", value: $key},
@@ -94,7 +101,8 @@ jq --null-input \
           wrangler_config_hash: "preview-hash",
           env_vars: {},
           d1_databases: {},
-          r2_buckets: {}
+          r2_buckets: {},
+          services: {}
         }
       }
     }
@@ -104,11 +112,17 @@ jq --null-input \
 jq '
   .result.deployment_configs.production.fail_open = true |
   .result.deployment_configs.production.d1_databases.LEGACY = {id: "old"} |
+  .result.deployment_configs.production.services.LEGACY = {
+    service: "old", environment: "production"
+  } |
   .result.deployment_configs.production.env_vars.LEGACY = {
     type: "plain_text", value: "old"
   } |
   .result.deployment_configs.preview.env_vars.OLD = {
     type: "plain_text", value: "old"
+  } |
+  .result.deployment_configs.preview.services.OLD = {
+    service: "old", environment: "production"
   }
 ' "$scratch/valid.json" >"$scratch/drift.json"
 printf '{"success":true}\n' >"$scratch/patch.json"
@@ -143,11 +157,17 @@ jq --exit-status '
   $preview.compatibility_date == "2026-07-23" and
   $preview.compatibility_flags == ["nodejs_compat"] and
   $production.d1_databases.LEGACY == null and
+  $production.services.LEGACY == null and
+  $production.services.ARCHIVE_ACCESS_NOTIFIER == {
+    service: "scaling-neuro-archive-access-notifier",
+    environment: "production"
+  } and
   $production.env_vars.LEGACY == null and
   ($production.env_vars | has("R2_PARENT_SECRET_ACCESS_KEY") | not) and
   ($production.env_vars | has("ARCHIVE_ACCESS_ADMIN_TOKEN") | not) and
   ($production.env_vars | has("SITE_KEY_ENCRYPTION_KEY_B64") | not) and
-  .deployment_configs.preview.env_vars.OLD == null
+  .deployment_configs.preview.env_vars.OLD == null and
+  .deployment_configs.preview.services.OLD == null
 ' "$scratch/payload" >/dev/null
 
 jq 'del(.result.deployment_configs.production.env_vars.ARCHIVE_ACCESS_ADMIN_TOKEN)' \

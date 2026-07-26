@@ -26,6 +26,12 @@
       "bucket_name": "scaling-neuro"
     }
   ],
+  "services": [
+    {
+      "binding": "ARCHIVE_ACCESS_NOTIFIER",
+      "service": "scaling-neuro-archive-access-notifier"
+    }
+  ],
   "observability": {
     "enabled": true,
     "logs": {

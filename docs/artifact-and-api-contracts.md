@@ -27,7 +27,11 @@ separate participation form:
 
 The public response is `202 Accepted` with a pseudonymous request ID and
 `pending_review` status. It never contains a bearer token. The normalized work
-email is hashed for lookup and encrypted for administration.
+email is hashed for lookup and encrypted for administration. After D1 accepts
+the pending request, the Pages Worker asks a private service-only Worker to
+email the request details to the archive administrator. The mail binding is
+restricted to one verified destination and one Scaling Neuro sender address.
+Notification failure does not roll back or duplicate the D1 request.
 
 An operator reviews pending requests with `scripts/archive-access-admin.sh`.
 The private admin routes require a separate production secret. Approval mints

@@ -20,6 +20,7 @@ jq --exit-status '
   .compatibility_flags == ["nodejs_compat"] and
   ([.d1_databases[] | select(.binding == "DB")] | length) == 1 and
   ([.r2_buckets[] | select(.binding == "ARCHIVE")] | length) == 1 and
+  ([.services[] | select(.binding == "ARCHIVE_ACCESS_NOTIFIER")] | length) == 1 and
   (.vars | keys | sort) == [
     "CREDENTIAL_TTL_SECONDS",
     "R2_ACCOUNT_ID",
@@ -31,6 +32,7 @@ jq --exit-status '
 
 d1_id=$(jq --raw-output '.d1_databases[] | select(.binding == "DB") | .database_id' "$wrangler_config")
 r2_bucket=$(jq --raw-output '.r2_buckets[] | select(.binding == "ARCHIVE") | .bucket_name' "$wrangler_config")
+notifier_service=$(jq --raw-output '.services[] | select(.binding == "ARCHIVE_ACCESS_NOTIFIER") | .service' "$wrangler_config")
 r2_account=$(jq --raw-output '.vars.R2_ACCOUNT_ID' "$wrangler_config")
 r2_access_key=$(jq --raw-output '.vars.R2_PARENT_ACCESS_KEY_ID' "$wrangler_config")
 r2_bucket_var=$(jq --raw-output '.vars.R2_BUCKET_NAME' "$wrangler_config")
@@ -69,6 +71,7 @@ preview_hash=$(jq --raw-output '.result.deployment_configs.preview.wrangler_conf
 payload=$(jq --compact-output \
   --arg d1_id "$d1_id" \
   --arg r2_bucket "$r2_bucket" \
+  --arg notifier_service "$notifier_service" \
   --arg r2_account "$r2_account" \
   --arg r2_access_key "$r2_access_key" \
   --arg credential_ttl "$credential_ttl" \
@@ -102,6 +105,14 @@ payload=$(jq --compact-output \
         r2_buckets: (
           null_all($production.r2_buckets) + {ARCHIVE: {name: $r2_bucket}}
         ),
+        services: (
+          null_all($production.services) + {
+            ARCHIVE_ACCESS_NOTIFIER: {
+              service: $notifier_service,
+              environment: "production"
+            }
+          }
+        ),
         env_vars: (
           null_except($production.env_vars; $required) + {
             R2_ACCOUNT_ID: {type: "plain_text", value: $r2_account},
@@ -122,7 +133,8 @@ payload=$(jq --compact-output \
         compatibility_flags: $compatibility_flags,
         env_vars: null_all($preview.env_vars),
         d1_databases: null_all($preview.d1_databases),
-        r2_buckets: null_all($preview.r2_buckets)
+        r2_buckets: null_all($preview.r2_buckets),
+        services: null_all($preview.services)
       } + keep_hash($preview))
     }
   }
@@ -139,6 +151,7 @@ verified=$(get_project)
 jq --exit-status \
   --arg d1_id "$d1_id" \
   --arg r2_bucket "$r2_bucket" \
+  --arg notifier_service "$notifier_service" \
   --arg r2_account "$r2_account" \
   --arg r2_access_key "$r2_access_key" \
   --arg credential_ttl "$credential_ttl" \
@@ -156,6 +169,10 @@ jq --exit-status \
   $production.d1_databases.DB.id == $d1_id and
   ($production.r2_buckets | keys) == ["ARCHIVE"] and
   $production.r2_buckets.ARCHIVE.name == $r2_bucket and
+  ($production.services | keys) == ["ARCHIVE_ACCESS_NOTIFIER"] and
+  $production.services.ARCHIVE_ACCESS_NOTIFIER == {
+    service: $notifier_service, environment: "production"
+  } and
   ($production.env_vars | keys | sort) == [
     "ARCHIVE_ACCESS_ADMIN_TOKEN",
     "CREDENTIAL_TTL_SECONDS",
@@ -192,9 +209,10 @@ jq --exit-status \
   ($preview.env_vars | length) == 0 and
   ($preview.d1_databases | length) == 0 and
   ($preview.r2_buckets | length) == 0 and
+  ($preview.services | length) == 0 and
   ($production_hash == "" or
     $production.wrangler_config_hash == $production_hash) and
   ($preview_hash == "" or $preview.wrangler_config_hash == $preview_hash)
 ' <<<"$verified" >/dev/null
 
-echo "Reconciled the production D1, R2, and archive access secrets."
+echo "Reconciled the production D1, R2, notification service, and archive access secrets."

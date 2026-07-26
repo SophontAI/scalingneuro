@@ -1,0 +1,23 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "scaling-neuro-archive-access-notifier",
+  "main": "src/archive-access-notifier.ts",
+  "compatibility_date": "2026-07-23",
+  "workers_dev": false,
+  "send_email": [
+    {
+      "name": "ADMIN_EMAIL",
+      "destination_address": "scottibrain@gmail.com",
+      "allowed_sender_addresses": [
+        "archive-access@scalingneuro.org"
+      ]
+    }
+  ],
+  "observability": {
+    "enabled": true,
+    "logs": {
+      "enabled": true,
+      "head_sampling_rate": 1
+    }
+  }
+}

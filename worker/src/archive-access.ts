@@ -24,6 +24,18 @@ export interface ArchiveAccessRequest {
   participation_commitment: true;
 }
 
+export interface SubmittedArchiveAccessRequest {
+  response: Record<string, unknown>;
+  notification: {
+    request_id: string;
+    contact_name: string;
+    contact_email: string;
+    institution_name: string;
+    lab_name: string;
+    submitted_at: string;
+  };
+}
+
 interface ArchiveAccessRow {
   id: string;
   revoked_at: number | null;
@@ -128,7 +140,7 @@ export function parseArchiveAccessRequest(
 export async function submitArchiveAccessRequest(
   env: Env,
   input: ArchiveAccessRequest,
-): Promise<Record<string, unknown>> {
+): Promise<SubmittedArchiveAccessRequest> {
   const emailHash = await sha256Hex(input.contact_email);
   const existing = await env.DB.prepare(
     `SELECT id FROM archive_access_requests
@@ -171,10 +183,20 @@ export async function submitArchiveAccessRequest(
     )
     .run();
   return {
-    request_id: id,
-    status: "pending_review",
-    message:
-      "Your request is pending review. We will email next steps to your work address.",
+    response: {
+      request_id: id,
+      status: "pending_review",
+      message:
+        "Your request is pending review. We will email next steps to your work address.",
+    },
+    notification: {
+      request_id: id,
+      contact_name: input.contact_name,
+      contact_email: input.contact_email,
+      institution_name: input.institution_name,
+      lab_name: input.lab_name,
+      submitted_at: new Date(timestamp * 1000).toISOString(),
+    },
   };
 }
 

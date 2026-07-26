@@ -193,6 +193,12 @@ jobs:
           cache: npm
           cache-dependency-path: worker/package-lock.json
       - run: npm ci --prefix worker
+      - name: Deploy archive access notification Worker
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          command: deploy --config worker/wrangler.archive-access-notifier.jsonc
       - name: Enforce production bindings and isolated previews
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}

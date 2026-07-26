@@ -10,6 +10,10 @@ export default defineConfig({
     cloudflareTest(async () => ({
       wrangler: { configPath: "./wrangler.jsonc" },
       miniflare: {
+        serviceBindings: {
+          ARCHIVE_ACCESS_NOTIFIER: async () =>
+            new Response(null, { status: 204 }),
+        },
         bindings: {
           TEST_MIGRATIONS: await readD1Migrations(
             fileURLToPath(new URL("./migrations", import.meta.url)),

@@ -103,7 +103,7 @@ it with their own tools and compute.
 | Path | Role |
 |---|---|
 | `client/` | Rust CLI, EPI selection, local DICOM rewriting, deterministic archives, checkpoints, multipart sync |
-| `worker/` | Cloudflare Pages Worker, registration, upload receipts, archive access, D1 state, R2 URL signing |
+| `worker/` | Cloudflare Pages Worker plus private archive-request notifier, registration, upload receipts, D1 state, R2 URL signing |
 | `worker/migrations/` | Ordered production D1 migrations |
 | `schemas/` | Public request, archive, status, and error contracts |
 | `docs/` | Contribution, deidentification, sync, API, onboarding, and release contracts |
@@ -141,6 +141,8 @@ The Pages Worker requires:
 
 - D1 binding `DB`
 - R2 binding `ARCHIVE`
+- service binding `ARCHIVE_ACCESS_NOTIFIER`
+- `ARCHIVE_ACCESS_ADMIN_TOKEN`
 - `SITE_KEY_ENCRYPTION_KEY_B64`
 - `R2_ACCOUNT_ID`
 - `R2_PARENT_ACCESS_KEY_ID`
@@ -148,7 +150,9 @@ The Pages Worker requires:
 - `R2_PARENT_SECRET_ACCESS_KEY`
 
 The R2 token must be limited to Object Read & Write on the Scaling Neuro bucket.
-Production configuration is checked before migrations and deployment.
+The notifier Worker has a Cloudflare Email binding restricted to
+`scottibrain@gmail.com` and `archive-access@scalingneuro.org`. Production
+configuration is checked before migrations and deployment.
 
 ## Contracts
 

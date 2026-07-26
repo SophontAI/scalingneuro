@@ -1,4 +1,5 @@
 export interface Env extends ConfiguredEnv {
+  ARCHIVE_ACCESS_NOTIFIER: Fetcher;
   ARCHIVE_ACCESS_ADMIN_TOKEN: string;
   R2_PARENT_SECRET_ACCESS_KEY: string;
   SITE_KEY_ENCRYPTION_KEY_B64: string;

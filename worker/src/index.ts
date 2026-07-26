@@ -18,6 +18,10 @@ import {
 import { AppError } from "./errors";
 import type { Env } from "./env";
 import {
+  logArchiveAccessNotificationFailure,
+  notifyArchiveAccessRequest,
+} from "./notifications";
+import {
   acceptPublicContributionPolicy,
   health,
   publicContributionInfo,
@@ -190,7 +194,7 @@ function routeLabel(pathname: string): string {
 export async function fetchHandler(
   request: Request,
   env: Env,
-  _ctx?: ExecutionContext,
+  ctx?: ExecutionContext,
 ): Promise<Response> {
   const requestId = crypto.randomUUID();
   const startedAt = Date.now();
@@ -234,14 +238,22 @@ export async function fetchHandler(
       return json(result.body, requestId, result.created ? 201 : 200);
     }
     if (request.method === "POST" && path === "/v1/archive-access") {
-      return json(
-        await submitArchiveAccessRequest(
-          env,
-          parseArchiveAccessRequest(await requestJson(request)),
-        ),
-        requestId,
-        202,
+      const submitted = await submitArchiveAccessRequest(
+        env,
+        parseArchiveAccessRequest(await requestJson(request)),
       );
+      const notification = notifyArchiveAccessRequest(
+        env,
+        submitted.notification,
+      ).catch((error: unknown) => {
+        logArchiveAccessNotificationFailure(
+          submitted.notification.request_id,
+          error,
+        );
+      });
+      if (ctx) ctx.waitUntil(notification);
+      else await notification;
+      return json(submitted.response, requestId, 202);
     }
     if (
       request.method === "GET" &&

@@ -10,6 +10,7 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "build:pages": "esbuild src/pages.ts --bundle --format=esm --platform=browser --target=es2022 --outfile=../dist/_worker.js",
+    "deploy:notifier": "wrangler deploy --config wrangler.archive-access-notifier.jsonc",
     "dev": "wrangler dev",
     "db:migrate:local": "wrangler d1 migrations apply scaling-neuro-control --local",
     "db:migrate:remote": "wrangler d1 migrations apply scaling-neuro-control --remote"
