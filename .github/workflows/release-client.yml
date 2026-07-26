@@ -114,7 +114,7 @@ jobs:
             cp "client/target/$TARGET/release/neuro-sync" "release/$root/"
             chmod 0755 "release/$root/neuro-sync"
           fi
-          cp LICENSE-APACHE LICENSE-MIT "release/$root/"
+          cp LICENSE "release/$root/"
           if [[ "$ARCHIVE" == tar ]]; then
             tar -C release -czf "release/$root.tar.gz" "$root"
           else

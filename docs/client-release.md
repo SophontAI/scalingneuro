@@ -7,7 +7,7 @@ The public installation paths are:
 
 Each release builds one universal package for Apple-silicon and Intel macOS,
 plus Windows x86-64 and static Linux x86-64 packages. A package contains only
-the executable and the two project licenses. It does not bundle Python, a
+the executable and the Apache License 2.0. It does not bundle Python, a
 DICOM converter, a GUI, a browser component, a cloud CLI, or cloud credentials.
 
 Installers embed the exact package name and SHA-256, download over HTTPS, reject
@@ -21,7 +21,7 @@ The manual release workflow:
 2. runs Rust formatting, clippy, and tests;
 3. runs Worker type-check and tests;
 4. builds the three locked Rust targets;
-5. packages the executable and licenses;
+5. packages the executable and Apache License 2.0;
 6. renders checksum-pinned installers and `latest.json`;
 7. writes `SHA256SUMS`; and
 8. publishes `client-vX.Y.Z` from the current commit.
