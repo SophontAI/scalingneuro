@@ -12,22 +12,23 @@ export default {
     ctx: ExecutionContext,
   ): Promise<Response> {
     const url = new URL(request.url);
+    const pathname = url.pathname;
+    const isApiPath = pathname === "/health" || pathname.startsWith("/v1/");
     if (
       url.hostname === "scalingneuro.pages.dev" ||
-      url.hostname === "scalingneuro.com"
+      (url.hostname === "scalingneuro.com" && !isApiPath)
     ) {
       url.hostname = "scalingneuro.org";
       url.protocol = "https:";
       url.port = "";
       return Response.redirect(url.toString(), 308);
     }
-    const pathname = url.pathname;
     const isApiHost =
       url.hostname === "scalingneuro.org" ||
+      url.hostname === "scalingneuro.com" ||
       url.hostname === "localhost" ||
       url.hostname === "127.0.0.1" ||
       url.hostname === "[::1]";
-    const isApiPath = pathname === "/health" || pathname.startsWith("/v1/");
     if (isApiHost && isApiPath) {
       return fetchHandler(request, env, ctx);
     }
