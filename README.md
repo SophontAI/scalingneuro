@@ -2,8 +2,10 @@
 
 Scaling Neuro is a shared archive for functional MRI DICOMs. A researcher points
 `neuro-sync` at one scanner export folder. The client identifies functional
-echo-planar imaging time series from DICOM metadata, removes identifying metadata
-locally, and uploads one deidentified DICOM archive per EPI series to Cloudflare R2.
+echo-planar imaging time series from DICOM metadata and removes identifying
+metadata locally. The researcher can then upload immediately, or inspect and
+edit local deidentified DICOM copies before a separate upload command sends one
+archive per EPI series to Cloudflare R2.
 
 That is the complete data path. Scaling Neuro does not upload structural,
 diffusion, field-map, localizer, secondary-capture, or ambiguous series. It does
@@ -14,6 +16,8 @@ Production is [scalingneuro.org](https://scalingneuro.org).
 redirect each request to the same path on the canonical domain.
 
 ## Use neuro-sync
+
+### One command
 
 ```sh
 # macOS or Linux
@@ -34,6 +38,23 @@ stay in the terminal.
 
 Interrupted work is resumed by rerunning the same folder command. There is no
 separate resume operation.
+
+### Review first
+
+```sh
+neuro-sync prepare /path/to/dicom-export
+# Inspect or edit ./dicom-export-review/series with your normal DICOM tools.
+neuro-sync upload ./dicom-export-review
+```
+
+`prepare` writes the selected deidentified EPI instances as normal `.dcm` files
+and uploads nothing. By default, it creates `<source-folder>-review` in the
+current working directory; use `--output` to choose another local location. The
+original scanner export stays unchanged. The review folder is researcher-owned
+and editable. When `upload` runs, it uses the DICOMs as they exist then, reruns
+functional EPI selection and the local privacy audit, and creates fresh archives
+for sync. `preparation-report.json` records the initial preparation and does not
+change when a researcher edits the DICOMs.
 
 ## Selection
 

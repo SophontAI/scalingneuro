@@ -9,7 +9,7 @@
   <meta property="og:type" content="website" />
   <meta property="og:url" content="https://scalingneuro.org/" />
   <meta property="og:title" content="Scaling Neuro" />
-  <meta property="og:description" content="Point neuro-sync at a DICOM folder. It finds, deidentifies, and shares the functional EPI series." />
+  <meta property="og:description" content="Share functional EPI DICOMs in one command, or inspect local deidentified copies before uploading." />
   <meta property="og:image" content="https://scalingneuro.org/og.png" />
   <meta property="og:image:width" content="1200" />
   <meta property="og:image:height" content="630" />
@@ -19,7 +19,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=EB+Garamond:ital,wght@0,400;0,500;0,600;1,500&amp;family=JetBrains+Mono:wght@400;500&amp;display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="/styles.css?v=41" />
+  <link rel="stylesheet" href="/styles.css?v=42" />
   <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
 </head>
 <body>
@@ -51,7 +51,9 @@
           eventually unlocking the world's largest trainable neuroimaging dataset.
           Point it at a DICOM folder and it finds the EPI series,
           removes identifying metadata locally, and syncs the deidentified DICOMs
-          to a shared archive.
+          to a shared archive. Use one command, or first write the deidentified
+          DICOMs to a local folder so your lab can inspect and edit them before
+          anything is uploaded.
         </p>
         <div class="hero-actions">
           <a class="button" href="#access">Access data</a>
@@ -179,12 +181,12 @@
           <article class="step">
             <span>02 · Local privacy</span>
             <h3>Protect</h3>
-            <p>Remove direct identifiers, dates, paths, free text, and unsafe private metadata locally while preserving Pixel Data. Read the <a href="/docs/de-identification-procedure">de-identification procedure</a> or inspect the <a href="https://github.com/SophontAI/scalingneuro" target="_blank" rel="noopener">open-source implementation</a>.</p>
+            <p>Remove direct identifiers, dates, paths, free text, and unsafe private metadata locally while preserving Pixel Data. Optionally write normal <code>.dcm</code> copies to a local folder for inspection or editing. Read the <a href="/docs/de-identification-procedure">de-identification procedure</a> or inspect the <a href="https://github.com/SophontAI/scalingneuro" target="_blank" rel="noopener">open-source implementation</a>.</p>
           </article>
           <article class="step">
             <span>03 · Shared archive</span>
             <h3>Sync</h3>
-            <p>Upload one deidentified DICOM archive per EPI series with resumable transfers and content hashes.</p>
+            <p>Upload immediately, or approve the local review folder later. neuro-sync rechecks the current files and uploads one deidentified archive per EPI series.</p>
           </article>
           <article class="step">
             <span>04 · Participating labs</span>
@@ -194,10 +196,9 @@
         </div>
         <p class="boundary">
           <strong>Functional EPI only.</strong> By only uploading raw functional scans that
-          have identifiable metadata removed locally, we avoid all the friction associated
-          with uploading brain scans. No task labels mean your study can't be scooped. No
-          structurals mean no worrying about defacing. No BIDS, so no need to do anything
-          other than point a script to a folder of DICOMs.
+          have identifiable metadata removed locally, we keep the workflow intentionally
+          narrow. Task labels stay local. Structural scans are excluded. No BIDS conversion
+          is required, so a lab can start with its scanner-exported DICOM folder.
           <span class="boundary-note">*Note: Scaling Neuro serves a very different purpose
           to OpenNeuro; we hope you upload your raw data here and then upload standardized
           data over there!</span>
@@ -233,14 +234,8 @@
       <div class="wrap">
         <div class="section-heading share-heading">
           <p class="eyebrow">Install and contribute</p>
-          <h2>Point it at a folder. <span class="nowrap">neuro-sync</span> handles the rest.</h2>
-          <p>Register the workstation once, then run neuro-sync whenever you have new DICOMs.</p>
-        </div>
-
-        <div class="adoption-line" aria-label="Why labs use neuro-sync">
-          <span>One terminal command</span>
-          <span>No Python or Docker</span>
-          <span>DICOM in, DICOM out</span>
+          <h2>Sync directly, or see every DICOM first.</h2>
+          <p>Both paths run the same local EPI selection and de-identification procedure. Nothing is uploaded from a review-first preparation.</p>
         </div>
 
         <div class="terminal" aria-label="neuro-sync terminal walkthrough">
@@ -252,12 +247,19 @@
           <div class="term-body">
             <pre class="term-pane is-active" id="pane-install" data-pane="install" role="tabpanel" aria-labelledby="tab-install"><code><span class="comment" id="installPlatform"># macOS or Linux</span>
 <span class="prompt">$</span> <span id="installCommand">curl -fsSL https://scalingneuro.org/install.sh | sh</span>
-<span class="ok">✓</span> neuro-sync 0.5.6 downloaded and SHA-256 verified
+<span class="ok">✓</span> neuro-sync 0.6.0 downloaded and SHA-256 verified
 
-<span class="comment"># One command for each approved scanner export</span>
-<span class="prompt">$</span> neuro-sync /path/to/dicom-folder
-<span class="ok">✓</span> One-time lab registration stays in the terminal
-<span class="ok">✓</span> Interrupted work resumes from the same folder command</code></pre>
+<span class="comment"># See every command and option</span>
+<span class="prompt">$</span> neuro-sync help
+
+<span class="comment"># One command to find, de-identify, and sync</span>
+<span class="prompt">$</span> neuro-sync SOURCE
+
+<span class="comment"># Or, two commands to find + de-identify,</span>
+<span class="comment"># then review locally before syncing</span>
+<span class="prompt">$</span> neuro-sync prepare SOURCE
+<span class="ok">✓</span> Nothing uploaded; inspect or edit SOURCE-review
+<span class="prompt">$</span> neuro-sync upload SOURCE-review</code></pre>
             <pre class="term-pane" id="pane-run" data-pane="run" role="tabpanel" aria-labelledby="tab-run"><code><span class="prompt">$</span> neuro-sync ./new_session_dicoms
 
 <span class="muted">Reading DICOMs</span>                  <span class="ok">complete</span>

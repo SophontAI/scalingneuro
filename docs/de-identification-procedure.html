@@ -65,6 +65,14 @@
   and SHA-256 hashes, then uploaded through short-lived, object-scoped transfer
   URLs.</p>
 
+  <h2>Review before upload</h2>
+  <p><code>neuro-sync prepare</code> can write the deidentified instances as
+  normal <code>.dcm</code> files in a separate local folder without uploading
+  anything. Researchers may inspect or edit those copies with their usual DICOM
+  tools. A later <code>neuro-sync upload</code> uses the files as they then
+  exist, reruns functional EPI selection and this local procedure, and creates
+  fresh archives for transfer.</p>
+
   <h2>Inspect the implementation</h2>
   <p>The complete client and service code are open source. The
   <a href="https://github.com/SophontAI/scalingneuro/blob/main/client/src/classify.rs">functional EPI selection logic</a>

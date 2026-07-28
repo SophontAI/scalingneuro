@@ -28,6 +28,25 @@ pub async fn run_for_folder(runtime: Runtime, folder: PathBuf) -> Result<()> {
     run_for_optional_folder(runtime, Some(folder)).await
 }
 
+pub async fn ensure_registered_for_review(runtime: &Runtime) -> Result<bool> {
+    if runtime.paths.config.is_file() {
+        return Ok(true);
+    }
+    if !io::stdin().is_terminal() || !io::stdout().is_terminal() {
+        bail!(
+            "this workstation must be registered before creating an uploadable review package; run neuro-sync in a terminal or use `neuro-sync register --help`"
+        );
+    }
+    let mut input = BufReader::new(io::stdin());
+    let mut output = io::stdout();
+    writeln!(output, "Scaling Neuro · local DICOM review setup\n")?;
+    Ok(
+        register_interactively(runtime, &mut input, &mut output, DEFAULT_API_URL)
+            .await?
+            .is_some(),
+    )
+}
+
 async fn run_for_optional_folder(runtime: Runtime, folder: Option<PathBuf>) -> Result<()> {
     if !io::stdin().is_terminal() || !io::stdout().is_terminal() {
         bail!(
@@ -48,6 +67,10 @@ async fn run_with_io(
     selected_folder: Option<PathBuf>,
 ) -> Result<()> {
     writeln!(output, "Scaling Neuro · functional EPI DICOM sync\n")?;
+    writeln!(
+        output,
+        "One command:  neuro-sync /path/to/dicom-export\nReview first: neuro-sync prepare /path/to/dicom-export\n"
+    )?;
 
     let mut config = if runtime.paths.config.is_file() {
         ClientConfig::load(&runtime.paths)?
@@ -66,7 +89,7 @@ async fn run_with_io(
         if !prompt_yes_no(
             input,
             output,
-            "Accept the current policy and confirm authorization?",
+            "Accept the current contribution policy?",
             false,
         )? {
             writeln!(output, "Policy declined. Nothing was uploaded.")?;
@@ -89,8 +112,27 @@ async fn run_with_io(
         return Ok(());
     }
 
-    writeln!(output, "\nSyncing {}\n", folder.display())?;
-    let run_id = runtime.sync_folder(folder, false).await?;
+    let reviewed = Runtime::is_review_folder(&folder);
+    if reviewed {
+        let inspection = runtime.verify_review_folder(&folder)?;
+        writeln!(
+            output,
+            "\nLocal review folder: {} current DICOM files, originally prepared from {} functional EPI series",
+            inspection.dicom_files, inspection.series
+        )?;
+        writeln!(
+            output,
+            "Uploading reviewed DICOMs from {}\n",
+            folder.display()
+        )?;
+    } else {
+        writeln!(output, "\nSyncing {}\n", folder.display())?;
+    }
+    let run_id = if reviewed {
+        runtime.upload_reviewed_folder(folder).await?
+    } else {
+        runtime.sync_folder(folder, false).await?
+    };
     print_run_summary(&runtime, &run_id, output)
 }
 
@@ -128,7 +170,7 @@ async fn register_interactively(
     if !prompt_yes_no(
         input,
         output,
-        "Accept the current policy and confirm authorization?",
+        "Accept the current contribution policy?",
         false,
     )? {
         return Ok(None);
@@ -602,7 +644,7 @@ mod tests {
             output
                 .contains("Contribution policy  https://scalingneuro.com/docs/contribution-policy")
         );
-        assert!(output.contains("Accept the current policy and confirm authorization?"));
+        assert!(output.contains("Accept the current contribution policy?"));
         assert!(output.contains("  Project  Scaling Neuro shared EPI archive"));
         assert_eq!(
             output

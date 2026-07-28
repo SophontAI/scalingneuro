@@ -48,6 +48,17 @@ fn automation_flags_are_documented_in_command_help() {
     let upload_help = String::from_utf8_lossy(&upload.stdout);
     assert!(upload_help.contains("--confirm-authorized"));
     assert!(upload_help.contains("--accept-policy-version"));
+    assert!(upload_help.contains("folder created by `neuro-sync prepare`"));
+
+    let prepare = Command::new(env!("CARGO_BIN_EXE_neuro-sync"))
+        .args(["prepare", "--help"])
+        .output()
+        .unwrap();
+    assert!(prepare.status.success());
+    let prepare_help = String::from_utf8_lossy(&prepare.stdout);
+    assert!(prepare_help.contains("--output"));
+    assert!(prepare_help.contains("in the current directory"));
+    assert!(prepare_help.contains("without uploading anything"));
 }
 
 #[test]

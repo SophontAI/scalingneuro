@@ -60,8 +60,10 @@
   upload ID from its local report.</p>
 
   <p class="notice"><strong>Stopping is safe.</strong> Cancelling before the
-  authorization prompt uploads nothing. Interrupted work resumes only when the
-  same folder command is run again.</p>
+  authorization prompt uploads nothing. <code>neuro-sync prepare</code> also
+  uploads nothing, allowing a lab to inspect or edit the local deidentified
+  DICOMs before a separate upload command. Interrupted work resumes only when
+  the same folder command is run again.</p>
 </main>
 </body>
 </html>

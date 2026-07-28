@@ -36,6 +36,7 @@ use crate::{
     privacy,
     progress::{Progress, ProgressUnit},
     pseudonym::Pseudonymizer,
+    review,
     s3::MultipartUploader,
     state::{RunRecord, StateStore, UploadObjectRecord},
 };
@@ -147,6 +148,20 @@ pub struct ContributorDetails {
     pub institution_ror_id: Option<String>,
     pub lab_name: String,
     pub contact_opt_in: bool,
+}
+
+#[derive(Debug, Clone)]
+pub struct ReviewPreparation {
+    pub run_id: String,
+    pub folder: PathBuf,
+    pub dicom_files: u64,
+    pub series: u64,
+}
+
+#[derive(Debug, Clone)]
+pub struct ReviewInspection {
+    pub dicom_files: u64,
+    pub series: u64,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -371,6 +386,107 @@ impl Runtime {
         self.process_existing_run(&run_id, canonical_source, dry_run, config, None)
             .await?;
         Ok(run_id)
+    }
+
+    pub fn is_review_folder(path: &Path) -> bool {
+        review::is_review_folder(path)
+    }
+
+    pub fn verify_review_folder(&self, folder: &Path) -> Result<ReviewInspection> {
+        let folder = folder
+            .canonicalize()
+            .with_context(|| format!("could not open review folder: {}", folder.display()))?;
+        if !folder.is_dir() {
+            bail!("selected review package is not a folder");
+        }
+        let summary = review::inspect_review_folder(&folder)?;
+        Ok(ReviewInspection {
+            dicom_files: summary.dicom_files,
+            series: summary.prepared_series,
+        })
+    }
+
+    pub async fn prepare_review_folder(
+        &self,
+        source: PathBuf,
+        output: Option<PathBuf>,
+    ) -> Result<ReviewPreparation> {
+        let source = source
+            .canonicalize()
+            .with_context(|| format!("could not open selected folder: {}", source.display()))?;
+        if !source.is_dir() {
+            bail!("selected source is not a folder");
+        }
+        let output = match output {
+            Some(output) => resolve_new_review_destination(&source, &output)?,
+            None => default_review_destination(&source)?,
+        };
+        let parent = output
+            .parent()
+            .context("local review destination has no parent directory")?;
+        let temporary = tempfile::Builder::new()
+            .prefix(".neuro-sync-review-")
+            .tempdir_in(parent)
+            .context("could not create the local review folder")?;
+        privacy::restrict_dir(temporary.path())
+            .context("could not secure the local review folder")?;
+        let config = ClientConfig::load(&self.paths)?;
+        let run_id = Uuid::new_v4().to_string();
+        self.state.create_run(&run_id, &source, true)?;
+        self.process_existing_run(&run_id, source, true, config.clone(), None)
+            .await?;
+
+        let run = self
+            .state
+            .run(&run_id)?
+            .context("local review preparation state is missing")?;
+        let manifest = load_checkpoint_manifest(&run)?;
+        validate_manifest_sync_contract(&manifest, &config)?;
+        let mut report = load_checkpoint_report(&run)?;
+        let package_result = review::write_review_package(temporary.path(), &manifest, &mut report);
+        let summary = match package_result {
+            Ok(summary) => summary,
+            Err(error) => {
+                remove_bundle_cache(&self.paths, &run_id);
+                return Err(error);
+            }
+        };
+        let temporary_path = temporary.keep();
+        if let Err(error) = fs::rename(&temporary_path, &output) {
+            let _ = fs::remove_dir_all(&temporary_path);
+            remove_bundle_cache(&self.paths, &run_id);
+            return Err(error).with_context(|| {
+                format!(
+                    "could not finalize local review folder at {}",
+                    output.display()
+                )
+            });
+        }
+        let report_path = run
+            .report_path
+            .as_deref()
+            .context("prepared run has no local report")?;
+        write_json(Path::new(report_path), &report)?;
+        self.state
+            .update_run(&run_id, "ready_for_review", &manifest.source_summary, None)?;
+        remove_bundle_cache(&self.paths, &run_id);
+        Ok(ReviewPreparation {
+            run_id,
+            folder: output,
+            dicom_files: summary.dicom_files,
+            series: summary.prepared_series,
+        })
+    }
+
+    pub async fn upload_reviewed_folder(&self, folder: PathBuf) -> Result<String> {
+        let folder = folder
+            .canonicalize()
+            .with_context(|| format!("could not open review folder: {}", folder.display()))?;
+        if !folder.is_dir() {
+            bail!("selected review package is not a folder");
+        }
+        review::inspect_review_folder(&folder)?;
+        self.sync_folder(folder, false).await
     }
 
     async fn continue_or_reprepare_folder_run(
@@ -1685,6 +1801,60 @@ fn load_checkpoint_manifest(run: &RunRecord) -> Result<LocalManifest> {
         bail!("prepared run manifest identity does not match local state");
     }
     Ok(manifest)
+}
+
+fn load_checkpoint_report(run: &RunRecord) -> Result<RunReport> {
+    let path = run
+        .report_path
+        .as_deref()
+        .context("prepared run has no local report")?;
+    let report: RunReport =
+        serde_json::from_slice(&fs::read(path)?).context("prepared run report is invalid")?;
+    if report.run_id != run.id {
+        bail!("prepared run report identity does not match local state");
+    }
+    Ok(report)
+}
+
+fn resolve_new_review_destination(source: &Path, requested: &Path) -> Result<PathBuf> {
+    if requested.as_os_str().is_empty() {
+        bail!("local review output folder is required");
+    }
+    let parent = requested
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."))
+        .canonicalize()
+        .with_context(|| {
+            format!(
+                "could not open the parent of local review destination {}",
+                requested.display()
+            )
+        })?;
+    let name = requested
+        .file_name()
+        .context("local review destination must name a new folder")?;
+    let output = parent.join(name);
+    if output.exists() {
+        bail!(
+            "local review destination already exists: {}; choose a new empty path so no reviewed files can be overwritten",
+            output.display()
+        );
+    }
+    if output.starts_with(source) {
+        bail!("local review destination cannot be inside the source DICOM folder");
+    }
+    Ok(output)
+}
+
+fn default_review_destination(source: &Path) -> Result<PathBuf> {
+    let parent = std::env::current_dir().context("could not open the current directory")?;
+    let mut name = source
+        .file_name()
+        .map(ToOwned::to_owned)
+        .unwrap_or_else(|| "dicom".into());
+    name.push("-review");
+    resolve_new_review_destination(source, &parent.join(name))
 }
 
 fn verify_prepared_object_files(objects: &[crate::model::ManifestObject]) -> Result<()> {

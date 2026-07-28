@@ -9,6 +9,7 @@ pub mod pipeline;
 mod privacy;
 pub mod progress;
 pub mod pseudonym;
+mod review;
 pub mod s3;
 pub mod state;
 pub mod terminal;

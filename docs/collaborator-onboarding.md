@@ -2,7 +2,8 @@
 
 You need a completed scanner export folder, temporary local space for one
 compressed EPI series, and institutional authorization to contribute the
-functional MRI data to the shared Scaling Neuro archive.
+functional MRI data to the shared Scaling Neuro archive. The optional
+review-first workflow also needs space for the deidentified DICOM copies.
 
 Transient DICOM preparation uses operating-system local temporary storage by
 default, while resumable checkpoints remain in the user data directory. On
@@ -41,6 +42,31 @@ and authorization in the terminal. The client then:
 Success means the deidentified EPI DICOM archive is durably stored in R2. There
 is no conversion or preprocessing phase after the receipt.
 
+## Review before upload
+
+```sh
+neuro-sync prepare /path/to/dicom-export
+```
+
+This performs local selection, rewriting, and audit, then writes normal `.dcm`
+files under `./dicom-export-review/series`. Nothing is uploaded and the scanner
+export stays unchanged. Inspect or edit those files with the lab's usual DICOM
+tools. The default output is `<source-folder>-review` in the current working
+directory; pass `--output` to choose another local location.
+
+When the folder is approved:
+
+```sh
+neuro-sync upload ./dicom-export-review
+```
+
+The second command uses the reviewed DICOMs as they exist at that point. It
+reruns functional EPI eligibility and the local privacy procedure, builds fresh
+per-series archives, and then syncs them. Researcher edits are not rejected
+merely because they differ from the initially prepared copies.
+`preparation-report.json` describes the initial preparation and is not updated
+after edits.
+
 ## Interruption
 
 Rerun the same command:
@@ -61,6 +87,7 @@ neuro-sync register --email researcher@example.edu --name "Researcher Name" \
 
 neuro-sync upload /path/to/dicom-export --confirm-authorized
 neuro-sync upload /path/to/dicom-export --dry-run
+neuro-sync prepare /path/to/dicom-export
 neuro-sync status --json
 neuro-sync report RUN_ID --json
 ```

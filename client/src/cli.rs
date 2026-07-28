@@ -14,7 +14,8 @@ use crate::{
     version,
     about = "Sync approved functional EPI DICOMs with Scaling Neuro",
     long_about = None,
-    subcommand_precedence_over_arg = true
+    subcommand_precedence_over_arg = true,
+    after_help = "TWO WORKFLOWS:\n  One command:  neuro-sync /path/to/dicom-export\n  Review first: neuro-sync prepare /path/to/dicom-export\n                neuro-sync upload ./dicom-export-review"
 )]
 pub struct Cli {
     /// Store private checkpoints and the current one-series staging archive in this directory.
@@ -56,6 +57,7 @@ pub enum Command {
     /// Sync a DICOM folder, automatically continuing any checkpointed work.
     #[command(alias = "run")]
     Upload {
+        /// Raw DICOM export folder or a folder created by `neuro-sync prepare`.
         folder: PathBuf,
         /// Perform every local privacy/QC step but do not contact the ingest service or R2.
         #[arg(long)]
@@ -66,6 +68,14 @@ pub enum Command {
         /// Exact new policy version accepted when this workstation's policy is out of date.
         #[arg(long, value_name = "VERSION")]
         accept_policy_version: Option<String>,
+    },
+    /// Create inspectable deidentified DICOMs locally without uploading anything.
+    Prepare {
+        /// Raw DICOM export folder to deidentify.
+        folder: PathBuf,
+        /// New folder for the inspectable DICOMs. Defaults to `<source-folder>-review` in the current directory.
+        #[arg(long, short, value_name = "REVIEW_FOLDER")]
+        output: Option<PathBuf>,
     },
     /// Show local progress for the latest run or a specific run ID.
     Status {
@@ -148,6 +158,14 @@ pub async fn execute(cli: Cli) -> Result<()> {
             if !folder.is_dir() {
                 bail!("selected source is not a folder");
             }
+            let reviewed = Runtime::is_review_folder(&folder);
+            if reviewed {
+                let inspection = runtime.verify_review_folder(&folder)?;
+                println!(
+                    "Local review folder: {} current DICOM files, originally prepared from {} functional EPI series",
+                    inspection.dicom_files, inspection.series
+                );
+            }
             if !dry_run {
                 let config = crate::config::ClientConfig::load(&runtime.paths)?;
                 let contribution = runtime.contribution_info(&config.api_url).await?;
@@ -178,9 +196,50 @@ pub async fn execute(cli: Cli) -> Result<()> {
                     println!("Contribution policy accepted: {}", contribution.policy_url);
                 }
             }
-            println!("\nSyncing {}\n", folder.display());
-            let run_id = runtime.sync_folder(folder, dry_run).await?;
+            if reviewed {
+                if dry_run {
+                    println!(
+                        "\nRechecking the current reviewed DICOMs in {}\nNothing will be uploaded.\n",
+                        folder.display()
+                    );
+                } else {
+                    println!("\nUploading reviewed DICOMs from {}\n", folder.display());
+                }
+            } else {
+                println!("\nSyncing {}\n", folder.display());
+            }
+            let run_id = if reviewed && !dry_run {
+                runtime.upload_reviewed_folder(folder).await?
+            } else {
+                runtime.sync_folder(folder, dry_run).await?
+            };
             crate::terminal::print_run_summary(&runtime, &run_id, &mut std::io::stdout())
+        }
+        Some(Command::Prepare { folder, output }) => {
+            if !runtime.paths.config.is_file()
+                && !crate::terminal::ensure_registered_for_review(&runtime).await?
+            {
+                println!("Registration cancelled. Nothing was prepared or uploaded.");
+                return Ok(());
+            }
+            println!(
+                "\nPreparing local review copies from {}\nNothing will be uploaded.\n",
+                folder.display()
+            );
+            let prepared = runtime.prepare_review_folder(folder, output).await?;
+            println!("Local review package ready: {}", prepared.folder.display());
+            println!(
+                "Review: {} deidentified DICOM files in {} functional EPI series",
+                prepared.dicom_files, prepared.series
+            );
+            println!("Original source DICOMs were not changed. Nothing was uploaded.");
+            println!(
+                "Pixel Data is scanner-native and not defaced; inspect it under {}/series.",
+                prepared.folder.display()
+            );
+            println!("\nAfter inspection and institutional approval, run:");
+            println!("  neuro-sync upload \"{}\"", prepared.folder.display());
+            Ok(())
         }
         Some(Command::Status { run_id, json }) => {
             let run = runtime
@@ -275,6 +334,31 @@ mod tests {
         let cli = Cli::try_parse_from(["neuro-sync", "resume"]).unwrap();
         assert_eq!(cli.folder, Some(PathBuf::from("resume")));
         assert!(cli.command.is_none());
+    }
+
+    #[test]
+    fn prepare_accepts_the_default_or_an_explicit_review_folder() {
+        let default = Cli::try_parse_from(["neuro-sync", "prepare", "source"]).unwrap();
+        assert!(matches!(
+            default.command,
+            Some(Command::Prepare { output: None, .. })
+        ));
+
+        let explicit = Cli::try_parse_from([
+            "neuro-sync",
+            "prepare",
+            "source",
+            "--output",
+            "custom-review",
+        ])
+        .unwrap();
+        assert!(matches!(
+            explicit.command,
+            Some(Command::Prepare {
+                output: Some(path),
+                ..
+            }) if path == std::path::Path::new("custom-review")
+        ));
     }
 
     #[test]

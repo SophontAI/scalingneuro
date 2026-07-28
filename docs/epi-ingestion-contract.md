@@ -9,6 +9,12 @@ secondary-capture, non-image, non-MR, malformed, and ambiguous series stay local
 
 The tool does not convert, deface, preprocess, visualize, or analyze scans.
 
+The researcher may use the direct flow, which prepares and uploads in one
+command, or the review-first flow. Review-first preparation writes the
+deidentified EPI instances to a separate local folder and performs no upload.
+That folder is editable. The later upload command treats its current DICOMs as
+the source and reruns selection, deidentification, and audit before transfer.
+
 ## Local selection
 
 A series must have a supported MR Image SOP class, coherent study/series/instance

@@ -1,9 +1,10 @@
 # neuro-sync
 
 `neuro-sync` is the Scaling Neuro workstation client. Give it one completed
-DICOM export folder. It finds functional EPI time series, deidentifies their
-DICOM metadata locally, writes deterministic per-series archives, and syncs them
-to the shared R2 archive.
+DICOM export folder. It finds functional EPI time series and deidentifies their
+DICOM metadata locally. It can write deterministic per-series archives and sync
+immediately, or first expose the deidentified DICOMs in an editable local review
+folder.
 
 It leaves structural, diffusion, perfusion, field-map, reference, localizer,
 derived, secondary-capture, malformed, and ambiguous series on the workstation.
@@ -22,9 +23,25 @@ neuro-sync "C:\path\to\dicom-export"
 Rerun the same folder command after any interruption. The folder and current
 privacy contract select the existing private checkpoint.
 
+Review before uploading:
+
+```sh
+neuro-sync prepare /path/to/dicoms
+# Inspect or edit ./dicoms-review/series.
+neuro-sync upload ./dicoms-review
+```
+
+Preparation uploads nothing. Its default output is `<source-folder>-review` in
+the current working directory; pass `--output` to choose another local location.
+The later upload uses the current contents of the review folder, reruns EPI
+classification and deidentification, and creates fresh archives from those
+files. `preparation-report.json` is an initial snapshot and is not updated after
+researcher edits.
+
 Useful explicit commands:
 
 ```sh
+neuro-sync help
 neuro-sync register --email researcher@example.edu --name "Researcher Name" \
   --institution "Example University" --lab "Example Lab" \
   --accept-policy-version open-epi-2.0.0
