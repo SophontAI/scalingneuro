@@ -234,8 +234,8 @@
       <div class="wrap">
         <div class="section-heading share-heading">
           <p class="eyebrow">Install and contribute</p>
-          <h2>Sync directly, or see every DICOM first.</h2>
-          <p>Both paths run the same local EPI selection and de-identification procedure. Nothing is uploaded from a review-first preparation.</p>
+          <h2>Point it at a folder. <span class="nowrap">neuro-sync</span> handles the rest.</h2>
+          <p>Register the workstation once, then run neuro-sync whenever you have new DICOMs.</p>
         </div>
 
         <div class="terminal" aria-label="neuro-sync terminal walkthrough">
@@ -257,27 +257,22 @@
 
 <span class="comment"># Or, two commands to find + de-identify,</span>
 <span class="comment"># then review locally before syncing</span>
-<span class="prompt">$</span> neuro-sync prepare SOURCE
-<span class="ok">✓</span> Nothing uploaded; inspect or edit SOURCE-review
-<span class="prompt">$</span> neuro-sync upload SOURCE-review</code></pre>
-            <pre class="term-pane" id="pane-run" data-pane="run" role="tabpanel" aria-labelledby="tab-run"><code><span class="prompt">$</span> neuro-sync ./new_session_dicoms
+<span class="prompt">$</span> neuro-sync prepare SOURCE --output REVIEW
+<span class="ok">✓</span> Nothing uploaded; inspect or edit REVIEW
+<span class="prompt">$</span> neuro-sync upload REVIEW</code></pre>
+            <pre class="term-pane" id="pane-run" data-pane="run" role="tabpanel" aria-labelledby="tab-run"><code><span class="prompt">$</span> neuro-sync SOURCE
 
 <span class="muted">Reading DICOMs</span>                  <span class="ok">complete</span>
 <span class="muted">Functional EPI series</span>          4
 <span class="muted">Other series left local</span>        11
-<span class="muted">Deidentified DICOM archives</span>    <span class="ok">uploaded</span>
+<span class="muted">Deidentified EPI archives</span>      <span class="ok">uploaded</span>
 
 Status: <span class="ok">complete</span>
 Receipt: 4 EPI series safely stored
-Report: ~/.local/share/neuro-sync/reports/...</code></pre>
-            <pre class="term-pane" id="pane-privacy" data-pane="privacy" role="tabpanel" aria-labelledby="tab-privacy"><code><span class="keyword">source</span>    original DICOMs stay unchanged on the lab workstation
-<span class="keyword">select</span>    only functional EPI series pass the metadata classifier
-<span class="keyword">identity</span>  direct identifiers, dates, paths, and unsafe text stay local
-<span class="keyword">pixels</span>    scanner-native EPI Pixel Data is preserved
-<span class="keyword">archive</span>   one deterministic dicom.tar.zst per accepted series
-<span class="keyword">transfer</span>  resumable upload with size and SHA-256 verification
-<span class="keyword">compute</span>   none; labs preprocess downloaded DICOMs themselves
-<span class="keyword">hold</span>      non-EPI, unsafe, malformed, and ambiguous series stay local</code></pre>
+Original DICOMs: unchanged</code></pre>
+            <div class="term-pane term-prose" id="pane-privacy" data-pane="privacy" role="tabpanel" aria-labelledby="tab-privacy">
+              <p>Your original DICOMs are never changed. neuro-sync selects only functional EPI series and removes identifying metadata locally before anything is uploaded. The prepare command uploads nothing, so you can inspect or edit the deidentified copies in REVIEW. The upload command then rechecks those current files and syncs them. Scanner-native Pixel Data is preserved and is not defaced. Each accepted series is stored as one compressed DICOM archive using resumable, size- and SHA-256-verified transfer. Non-EPI or rejected series remain local, and Scaling Neuro does not preprocess or analyze scans.</p>
+            </div>
           </div>
           <div class="term-actions">
             <button class="platform-toggle" id="platformToggle" type="button" aria-pressed="false">Microsoft Windows</button>

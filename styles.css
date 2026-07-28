@@ -436,6 +436,21 @@ button, input { font: inherit; }
   white-space: pre;
 }
 .term-pane.is-active { display: block; }
+.term-prose {
+  overflow-x: visible;
+  white-space: normal;
+}
+.term-prose.is-active {
+  display: flex;
+  align-items: center;
+}
+.term-prose p {
+  max-width: 72ch;
+  margin: 0;
+  color: var(--dark-text);
+  font: 400 15px/1.75 var(--sans);
+  letter-spacing: 0;
+}
 .comment, .muted { color: #7f879c; }
 .prompt, .keyword { color: var(--accent-soft); }
 .ok { color: #93c6af; }
