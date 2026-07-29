@@ -51,10 +51,12 @@ neuro-sync upload ./dicom-export-review
 and uploads nothing. By default, it creates `<source-folder>-review` in the
 current working directory; use `--output` to choose another local location. The
 original scanner export stays unchanged. The review folder is researcher-owned
-and editable. When `upload` runs, it uses the DICOMs as they exist then, reruns
-functional EPI selection and the local privacy audit, and creates fresh archives
-for sync. `preparation-report.json` records the initial preparation and does not
-change when a researcher edits the DICOMs.
+and editable. `series-index.tsv` maps each series folder to its DICOM Series
+Number, file count, core acquisition fields, classifier evidence, and QC
+warnings for expert review. When `upload` runs, it uses the DICOMs as they exist
+then, reruns functional EPI selection and the local privacy audit, and creates
+fresh archives for sync. `series-index.tsv` and `preparation-report.json` record
+the initial preparation and do not change when a researcher edits the DICOMs.
 
 ## Selection
 

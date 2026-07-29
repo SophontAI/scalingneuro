@@ -54,6 +54,12 @@ export stays unchanged. Inspect or edit those files with the lab's usual DICOM
 tools. The default output is `<source-folder>-review` in the current working
 directory; pass `--output` to choose another local location.
 
+Start with `series-index.tsv`, which maps each opaque series folder to its DICOM
+Series Number, file count, core acquisition fields, classifier evidence, and QC
+warnings. A `burned_in_annotation_not_declared` warning requires visual review
+because the scanner did not explicitly assert `BurnedInAnnotation=NO`. To omit a
+prepared series, move its complete series directory outside the review folder.
+
 When the folder is approved:
 
 ```sh
@@ -64,8 +70,8 @@ The second command uses the reviewed DICOMs as they exist at that point. It
 reruns functional EPI eligibility and the local privacy procedure, builds fresh
 per-series archives, and then syncs them. Researcher edits are not rejected
 merely because they differ from the initially prepared copies.
-`preparation-report.json` describes the initial preparation and is not updated
-after edits.
+`series-index.tsv` and `preparation-report.json` describe the initial
+preparation and are not updated after edits.
 
 ## Interruption
 

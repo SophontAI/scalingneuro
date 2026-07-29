@@ -18,8 +18,12 @@ fn prepare_creates_editable_deidentified_dicoms_and_dry_run_uses_current_files()
     let state = directory.path().join("state");
     let review = directory.path().join("source-review");
     fs::create_dir(&source).unwrap();
-    support::write_functional_epi(&source.join("image-1.dcm"), 1);
-    support::write_functional_epi(&source.join("image-2.dcm"), 2);
+    let options = support::FunctionalDicomOptions {
+        omit_burned_in_annotation: true,
+        ..Default::default()
+    };
+    support::write_functional_epi_fixture(&source.join("image-1.dcm"), 1, &options);
+    support::write_functional_epi_fixture(&source.join("image-2.dcm"), 2, &options);
 
     let paths = AppPaths::discover(Some(&state)).unwrap();
     paths.initialize().unwrap();
@@ -57,6 +61,7 @@ fn prepare_creates_editable_deidentified_dicoms_and_dry_run_uses_current_files()
     assert!(stdout.contains("2 deidentified DICOM files"));
     assert!(review.join(".neuro-sync/review-package.json").is_file());
     assert!(review.join("README.txt").is_file());
+    assert!(review.join("series-index.tsv").is_file());
     assert!(review.join("preparation-report.json").is_file());
 
     let dicoms = WalkDir::new(review.join("series"))
@@ -77,6 +82,24 @@ fn prepare_creates_editable_deidentified_dicoms_and_dry_run_uses_current_files()
     assert!(!expanded.contains("FIXTURE-SUBJECT"));
     assert!(!expanded.contains("FIXTURE^SUBJECT"));
     assert!(!expanded.contains("task_fixture"));
+
+    let series_index = fs::read_to_string(review.join("series-index.tsv")).unwrap();
+    assert!(
+        series_index
+            .starts_with("folder\tseries_number\tdicom_files\trows\tcolumns\tnumber_of_frames\t")
+    );
+    assert_eq!(series_index.lines().count(), 2);
+    assert!(series_index.contains("\t2\t"));
+    assert!(series_index.contains("functional_tr_range"));
+    assert!(series_index.contains("burned_in_annotation_not_declared"));
+    assert!(!series_index.contains("FIXTURE-SUBJECT"));
+    assert!(!series_index.contains("FIXTURE^SUBJECT"));
+    assert!(!series_index.contains("task_fixture"));
+
+    let readme = fs::read_to_string(review.join("README.txt")).unwrap();
+    assert!(readme.contains("Start with series-index.tsv."));
+    assert!(readme.contains("usual DICOM tools"));
+    assert!(readme.contains("move its entire series/<series-id>/ directory outside"));
 
     assert!(
         !WalkDir::new(review.join("series"))

@@ -7,6 +7,8 @@ use std::{
 
 use anyhow::{Context, Result, bail};
 use chrono::Utc;
+use dicom_core::Tag;
+use dicom_object::OpenFileOptions;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
@@ -25,6 +27,7 @@ pub const REVIEW_PACKAGE_SCHEMA_VERSION: &str = "1.0.0";
 const INTERNAL_DIRECTORY: &str = ".neuro-sync";
 const PACKAGE_FILENAME: &str = "review-package.json";
 const PUBLIC_REPORT_FILENAME: &str = "preparation-report.json";
+const SERIES_INDEX_FILENAME: &str = "series-index.tsv";
 const README_FILENAME: &str = "README.txt";
 const MAX_ARCHIVE_MANIFEST_BYTES: u64 = 16 * 1024 * 1024;
 
@@ -44,6 +47,25 @@ struct ReviewSeries {
     series_id: String,
     dicom_files: u64,
     folder: String,
+}
+
+#[derive(Debug)]
+struct ReviewSeriesIndexRow {
+    folder: String,
+    series_number: Option<i64>,
+    dicom_files: u64,
+    rows: Option<u64>,
+    columns: Option<u64>,
+    number_of_frames: Option<u64>,
+    repetition_time_ms: Option<f64>,
+    echo_time_ms: Option<f64>,
+    mr_acquisition_type: Option<String>,
+    scanning_sequence: Option<String>,
+    sequence_name: Option<String>,
+    image_type: Option<String>,
+    classifier_confidence: f64,
+    classifier_evidence: String,
+    qc_warnings: String,
 }
 
 #[derive(Debug)]
@@ -88,6 +110,7 @@ pub fn write_review_package(
     privacy::restrict_dir(&series_root)?;
 
     let mut series = Vec::new();
+    let mut series_index = Vec::new();
     let mut dicom_files = 0_u64;
     for bundle in &source_manifest.bundles {
         validate_bundle_identity(bundle)?;
@@ -100,6 +123,15 @@ pub fn write_review_package(
         privacy::restrict_dir(&review_series)?;
         let contents = read_archive(Path::new(&archive.object.local_path), &review_series)?;
         validate_archive_contents(bundle, &contents)?;
+        let representative = contents
+            .files
+            .keys()
+            .next()
+            .context("review package series has no DICOM instances")?;
+        series_index.push(read_series_index_row(
+            &review_series.join(representative),
+            bundle,
+        )?);
         series.push(ReviewSeries {
             series_id: bundle.bundle_id.clone(),
             dicom_files: archive.dicom_instance_count,
@@ -110,6 +142,7 @@ pub fn write_review_package(
             .context("review package DICOM count overflow")?;
     }
 
+    write_series_index(root, &mut series_index)?;
     let package = ReviewPackage {
         schema_version: REVIEW_PACKAGE_SCHEMA_VERSION.into(),
         created_at: Utc::now().to_rfc3339(),
@@ -345,18 +378,154 @@ fn write_json(path: &Path, value: &impl Serialize) -> Result<()> {
     write_new_file(path, &bytes)
 }
 
+fn read_series_index_row(path: &Path, bundle: &ManifestBundle) -> Result<ReviewSeriesIndexRow> {
+    let object = OpenFileOptions::new()
+        .read_until(Tag(0x7fe0, 0x0010))
+        .open_file(path)
+        .with_context(|| {
+            format!(
+                "could not read prepared DICOM metadata for the review index: {}",
+                path.display()
+            )
+        })?;
+    Ok(ReviewSeriesIndexRow {
+        folder: format!("series/{}", bundle.bundle_id),
+        series_number: optional_integer(&object, Tag(0x0020, 0x0011)),
+        dicom_files: bundle.source_dicom_count,
+        rows: optional_integer(&object, Tag(0x0028, 0x0010)),
+        columns: optional_integer(&object, Tag(0x0028, 0x0011)),
+        number_of_frames: optional_integer(&object, Tag(0x0028, 0x0008)),
+        repetition_time_ms: optional_float(&object, Tag(0x0018, 0x0080)),
+        echo_time_ms: optional_float(&object, Tag(0x0018, 0x0081)),
+        mr_acquisition_type: optional_text(&object, Tag(0x0018, 0x0023)),
+        scanning_sequence: optional_text(&object, Tag(0x0018, 0x0020)),
+        sequence_name: optional_text(&object, Tag(0x0018, 0x0024)),
+        image_type: optional_text(&object, Tag(0x0008, 0x0008)),
+        classifier_confidence: bundle.classification.confidence,
+        classifier_evidence: bundle
+            .classification
+            .evidence
+            .iter()
+            .map(|evidence| evidence.code.as_str())
+            .collect::<Vec<_>>()
+            .join(","),
+        qc_warnings: bundle.qc.warnings.join(","),
+    })
+}
+
+fn optional_text(object: &dicom_object::DefaultDicomObject, tag: Tag) -> Option<String> {
+    object
+        .get(tag)?
+        .to_str()
+        .ok()
+        .map(|value| value.trim_matches([' ', '\0']).to_owned())
+        .filter(|value| !value.is_empty())
+}
+
+fn optional_integer<T>(object: &dicom_object::DefaultDicomObject, tag: Tag) -> Option<T>
+where
+    T: TryFrom<i64>,
+{
+    object
+        .get(tag)?
+        .to_int::<i64>()
+        .ok()
+        .and_then(|value| T::try_from(value).ok())
+}
+
+fn optional_float(object: &dicom_object::DefaultDicomObject, tag: Tag) -> Option<f64> {
+    object
+        .get(tag)?
+        .to_float64()
+        .ok()
+        .filter(|value| value.is_finite())
+}
+
+fn write_series_index(root: &Path, rows: &mut [ReviewSeriesIndexRow]) -> Result<()> {
+    rows.sort_by(|left, right| {
+        left.series_number
+            .unwrap_or(i64::MAX)
+            .cmp(&right.series_number.unwrap_or(i64::MAX))
+            .then_with(|| left.folder.cmp(&right.folder))
+    });
+    let mut output = String::from(
+        "folder\tseries_number\tdicom_files\trows\tcolumns\tnumber_of_frames\t\
+repetition_time_ms\techo_time_ms\tmr_acquisition_type\tscanning_sequence\t\
+sequence_name\timage_type\tclassifier_confidence\tclassifier_evidence\tqc_warnings\n",
+    );
+    for row in rows {
+        let values = [
+            row.folder.clone(),
+            display_option(row.series_number),
+            row.dicom_files.to_string(),
+            display_option(row.rows),
+            display_option(row.columns),
+            display_option(row.number_of_frames),
+            display_option(row.repetition_time_ms),
+            display_option(row.echo_time_ms),
+            row.mr_acquisition_type.clone().unwrap_or_default(),
+            row.scanning_sequence.clone().unwrap_or_default(),
+            row.sequence_name.clone().unwrap_or_default(),
+            row.image_type.clone().unwrap_or_default(),
+            row.classifier_confidence.to_string(),
+            row.classifier_evidence.clone(),
+            row.qc_warnings.clone(),
+        ];
+        output.push_str(
+            &values
+                .iter()
+                .map(|value| sanitize_tsv_field(value))
+                .collect::<Vec<_>>()
+                .join("\t"),
+        );
+        output.push('\n');
+    }
+    write_new_file(&root.join(SERIES_INDEX_FILENAME), output.as_bytes())
+}
+
+fn display_option<T: ToString>(value: Option<T>) -> String {
+    value.map(|value| value.to_string()).unwrap_or_default()
+}
+
+fn sanitize_tsv_field(value: &str) -> String {
+    value
+        .chars()
+        .map(|character| {
+            if matches!(character, '\t' | '\r' | '\n') {
+                ' '
+            } else {
+                character
+            }
+        })
+        .collect()
+}
+
 fn write_readme(root: &Path) -> Result<()> {
     let readme = b"Scaling Neuro local review folder\n\
 \n\
-Nothing in this folder has been uploaded.\n\
+The prepare command that created this folder did not upload anything. If this\n\
+folder has since been uploaded, use `neuro-sync status` for current state.\n\
 \n\
-Inspect or edit the deidentified DICOM files under\n\
-series/<series-id>/dicom/. The original source folder is unchanged. Pixel Data\n\
-is preserved exactly as exported by the scanner and is not defaced, cropped,\n\
-masked, or resampled, so recognizable visual features may remain.\n\
+Start with series-index.tsv. It maps each opaque series folder to the retained\n\
+DICOM Series Number, file count, core acquisition fields, classifier evidence,\n\
+and QC warnings. Then inspect the deidentified DICOM files directly under\n\
+series/<series-id>/dicom/ with your usual DICOM tools.\n\
 \n\
-preparation-report.json describes the files as initially prepared. It is not\n\
-updated when you edit the DICOMs and is not used to reject researcher changes.\n\
+Confirm that the expected functional runs are present, timing and geometry are\n\
+plausible, and Pixel Data contains no burned-in identifiers. A\n\
+burned_in_annotation_not_declared warning requires visual review because the\n\
+scanner did not explicitly assert BurnedInAnnotation=NO.\n\
+\n\
+The original source folder is unchanged. Pixel Data is preserved exactly as\n\
+exported by the scanner and is not defaced, cropped, masked, or resampled, so\n\
+recognizable visual features may remain.\n\
+\n\
+To omit a prepared series, move its entire series/<series-id>/ directory outside\n\
+this review folder. Do not copy original source DICOMs into the review folder.\n\
+\n\
+series-index.tsv and preparation-report.json describe the files as initially\n\
+prepared. They are not updated when you edit the DICOMs and are not used to\n\
+reject researcher changes.\n\
 \n\
 After inspection and institutional approval, run:\n\
     neuro-sync upload /path/to/this-review-folder\n\
