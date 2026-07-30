@@ -51,9 +51,7 @@
           eventually unlocking the world's largest trainable neuroimaging dataset.
           Point it at a DICOM folder and it finds the EPI series,
           removes identifying metadata locally, and syncs the deidentified DICOMs
-          to a shared archive. Use one command, or first write the deidentified
-          DICOMs to a local folder so your lab can inspect and edit them before
-          anything is uploaded.
+          to a shared archive.
         </p>
         <div class="hero-actions">
           <a class="button" href="#access">Access data</a>
@@ -181,7 +179,7 @@
           <article class="step">
             <span>02 · Local privacy</span>
             <h3>Protect</h3>
-            <p>Remove direct identifiers, dates, paths, free text, and unsafe private metadata locally while preserving Pixel Data. Optionally write normal <code>.dcm</code> copies to a local folder for inspection or editing. Read the <a href="/docs/de-identification-procedure">de-identification procedure</a> or inspect the <a href="https://github.com/SophontAI/scalingneuro" target="_blank" rel="noopener">open-source implementation</a>.</p>
+            <p>Remove direct identifiers, dates, paths, free text, and unsafe private metadata locally while preserving Pixel Data. Read the <a href="/docs/de-identification-procedure">de-identification procedure</a> or inspect the <a href="https://github.com/SophontAI/scalingneuro" target="_blank" rel="noopener">open-source implementation</a>.</p>
           </article>
           <article class="step">
             <span>03 · Shared archive</span>
@@ -196,9 +194,10 @@
         </div>
         <p class="boundary">
           <strong>Functional EPI only.</strong> By only uploading raw functional scans that
-          have identifiable metadata removed locally, we keep the workflow intentionally
-          narrow. Task labels stay local. Structural scans are excluded. No BIDS conversion
-          is required, so a lab can start with its scanner-exported DICOM folder.
+          have identifiable metadata removed locally, we avoid all the friction associated
+          with uploading brain scans. No task labels mean your study can't be scooped. No
+          structurals mean no worrying about defacing. No BIDS, so no need to do anything
+          other than point a script to a folder of DICOMs.
           <span class="boundary-note">*Note: Scaling Neuro serves a very different purpose
           to OpenNeuro; we hope you upload your raw data here and then upload standardized
           data over there!</span>
