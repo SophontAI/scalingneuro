@@ -120,6 +120,9 @@ const accessAgreementCopy = accessForm
 const contributorAgreementCopy = accessForm
   ? $('[data-agreement-for="contributor"]', accessForm)
   : null;
+const accessAgreementCheckbox = accessForm
+  ? $('input[name="data_use_agreement"]', accessForm)
+  : null;
 
 function updateAccessAgreement() {
   const plansToContribute =
@@ -131,8 +134,12 @@ function updateAccessAgreement() {
 }
 
 contributionChoices.forEach((choice) => {
-  choice.addEventListener("change", updateAccessAgreement);
+  choice.addEventListener("change", () => {
+    if (accessAgreementCheckbox) accessAgreementCheckbox.checked = false;
+    updateAccessAgreement();
+  });
 });
+if (accessAgreementCheckbox) accessAgreementCheckbox.checked = false;
 updateAccessAgreement();
 
 accessForm?.addEventListener("submit", async (event) => {

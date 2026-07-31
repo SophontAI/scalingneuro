@@ -157,7 +157,7 @@ function requireCurrentContract(
     throw new AppError(
       "CONSENT_POLICY_UPDATE_REQUIRED",
       409,
-      "Review and accept the current functional EPI contribution policy",
+      "Review and accept the current data contribution and CC0 policy",
       {
         consent_policy_version: PUBLIC_CONSENT_POLICY_VERSION,
         deidentification_policy_id: DICOM_DEIDENTIFICATION_POLICY_ID,

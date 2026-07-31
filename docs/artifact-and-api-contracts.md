@@ -42,10 +42,12 @@ The private admin routes require a separate production secret. Approval mints
 and returns a personal bearer token once, stores only its SHA-256 digest in D1,
 and marks the request approved. Rejection never creates archive credentials.
 Every request records an explicit yes-or-no contribution plan. A requester who
-plans to contribute must also accept the current contribution policy, and the
+plans to contribute must also explicitly accept the current data contribution
+and CC0 policy, and the
 request, administrator notification, and resulting grant retain that answer and
 attestation. The request and resulting grant also record the exact archive
-data-use policy version accepted by the researcher and the acceptance time. The
+access and privacy agreement version accepted by the researcher and the
+acceptance time. The
 API rejects an access request that omits either required agreement or names a
 stale version. Archive listing and download routes also
 reject credentials that are not bound to the current policy.
@@ -87,7 +89,7 @@ download route redirects to a short-lived signed R2 GET URL. Size and SHA-256
 are included in the listing so researchers can verify each downloaded archive.
 CC0-licensed entries also include the license identifier, canonical URL, and
 grant time.
-The current data-use conditions are published at
+The current archive access and privacy agreement is published at
 `/docs/archive-access-policy`.
 
 ## Published schemas

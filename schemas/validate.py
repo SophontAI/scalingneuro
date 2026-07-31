@@ -227,7 +227,7 @@ def main() -> None:
         "archive-access-request-v3.schema.json",
         schemas,
         registry,
-        "stale archive data-use policy",
+        "stale archive access and privacy agreement",
     )
 
     print(

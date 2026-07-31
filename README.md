@@ -100,10 +100,11 @@ object-scoped multipart URLs and never receives reusable R2 credentials.
 Researchers request access at
 [scalingneuro.org/#access](https://scalingneuro.org/#access). A requester
 provides a work email, institution, lab name, and an explicit yes-or-no answer
-about whether they plan to contribute data. A requester who selects yes also
-accepts the current contribution policy and uploader attestation. Every
-requester must accept the current versioned
-[archive data-use policy](docs/archive-access-policy.html), including the
+about whether they plan to contribute data. A requester who selects yes
+explicitly accepts the current
+[data contribution and CC0 policy](docs/contribution-policy.html) and uploader
+attestation. Every requester must accept the current versioned
+[archive access and privacy agreement](docs/archive-access-policy.html), including the
 institutional-permission, no-identification, no-reidentification, no-contact,
 incident-reporting, and collaborator obligations. The service records the exact
 accepted versions, contribution choice, and acceptance times with a pending
@@ -197,7 +198,8 @@ Worker.
 ## Contracts
 
 - [EPI sync contract](docs/epi-ingestion-contract.md)
-- [Archive data-use policy](docs/archive-access-policy.html)
+- [Data contribution and CC0 policy](docs/contribution-policy.html)
+- [Archive access and privacy agreement](docs/archive-access-policy.html)
 - [DICOM deidentification](docs/dicom-deidentification-policy.md)
 - [Artifacts and APIs](docs/artifact-and-api-contracts.md)
 - [Terminal onboarding](docs/collaborator-onboarding.md)

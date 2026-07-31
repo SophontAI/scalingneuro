@@ -165,7 +165,7 @@ export async function registerContributor(
     throw new AppError(
       "CONSENT_POLICY_UPDATE_REQUIRED",
       409,
-      "Review and accept the current functional EPI contribution policy",
+      "Review and accept the current data contribution and CC0 policy",
       { consent_policy_version: PUBLIC_CONSENT_POLICY_VERSION },
     );
   }
@@ -350,7 +350,7 @@ export async function acceptPublicContributionPolicy(
     throw new AppError(
       "CONSENT_POLICY_UPDATE_REQUIRED",
       409,
-      "Review and accept the current functional EPI contribution policy",
+      "Review and accept the current data contribution and CC0 policy",
       { consent_policy_version: PUBLIC_CONSENT_POLICY_VERSION },
     );
   }

@@ -162,7 +162,7 @@ export function parseArchiveAccessRequest(
     throw new AppError(
       "INVALID_REQUEST",
       400,
-      "The archive data-use agreement must be accepted",
+      "The archive access and privacy agreement must be accepted",
     );
   }
   if (
@@ -171,7 +171,7 @@ export function parseArchiveAccessRequest(
     throw new AppError(
       "ARCHIVE_ACCESS_POLICY_UPDATE_REQUIRED",
       409,
-      "Review and accept the current archive data-use policy",
+      "Review and accept the current archive access and privacy agreement",
       { data_use_policy_version: ARCHIVE_ACCESS_POLICY_VERSION },
     );
   }
@@ -193,7 +193,7 @@ export function parseArchiveAccessRequest(
     throw new AppError(
       "CONSENT_POLICY_UPDATE_REQUIRED",
       409,
-      "Review and accept the current contribution policy",
+      "Review and accept the current data contribution and CC0 policy",
       { consent_policy_version: PUBLIC_CONSENT_POLICY_VERSION },
     );
   }
@@ -484,7 +484,7 @@ export async function approveArchiveAccessRequest(
     throw new AppError(
       "ARCHIVE_ACCESS_POLICY_UPDATE_REQUIRED",
       409,
-      "The requester must submit a new acceptance of the current archive data-use policy",
+      "The requester must submit a new acceptance of the current archive access and privacy agreement",
       { data_use_policy_version: ARCHIVE_ACCESS_POLICY_VERSION },
     );
   }
@@ -683,7 +683,7 @@ async function authenticateArchiveAccess(
     throw new AppError(
       "ARCHIVE_ACCESS_POLICY_UPDATE_REQUIRED",
       403,
-      "Archive access requires acceptance of the current data-use policy",
+      "Archive access requires acceptance of the current access and privacy agreement",
       { data_use_policy_version: ARCHIVE_ACCESS_POLICY_VERSION },
     );
   }

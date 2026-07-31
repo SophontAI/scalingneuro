@@ -325,7 +325,7 @@ describe("shared EPI archive access", () => {
     });
   });
 
-  it("requires the current archive data-use agreement", async () => {
+  it("requires the current archive access and privacy agreement", async () => {
     const declined = accessRequest(
       `data-use-declined+${crypto.randomUUID()}@example.edu`,
     );
@@ -385,7 +385,7 @@ describe("shared EPI archive access", () => {
     });
   });
 
-  it("blocks a grant whose accepted data-use policy is no longer current", async () => {
+  it("blocks a grant whose accepted access agreement is no longer current", async () => {
     const email = `policy-drift+${crypto.randomUUID()}@example.edu`;
     const grant = await submitAndApprove(email);
     await env.DB.prepare(

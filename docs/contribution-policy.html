@@ -3,8 +3,8 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Functional EPI contribution policy | Scaling Neuro</title>
-  <meta name="description" content="The authorization and CC0 policy for sharing functional EPI DICOMs through neuro-sync." />
+  <title>Data contribution and CC0 policy | Scaling Neuro</title>
+  <meta name="description" content="The contributor authorization, upload, and CC0 public-domain terms for sharing functional EPI DICOMs through Scaling Neuro." />
   <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
   <style>
     :root{--paper:#f7f6f1;--ink:#192033;--muted:#565d6e;--line:#d7d5ce;--accent:#a34b53}*{box-sizing:border-box}body{margin:0;background:var(--paper);color:var(--muted);font:18px/1.65 Georgia,serif}main{width:min(760px,calc(100% - 40px));margin:auto;padding:54px 0 100px}a{color:inherit;text-underline-offset:4px}.brand{color:var(--ink);font-weight:700;text-decoration:none}h1,h2{color:var(--ink);line-height:1.08}h1{margin:64px 0 16px;font-size:clamp(40px,7vw,66px);letter-spacing:-.03em}h2{margin:42px 0 10px;font-size:28px}.version{display:inline-block;padding:7px 10px;border:1px solid var(--line);border-radius:999px;color:var(--accent);font:12px/1.2 ui-monospace,monospace;letter-spacing:.06em}li{margin:9px 0}.notice{margin-top:44px;padding:3px 0 3px 20px;border-left:4px solid var(--accent)}
@@ -13,8 +13,16 @@
 <body>
 <main>
   <a class="brand" href="/">Scaling Neuro</a>
-  <h1>Functional EPI contribution policy</h1>
+  <h1>Data contribution and CC0 policy</h1>
   <div class="version">open-epi-3.0.0 · effective 31 July 2026</div>
+
+  <h2>Who must follow this policy</h2>
+  <p>This policy applies to every person, lab, center, or group that contributes
+  data to Scaling Neuro. A requester who selects “I plan to contribute data”
+  accepts this policy in advance. Before any transfer, <code>neuro-sync</code>
+  separately requires acceptance of the current policy and confirmation that
+  the contributor is authorized to share the specific selected data. Accepting
+  this policy does not itself authorize an upload or dedicate unspecified data.</p>
 
   <h2>What neuro-sync shares</h2>
   <p>neuro-sync searches the selected folder for functional echo-planar imaging
@@ -23,7 +31,7 @@
   diffusion, field maps, secondary captures, non-image objects, and ambiguous
   series stay on the workstation.</p>
 
-  <h2>Your authority to contribute and license</h2>
+  <h2>Your authority to contribute</h2>
   <p>By continuing, you confirm that you are the owner of the selected functional
   MRI data or are authorized by the owner and your institution to deidentify the
   data, share it publicly, and apply the CC0 dedication described below. You also
@@ -61,13 +69,15 @@
   removed before transfer. The rewritten files are recursively audited before
   an archive can be uploaded.</p>
 
-  <h2>Storage and use</h2>
+  <h2>Storage and access</h2>
   <p>One deidentified DICOM archive per selected series is stored in Cloudflare
   R2. Researchers can request access, download the DICOM
   archives, and choose their own conversion and preprocessing workflow.
   Scaling Neuro does not run conversion, preprocessing, or analysis. Access
-  controls and the archive privacy agreement are separate from the CC0
-  dedication and do not narrow the CC0 license.</p>
+  is governed by the separate
+  <a href="/docs/archive-access-policy">archive access and privacy agreement</a>.
+  Those access conditions do not narrow the CC0 dedication or become conditions
+  on the public-domain data.</p>
 
   <h2>Withdrawal</h2>
   <p>A lab may request workstation revocation or removal of Scaling Neuro's

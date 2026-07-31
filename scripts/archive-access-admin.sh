@@ -84,8 +84,8 @@ case "$command_name" in
       "Suggested email\n\n" +
       "Hello \(.contact_name),\n\n" +
       "Your Scaling Neuro archive access request has been approved.\n\n" +
-      "You accepted archive data-use policy \(.accepted_data_use_policy_version). " +
-      "Your access remains subject to that policy.\n\n" +
+      "You accepted archive access and privacy agreement \(.accepted_data_use_policy_version). " +
+      "Your access remains subject to that agreement.\n\n" +
       "Personal access token:\n\(.access_token)\n\n" +
       "Treat this token like a password and do not include it in support requests.\n\n" +
       "List the archive:\n" +

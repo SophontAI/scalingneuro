@@ -36,7 +36,12 @@ describe("archive access notifier", () => {
     expect(email.text).toContain(parsed.request_id);
     expect(email.text).toContain("archive-access-1.0.0");
     expect(email.text).toContain("Plans to contribute data: Yes");
-    expect(email.text).toContain("Accepted contribution policy: open-epi-3.0.0");
+    expect(email.text).toContain(
+      "Accepted data contribution and CC0 policy: open-epi-3.0.0",
+    );
+    expect(email.text).toContain(
+      "Accepted archive access and privacy agreement: archive-access-1.0.0",
+    );
     expect(email.html).toContain("Example &lt;Researcher&gt;");
     expect(email.html).toContain("Example &amp; University");
     expect(email.html).not.toContain("Example <Researcher>");

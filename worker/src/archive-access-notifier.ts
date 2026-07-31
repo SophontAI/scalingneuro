@@ -83,14 +83,14 @@ export function parseArchiveAccessNotification(
       ? null
       : requiredText(
           input.accepted_contribution_policy_version,
-          "Contribution policy version",
+          "Data contribution and CC0 policy version",
           64,
         );
   if (
     (input.plans_to_contribute && acceptedContributionPolicy === null) ||
     (!input.plans_to_contribute && acceptedContributionPolicy !== null)
   ) {
-    throw new TypeError("Contribution policy acceptance is invalid");
+    throw new TypeError("Data contribution and CC0 policy acceptance is invalid");
   }
   return {
     request_id: requestId,
@@ -140,11 +140,11 @@ export function buildArchiveAccessNotificationEmail(
       notification.contributor_attestation ? "Accepted" : "Not applicable",
     ],
     [
-      "Accepted contribution policy",
+      "Accepted data contribution and CC0 policy",
       notification.accepted_contribution_policy_version ?? "Not applicable",
     ],
     [
-      "Accepted data-use policy",
+      "Accepted archive access and privacy agreement",
       notification.accepted_data_use_policy_version,
     ],
     ["Submitted", notification.submitted_at],
