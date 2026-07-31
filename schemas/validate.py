@@ -16,6 +16,8 @@ ROOT = Path(__file__).resolve().parent
 EXAMPLE_SCHEMAS = {
     "api-error-v1.example.json": "api-error-v1.schema.json",
     "archive-access-request-v1.example.json": "archive-access-request-v1.schema.json",
+    "archive-access-request-v2.example.json": "archive-access-request-v2.schema.json",
+    "archive-access-request-v3.example.json": "archive-access-request-v3.schema.json",
     "archive-access-response-v1.example.json": "archive-access-response-v1.schema.json",
     "archive-list-v1.example.json": "archive-list-v1.schema.json",
     "contribution-info-v1.example.json": "contribution-info-v1.schema.json",
@@ -171,15 +173,61 @@ def main() -> None:
     )
 
     access = read_json(
-        ROOT / "examples" / "archive-access-request-v1.example.json"
+        ROOT / "examples" / "archive-access-request-v3.example.json"
     )
-    access["participation_commitment"] = False
+    access["contributor_attestation"] = False
     assert_invalid(
         access,
-        "archive-access-request-v1.schema.json",
+        "archive-access-request-v3.schema.json",
         schemas,
         registry,
-        "nonparticipating access form",
+        "contributor without attestation",
+    )
+    noncontributor = read_json(
+        ROOT / "examples" / "archive-access-request-v3.example.json"
+    )
+    noncontributor["plans_to_contribute"] = False
+    noncontributor["contributor_attestation"] = False
+    noncontributor["accepted_contribution_policy_version"] = None
+    assert_valid(
+        noncontributor,
+        "archive-access-request-v3.schema.json",
+        schemas,
+        registry,
+        "noncontributing access form",
+    )
+    missing_contribution_plan = copy.deepcopy(noncontributor)
+    del missing_contribution_plan["plans_to_contribute"]
+    assert_invalid(
+        missing_contribution_plan,
+        "archive-access-request-v3.schema.json",
+        schemas,
+        registry,
+        "access form without contribution plan",
+    )
+    stale_contribution_policy = read_json(
+        ROOT / "examples" / "archive-access-request-v3.example.json"
+    )
+    stale_contribution_policy["accepted_contribution_policy_version"] = (
+        "open-epi-2.0.0"
+    )
+    assert_invalid(
+        stale_contribution_policy,
+        "archive-access-request-v3.schema.json",
+        schemas,
+        registry,
+        "stale contribution policy",
+    )
+    stale_access_policy = read_json(
+        ROOT / "examples" / "archive-access-request-v3.example.json"
+    )
+    stale_access_policy["accepted_data_use_policy_version"] = "archive-access-0.9.0"
+    assert_invalid(
+        stale_access_policy,
+        "archive-access-request-v3.schema.json",
+        schemas,
+        registry,
+        "stale archive data-use policy",
     )
 
     print(

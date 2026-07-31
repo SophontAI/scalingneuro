@@ -5,6 +5,8 @@ import type { DeviceContext, Env, UploadStatus } from "./env";
 import { presignUploadPart, uploadTtl } from "./r2";
 import {
   clientVersionAtLeast,
+  DATA_LICENSE_ID,
+  DATA_LICENSE_URL,
   MINIMUM_EPI_CLIENT_VERSION,
   PUBLIC_CONSENT_POLICY_VERSION,
 } from "./service";
@@ -33,6 +35,8 @@ interface UploadRow {
   request_hash: string;
   client_version: string;
   consent_policy_version: string;
+  data_license_id: string | null;
+  data_license_granted_at: number | null;
   series_count: number;
   total_bytes: number;
   created_at: number;
@@ -89,6 +93,30 @@ function iso(seconds: number | null): string | null {
 
 function writableUntil(upload: UploadRow): number {
   return upload.provisional_expires_at ?? upload.expires_at;
+}
+
+async function applyCurrentLicenseToWritableUpload(
+  env: Env,
+  upload: UploadRow,
+): Promise<UploadRow> {
+  if (
+    !["created", "uploading"].includes(upload.status) ||
+    (upload.data_license_id === DATA_LICENSE_ID &&
+      upload.consent_policy_version === PUBLIC_CONSENT_POLICY_VERSION)
+  ) {
+    return upload;
+  }
+  const updated = await env.DB.prepare(
+    `UPDATE uploads
+     SET data_license_id = ?1, consent_policy_version = ?2,
+         data_license_granted_at = NULL
+     WHERE id = ?3 AND status IN ('created', 'uploading')
+       AND data_license_granted_at IS NULL
+     RETURNING *`,
+  )
+    .bind(DATA_LICENSE_ID, PUBLIC_CONSENT_POLICY_VERSION, upload.id)
+    .first<UploadRow>();
+  return updated ?? upload;
 }
 
 function stripEtag(value: string): string {
@@ -208,6 +236,15 @@ async function statusResponse(
     series_count: 1,
     total_bytes: upload.total_bytes,
     consent_policy_version: upload.consent_policy_version,
+    ...(upload.data_license_id === null
+      ? {}
+      : {
+          data_license: {
+            id: upload.data_license_id,
+            url: DATA_LICENSE_URL,
+            granted_at: iso(upload.data_license_granted_at),
+          },
+        }),
     deidentification: {
       policy_id: upload.deidentification_policy_id,
       policy_version: upload.deidentification_policy_version,
@@ -242,6 +279,9 @@ async function ensureMultipart(
         series_archive_id: series.series_archive_id,
         sha256: series.expected_sha256,
         kind: "dicom_archive",
+        ...(upload.data_license_id === null
+          ? {}
+          : { data_license_id: upload.data_license_id }),
       },
     });
   } catch {
@@ -276,7 +316,10 @@ async function credentialsResponse(
   env: Env,
   uploadInput: UploadRow,
 ): Promise<Record<string, unknown>> {
-  const upload = await expireIfNeeded(env, uploadInput);
+  const upload = await applyCurrentLicenseToWritableUpload(
+    env,
+    await expireIfNeeded(env, uploadInput),
+  );
   requireCurrentClient(upload.client_version);
   if (upload.status === "committed") {
     return {
@@ -456,10 +499,11 @@ export async function createDicomUpload(
         `INSERT INTO uploads
            (id, site_id, project_id, device_id, status, archive_prefix,
             request_hash, client_version, consent_policy_version,
-            series_count, total_bytes, created_at, updated_at, expires_at,
+            data_license_id, series_count, total_bytes,
+            created_at, updated_at, expires_at,
             deidentification_policy_id, deidentification_policy_version)
-         VALUES (?1, ?2, ?3, ?4, 'created', ?5, ?6, ?7, ?8,
-                 1, ?9, ?10, ?10, ?11, ?12, ?13)`,
+         VALUES (?1, ?2, ?3, ?4, 'created', ?5, ?6, ?7, ?8, ?9,
+                 1, ?10, ?11, ?11, ?12, ?13, ?14)`,
       ).bind(
         uploadId,
         device.site_id,
@@ -469,6 +513,7 @@ export async function createDicomUpload(
         requestHash,
         input.client_version,
         PUBLIC_CONSENT_POLICY_VERSION,
+        DATA_LICENSE_ID,
         item.archive.size,
         timestamp,
         expiresAt,
@@ -741,9 +786,12 @@ export async function checkpointDicomUpload(
   input: CompleteUploadRequest,
 ): Promise<Record<string, unknown>> {
   const device = await authenticateDevice(request, env);
-  let upload = await expireIfNeeded(
+  let upload = await applyCurrentLicenseToWritableUpload(
     env,
-    await getUpload(env, uploadId, device.id),
+    await expireIfNeeded(
+      env,
+      await getUpload(env, uploadId, device.id),
+    ),
   );
   if (upload.status === "committed") return statusResponse(env, upload);
   const claim = await claimReceipt(env, upload);
@@ -771,9 +819,12 @@ export async function completeDicomUpload(
   input: CompleteUploadRequest,
 ): Promise<Record<string, unknown>> {
   const device = await authenticateDevice(request, env);
-  let upload = await expireIfNeeded(
+  let upload = await applyCurrentLicenseToWritableUpload(
     env,
-    await getUpload(env, uploadId, device.id),
+    await expireIfNeeded(
+      env,
+      await getUpload(env, uploadId, device.id),
+    ),
   );
   if (upload.status === "committed") return statusResponse(env, upload);
   const claim = await claimReceipt(env, upload);
@@ -806,6 +857,7 @@ export async function completeDicomUpload(
         env.DB.prepare(
           `UPDATE uploads
            SET status = 'committed', received_at = ?1, updated_at = ?1,
+               data_license_granted_at = COALESCE(data_license_granted_at, ?1),
                receipt_token = NULL,
                receipt_expires_at = NULL
            WHERE id = ?2 AND receipt_token = ?3`,
@@ -822,6 +874,21 @@ export async function completeDicomUpload(
           upload.project_id,
           upload.device_id,
           upload.id,
+          timestamp,
+        ),
+        env.DB.prepare(
+          `INSERT INTO audit_events
+             (id, event_type, site_id, project_id, device_id, upload_id,
+              subject_type, subject_id, detail_code, created_at)
+           VALUES (?1, 'upload.licensed', ?2, ?3, ?4, ?5,
+                   'upload', ?5, ?6, ?7)`,
+        ).bind(
+          crypto.randomUUID(),
+          upload.site_id,
+          upload.project_id,
+          upload.device_id,
+          upload.id,
+          DATA_LICENSE_ID,
           timestamp,
         ),
       ]);

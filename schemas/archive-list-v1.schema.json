@@ -20,6 +20,7 @@
           "size",
           "sha256",
           "received_at",
+          "data_license",
           "download_url"
         ],
         "properties": {
@@ -39,6 +40,20 @@
           },
           "received_at": {
             "$ref": "https://scalingneuro.com/schemas/common-v1.schema.json#/$defs/timestamp"
+          },
+          "data_license": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["id", "url", "granted_at"],
+            "properties": {
+              "id": { "const": "CC0-1.0" },
+              "url": {
+                "const": "https://creativecommons.org/publicdomain/zero/1.0/"
+              },
+              "granted_at": {
+                "$ref": "https://scalingneuro.com/schemas/common-v1.schema.json#/$defs/timestamp"
+              }
+            }
           },
           "download_url": {
             "type": "string",

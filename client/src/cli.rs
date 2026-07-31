@@ -62,7 +62,7 @@ pub enum Command {
         /// Perform every local privacy/QC step but do not contact the ingest service or R2.
         #[arg(long)]
         dry_run: bool,
-        /// Confirm the selected scans are institutionally authorized for contribution.
+        /// Confirm authority to share the selected scans publicly under CC0 1.0.
         #[arg(long)]
         confirm_authorized: bool,
         /// Exact new policy version accepted when this workstation's policy is out of date.
@@ -363,12 +363,12 @@ mod tests {
 
     #[test]
     fn policy_acceptance_must_name_the_exact_advertised_version() {
-        assert!(validate_explicit_policy_version(None, "open-epi-2.0.0", true).is_err());
+        assert!(validate_explicit_policy_version(None, "open-epi-3.0.0", true).is_err());
         assert!(
-            validate_explicit_policy_version(Some("open-mri-1.0.0"), "open-epi-2.0.0", true)
+            validate_explicit_policy_version(Some("open-mri-1.0.0"), "open-epi-3.0.0", true)
                 .is_err()
         );
-        validate_explicit_policy_version(Some("open-epi-2.0.0"), "open-epi-2.0.0", true).unwrap();
-        validate_explicit_policy_version(None, "open-epi-2.0.0", false).unwrap();
+        validate_explicit_policy_version(Some("open-epi-3.0.0"), "open-epi-3.0.0", true).unwrap();
+        validate_explicit_policy_version(None, "open-epi-3.0.0", false).unwrap();
     }
 }

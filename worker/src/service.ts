@@ -18,11 +18,14 @@ import type {
 } from "./validation";
 import packageManifest from "../package.json";
 
-const MINIMUM_CLIENT_VERSION = "0.5.0";
-export const MINIMUM_EPI_CLIENT_VERSION = "0.5.0";
+const MINIMUM_CLIENT_VERSION = "0.6.1";
+export const MINIMUM_EPI_CLIENT_VERSION = "0.6.1";
 const PUBLIC_PROJECT_NAME = "Scaling Neuro shared EPI archive";
 const PUBLIC_PROJECT_SLUG = "shared-epi";
-export const PUBLIC_CONSENT_POLICY_VERSION = "open-epi-2.0.0";
+export const PUBLIC_CONSENT_POLICY_VERSION = "open-epi-3.0.0";
+export const DATA_LICENSE_ID = "CC0-1.0";
+export const DATA_LICENSE_URL =
+  "https://creativecommons.org/publicdomain/zero/1.0/";
 
 interface RegistrationRow {
   registration_id: string;
@@ -100,6 +103,8 @@ export function publicContributionInfo(
     project_name: PUBLIC_PROJECT_NAME,
     consent_policy_version: PUBLIC_CONSENT_POLICY_VERSION,
     policy_url: "https://scalingneuro.com/docs/contribution-policy",
+    data_license_id: DATA_LICENSE_ID,
+    data_license_url: DATA_LICENSE_URL,
     self_service_quota_bytes: null,
     minimum_client_version: MINIMUM_CLIENT_VERSION,
   };
@@ -371,6 +376,20 @@ export async function acceptPublicContributionPolicy(
       clientVersion,
       timestamp,
       device.id,
+    ),
+    env.DB.prepare(
+      `INSERT INTO audit_events
+         (id, event_type, site_id, project_id, device_id,
+          subject_type, subject_id, detail_code, created_at)
+       VALUES (?1, 'device.policy_accepted', ?2, ?3, ?4,
+               'device', ?4, ?5, ?6)`,
+    ).bind(
+      crypto.randomUUID(),
+      device.site_id,
+      device.project_id,
+      device.id,
+      PUBLIC_CONSENT_POLICY_VERSION,
+      timestamp,
     ),
   ]);
   if (

@@ -14,6 +14,10 @@ export interface ArchiveAccessNotification {
   contact_email: string;
   institution_name: string;
   lab_name: string;
+  plans_to_contribute: boolean;
+  contributor_attestation: boolean;
+  accepted_contribution_policy_version: string | null;
+  accepted_data_use_policy_version: string;
   submitted_at: string;
 }
 
@@ -45,6 +49,10 @@ export function parseArchiveAccessNotification(
     "contact_email",
     "institution_name",
     "lab_name",
+    "plans_to_contribute",
+    "contributor_attestation",
+    "accepted_contribution_policy_version",
+    "accepted_data_use_policy_version",
     "submitted_at",
   ]);
   if (
@@ -61,6 +69,29 @@ export function parseArchiveAccessNotification(
   if (Number.isNaN(Date.parse(submittedAt))) {
     throw new TypeError("Submitted time is invalid");
   }
+  if (typeof input.plans_to_contribute !== "boolean") {
+    throw new TypeError("Contribution plan must be true or false");
+  }
+  if (
+    typeof input.contributor_attestation !== "boolean" ||
+    input.contributor_attestation !== input.plans_to_contribute
+  ) {
+    throw new TypeError("Contributor attestation is invalid");
+  }
+  const acceptedContributionPolicy =
+    input.accepted_contribution_policy_version === null
+      ? null
+      : requiredText(
+          input.accepted_contribution_policy_version,
+          "Contribution policy version",
+          64,
+        );
+  if (
+    (input.plans_to_contribute && acceptedContributionPolicy === null) ||
+    (!input.plans_to_contribute && acceptedContributionPolicy !== null)
+  ) {
+    throw new TypeError("Contribution policy acceptance is invalid");
+  }
   return {
     request_id: requestId,
     contact_name: requiredText(input.contact_name, "Contact name", 120),
@@ -71,6 +102,14 @@ export function parseArchiveAccessNotification(
       160,
     ),
     lab_name: requiredText(input.lab_name, "Lab", 160),
+    plans_to_contribute: input.plans_to_contribute,
+    contributor_attestation: input.contributor_attestation,
+    accepted_contribution_policy_version: acceptedContributionPolicy,
+    accepted_data_use_policy_version: requiredText(
+      input.accepted_data_use_policy_version,
+      "Data-use policy version",
+      64,
+    ),
     submitted_at: submittedAt,
   };
 }
@@ -92,6 +131,22 @@ export function buildArchiveAccessNotificationEmail(
     ["Work email", notification.contact_email],
     ["Institution", notification.institution_name],
     ["Lab", notification.lab_name],
+    [
+      "Plans to contribute data",
+      notification.plans_to_contribute ? "Yes" : "No",
+    ],
+    [
+      "Contributor attestation",
+      notification.contributor_attestation ? "Accepted" : "Not applicable",
+    ],
+    [
+      "Accepted contribution policy",
+      notification.accepted_contribution_policy_version ?? "Not applicable",
+    ],
+    [
+      "Accepted data-use policy",
+      notification.accepted_data_use_policy_version,
+    ],
     ["Submitted", notification.submitted_at],
     ["Request ID", notification.request_id],
   ] as const;

@@ -1,0 +1,59 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://scalingneuro.com/schemas/archive-access-request-v3.schema.json",
+  "title": "Scaling Neuro archive access form v3",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "contact_name",
+    "contact_email",
+    "institution_name",
+    "lab_name",
+    "plans_to_contribute",
+    "contributor_attestation",
+    "accepted_contribution_policy_version",
+    "data_use_agreement",
+    "accepted_data_use_policy_version"
+  ],
+  "properties": {
+    "contact_name": { "type": "string", "minLength": 2, "maxLength": 120 },
+    "contact_email": {
+      "type": "string",
+      "format": "email",
+      "maxLength": 254
+    },
+    "institution_name": {
+      "type": "string",
+      "minLength": 2,
+      "maxLength": 160
+    },
+    "lab_name": { "type": "string", "minLength": 2, "maxLength": 160 },
+    "plans_to_contribute": { "type": "boolean" },
+    "contributor_attestation": { "type": "boolean" },
+    "accepted_contribution_policy_version": {
+      "type": ["string", "null"]
+    },
+    "data_use_agreement": { "const": true },
+    "accepted_data_use_policy_version": {
+      "const": "archive-access-1.0.0"
+    }
+  },
+  "if": {
+    "properties": { "plans_to_contribute": { "const": true } },
+    "required": ["plans_to_contribute"]
+  },
+  "then": {
+    "properties": {
+      "contributor_attestation": { "const": true },
+      "accepted_contribution_policy_version": {
+        "const": "open-epi-3.0.0"
+      }
+    }
+  },
+  "else": {
+    "properties": {
+      "contributor_attestation": { "const": false },
+      "accepted_contribution_policy_version": { "type": "null" }
+    }
+  }
+}

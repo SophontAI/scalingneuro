@@ -55,7 +55,7 @@ case "$command_name" in
       exit 0
     fi
     jq -r '
-      ["REQUEST ID", "STATUS", "SUBMITTED", "NAME", "EMAIL", "INSTITUTION", "LAB"],
+      ["REQUEST ID", "STATUS", "SUBMITTED", "NAME", "EMAIL", "INSTITUTION", "LAB", "PLANS TO CONTRIBUTE", "CONTRIBUTOR ATTESTATION", "CONTRIBUTION POLICY", "DATA-USE POLICY", "POLICY ACCEPTED"],
       (.requests[] | [
         .request_id,
         .status,
@@ -63,7 +63,12 @@ case "$command_name" in
         .contact_name,
         .contact_email,
         .institution_name,
-        .lab_name
+        .lab_name,
+        (if .plans_to_contribute == null then "legacy" elif .plans_to_contribute then "yes" else "no" end),
+        (if .contributor_attestation then "accepted" else "not applicable" end),
+        (.accepted_contribution_policy_version // "not applicable"),
+        .accepted_data_use_policy_version,
+        .data_use_agreement_accepted_at
       ]) | @tsv
     ' <<<"$response"
     ;;
@@ -79,6 +84,8 @@ case "$command_name" in
       "Suggested email\n\n" +
       "Hello \(.contact_name),\n\n" +
       "Your Scaling Neuro archive access request has been approved.\n\n" +
+      "You accepted archive data-use policy \(.accepted_data_use_policy_version). " +
+      "Your access remains subject to that policy.\n\n" +
       "Personal access token:\n\(.access_token)\n\n" +
       "Treat this token like a password and do not include it in support requests.\n\n" +
       "List the archive:\n" +

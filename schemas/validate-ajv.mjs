@@ -28,6 +28,10 @@ const pairs = {
   "api-error-v1.example.json": "api-error-v1.schema.json",
   "archive-access-request-v1.example.json":
     "archive-access-request-v1.schema.json",
+  "archive-access-request-v2.example.json":
+    "archive-access-request-v2.schema.json",
+  "archive-access-request-v3.example.json":
+    "archive-access-request-v3.schema.json",
   "archive-access-response-v1.example.json":
     "archive-access-response-v1.schema.json",
   "archive-list-v1.example.json": "archive-list-v1.schema.json",

@@ -341,7 +341,7 @@ mod tests {
             site_id: "site".into(),
             project_id: "project".into(),
             project_name: "Project".into(),
-            consent_policy_version: "open-epi-2.0.0".into(),
+            consent_policy_version: "open-epi-3.0.0".into(),
             client_version: crate::CLIENT_VERSION.into(),
             started_at: "2026-07-12T00:00:00Z".into(),
             completed_at: Some("2026-07-12T00:01:00Z".into()),

@@ -12,8 +12,8 @@ request bodies.
 - `POST /v1/register`
 - `POST /v1/archive-access`
 
-Registration creates a device identity for contribution. Archive access is a
-separate participation form:
+Registration creates a device identity for contribution. Archive access uses
+the current `archive-access-request-v3` contribution-intent and data-use form:
 
 ```json
 {
@@ -21,7 +21,11 @@ separate participation form:
   "contact_email": "researcher@example.edu",
   "institution_name": "Example University",
   "lab_name": "Example Lab",
-  "participation_commitment": true
+  "plans_to_contribute": true,
+  "contributor_attestation": true,
+  "accepted_contribution_policy_version": "open-epi-3.0.0",
+  "data_use_agreement": true,
+  "accepted_data_use_policy_version": "archive-access-1.0.0"
 }
 ```
 
@@ -37,6 +41,14 @@ An operator reviews pending requests with `scripts/archive-access-admin.sh`.
 The private admin routes require a separate production secret. Approval mints
 and returns a personal bearer token once, stores only its SHA-256 digest in D1,
 and marks the request approved. Rejection never creates archive credentials.
+Every request records an explicit yes-or-no contribution plan. A requester who
+plans to contribute must also accept the current contribution policy, and the
+request, administrator notification, and resulting grant retain that answer and
+attestation. The request and resulting grant also record the exact archive
+data-use policy version accepted by the researcher and the acceptance time. The
+API rejects an access request that omits either required agreement or names a
+stale version. Archive listing and download routes also
+reject credentials that are not bound to the current policy.
 
 ## Device routes
 
@@ -51,7 +63,10 @@ and marks the request approved. Rejection never creates archive credentials.
 The upload request may contain one `functional_epi` series under the current
 DICOM deidentification contract. The Worker rejects every other series kind.
 One series per durable receipt keeps continuation and withdrawal scoped to one
-scientific unit.
+scientific unit. New receipts store `data_license_id = CC0-1.0` and the exact
+time the dedication becomes effective. The same license is attached to R2 object
+metadata, upload status, and archive listings. A policy-version gate prevents an
+older client or stale device acceptance from creating a new upload.
 
 Part grants are short-lived R2 `UploadPart` URLs bound to the exact object key,
 multipart ID, part number, content length, and SHA-256 header. The client never
@@ -70,11 +85,17 @@ Both require the bearer token emailed after an access request is approved.
 Listing returns committed, non-withdrawn functional EPI series only. Each
 download route redirects to a short-lived signed R2 GET URL. Size and SHA-256
 are included in the listing so researchers can verify each downloaded archive.
+CC0-licensed entries also include the license identifier, canonical URL, and
+grant time.
+The current data-use conditions are published at
+`/docs/archive-access-policy`.
 
 ## Published schemas
 
 - `api-error-v1.schema.json`
-- `archive-access-request-v1.schema.json`
+- `archive-access-request-v1.schema.json` (historical, before the data-use agreement)
+- `archive-access-request-v2.schema.json` (historical, participation required)
+- `archive-access-request-v3.schema.json` (current)
 - `archive-access-response-v1.schema.json`
 - `archive-list-v1.schema.json`
 - `common-v1.schema.json`

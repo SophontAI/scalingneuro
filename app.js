@@ -111,17 +111,50 @@ $("#copyBtn")?.addEventListener("click", async () => {
 const accessForm = $("#accessForm");
 const accessResult = $("#accessResult");
 const formStatus = $("#formStatus");
+const contributionChoices = accessForm
+  ? $$('input[name="plans_to_contribute"]', accessForm)
+  : [];
+const accessAgreementCopy = accessForm
+  ? $('[data-agreement-for="access"]', accessForm)
+  : null;
+const contributorAgreementCopy = accessForm
+  ? $('[data-agreement-for="contributor"]', accessForm)
+  : null;
+
+function updateAccessAgreement() {
+  const plansToContribute =
+    contributionChoices.find((choice) => choice.checked)?.value === "yes";
+  if (accessAgreementCopy) accessAgreementCopy.hidden = plansToContribute;
+  if (contributorAgreementCopy) {
+    contributorAgreementCopy.hidden = !plansToContribute;
+  }
+}
+
+contributionChoices.forEach((choice) => {
+  choice.addEventListener("change", updateAccessAgreement);
+});
+updateAccessAgreement();
 
 accessForm?.addEventListener("submit", async (event) => {
   event.preventDefault();
   const submit = accessForm.querySelector('button[type="submit"]');
   const fields = new FormData(accessForm);
+  const plansToContribute = fields.get("plans_to_contribute") === "yes";
+  const dataUseAgreement = fields.get("data_use_agreement") === "on";
   const body = {
     contact_name: fields.get("contact_name"),
     contact_email: fields.get("contact_email"),
     institution_name: fields.get("institution_name"),
     lab_name: fields.get("lab_name"),
-    participation_commitment: fields.get("participation_commitment") === "on",
+    plans_to_contribute: plansToContribute,
+    contributor_attestation: plansToContribute && dataUseAgreement,
+    accepted_contribution_policy_version: plansToContribute
+      ? fields.get("accepted_contribution_policy_version")
+      : null,
+    data_use_agreement: dataUseAgreement,
+    accepted_data_use_policy_version: fields.get(
+      "accepted_data_use_policy_version",
+    ),
   };
 
   submit.disabled = true;
@@ -139,6 +172,7 @@ accessForm?.addEventListener("submit", async (event) => {
       );
     }
     accessForm.reset();
+    updateAccessAgreement();
     accessForm.hidden = true;
     accessResult.hidden = false;
     accessResult.scrollIntoView({ behavior: "smooth", block: "center" });

@@ -514,6 +514,30 @@ input:not([type]), input[type="email"] {
   font: 16px/1.2 var(--sans);
 }
 input:focus { border-color: var(--accent); outline: 2px solid color-mix(in srgb, var(--accent) 36%, transparent); }
+.choice-group {
+  display: grid;
+  gap: 12px;
+  margin: 26px 0;
+  padding: 0;
+  border: 0;
+}
+.choice-group legend {
+  margin-bottom: 10px;
+  color: var(--ink);
+  font: 500 10px/1.4 var(--mono);
+  letter-spacing: .08em;
+  text-transform: uppercase;
+}
+.choice {
+  display: grid;
+  grid-template-columns: 18px 1fr;
+  gap: 12px;
+  align-items: start;
+  font: 15px/1.5 var(--sans);
+  letter-spacing: 0;
+  text-transform: none;
+}
+.choice input { width: 17px; height: 17px; margin: 3px 0 0; accent-color: var(--accent); }
 .check {
   display: grid;
   grid-template-columns: 18px 1fr;
@@ -525,6 +549,8 @@ input:focus { border-color: var(--accent); outline: 2px solid color-mix(in srgb,
   text-transform: none;
 }
 .check input { width: 17px; height: 17px; margin: 3px 0 0; accent-color: var(--accent); }
+.check-policy { margin-top: -8px; }
+.check a { color: inherit; text-underline-offset: 3px; }
 .form-note, .form-status { margin: 16px 0 0; color: var(--ink-3); font: 10px/1.6 var(--mono); }
 .form-status { color: var(--accent); }
 .access-result h3 { margin-bottom: 8px; font-size: 2rem; }

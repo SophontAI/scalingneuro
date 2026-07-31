@@ -45,14 +45,14 @@ describe("new PI EPI archive journey", () => {
       registration_id: crypto.randomUUID(),
       device_token: deviceToken,
       device_name: "scanner-transfer-workstation",
-      client_version: "0.5.0",
+      client_version: "0.6.1",
       platform: "test",
       contact_email: `pi+${crypto.randomUUID()}@example.edu`,
       contact_name: "Example PI",
       institution_name: "Example University",
       lab_name: "Example Lab",
       contact_opt_in: false,
-      accepted_consent_policy_version: "open-epi-2.0.0",
+      accepted_consent_policy_version: "open-epi-3.0.0",
     });
     expect(registration.status).toBe(201);
 
@@ -66,7 +66,7 @@ describe("new PI EPI archive journey", () => {
       "/v1/dicom-uploads",
       {
         format: "dicom-series-v1",
-        client_version: "0.5.0",
+        client_version: "0.6.1",
         deidentification: {
           policy_id: "scaling-neuro.dicom-deidentification",
           policy_version: "2.0.0",
@@ -149,15 +149,37 @@ describe("new PI EPI archive journey", () => {
     expect(await completed.json()).toMatchObject({
       upload_id: upload.upload_id,
       status: "committed",
+      data_license: {
+        id: "CC0-1.0",
+        url: "https://creativecommons.org/publicdomain/zero/1.0/",
+      },
       receipt: { received_series: 1, received_bytes: bytes.byteLength },
     });
+
+    const storedLicense = await env.DB.prepare(
+      `SELECT data_license_id, data_license_granted_at
+       FROM uploads WHERE id = ?1`,
+    )
+      .bind(upload.upload_id)
+      .first<{
+        data_license_id: string;
+        data_license_granted_at: number;
+      }>();
+    expect(storedLicense?.data_license_id).toBe("CC0-1.0");
+    expect(storedLicense?.data_license_granted_at).toBeTypeOf("number");
+    const storedObject = await env.ARCHIVE.head(object.key);
+    expect(storedObject?.customMetadata?.data_license_id).toBe("CC0-1.0");
 
     const access = await call("POST", "/v1/archive-access", {
       contact_name: "Archive Researcher",
       contact_email: `archive+${crypto.randomUUID()}@example.edu`,
       institution_name: "Example University",
       lab_name: "Example Lab",
-      participation_commitment: true,
+      plans_to_contribute: true,
+      contributor_attestation: true,
+      accepted_contribution_policy_version: "open-epi-3.0.0",
+      data_use_agreement: true,
+      accepted_data_use_policy_version: "archive-access-1.0.0",
     });
     expect(access.status).toBe(202);
     const { request_id: accessRequestId } = await access.json<{
@@ -184,13 +206,20 @@ describe("new PI EPI archive journey", () => {
       series: Array<{
         upload_id: string;
         sha256: string;
+        data_license: { id: string; url: string; granted_at: string };
         download_url: string;
       }>;
     }>();
     const listed = listing.series.find(
       (series) => series.upload_id === upload.upload_id,
     );
-    expect(listed).toMatchObject({ sha256: archiveSha256 });
+    expect(listed).toMatchObject({
+      sha256: archiveSha256,
+      data_license: {
+        id: "CC0-1.0",
+        url: "https://creativecommons.org/publicdomain/zero/1.0/",
+      },
+    });
 
     const download = await call(
       "GET",

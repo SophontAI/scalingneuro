@@ -4,12 +4,12 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Scaling Neuro</title>
-  <meta name="description" content="Academic-led infrastructure for sharing approved functional MRI DICOMs and building the open data commons needed to scale brain models." />
+  <meta name="description" content="Academic-led infrastructure to scale free open neuroimaging data" />
   <link rel="canonical" href="https://scalingneuro.org/" />
   <meta property="og:type" content="website" />
   <meta property="og:url" content="https://scalingneuro.org/" />
   <meta property="og:title" content="Scaling Neuro" />
-  <meta property="og:description" content="Share functional EPI DICOMs in one command, or inspect local deidentified copies before uploading." />
+  <meta property="og:description" content="Academic-led infrastructure to scale free open neuroimaging data" />
   <meta property="og:image" content="https://scalingneuro.org/og.png" />
   <meta property="og:image:width" content="1200" />
   <meta property="og:image:height" content="630" />
@@ -19,7 +19,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=EB+Garamond:ital,wght@0,400;0,500;0,600;1,500&amp;family=JetBrains+Mono:wght@400;500&amp;display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="/styles.css?v=42" />
+  <link rel="stylesheet" href="/styles.css?v=44" />
   <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
 </head>
 <body>
@@ -187,9 +187,9 @@
             <p>Upload one deidentified DICOM archive per EPI series with resumable transfers and content hashes.</p>
           </article>
           <article class="step">
-            <span>04 · Participating labs</span>
+            <span>04 · Open access</span>
             <h3>Use</h3>
-            <p>Participating labs get access to all the DICOMs without restrictions.</p>
+            <p>Researchers receive personal archive access under the same no-identification, no-reidentification, and no-contact rules that bind Scaling Neuro staff.</p>
           </article>
         </div>
         <p class="boundary">
@@ -210,9 +210,9 @@
           </div>
           <div class="sharing-copy">
             <p>
-              Scaling Neuro follows the same sharing process as OpenNeuro:
-              contributing labs must confirm that the data are approved by ethics and
-              institutional permissions to allow public release prior to syncing.
+              Like OpenNeuro, Scaling Neuro requires contributing labs to confirm
+              that ethics and institutional permissions allow public release before
+              syncing.
             </p>
             <p>
               Starting a new study? We are happy to provide example IRB and participant
@@ -222,7 +222,6 @@
             </p>
             <div class="sharing-links">
               <a href="mailto:scottibrain@gmail.com?subject=Scaling%20Neuro%20IRB%20and%20consent%20examples">Request example language <span aria-hidden="true">→</span></a>
-              <a href="https://docs.openneuro.org/user_guide.html#uploading-your-dataset" target="_blank" rel="noopener">OpenNeuro upload guidance <span aria-hidden="true">→</span></a>
             </div>
           </div>
         </aside>
@@ -288,12 +287,14 @@ Original DICOMs: unchanged</code></pre>
           <p class="eyebrow">Access data</p>
           <h2>Join the open data effort.</h2>
           <p class="access-copy">
-            Archive access is available to researchers whose lab agrees to participate
-            in this shared functional MRI effort. Scaling Neuro promises that
-            contributed datasets will remain in the open research commons and will
-            never be reserved or gated for exclusive commercial or private access.
-            Submit the form for review. If approved, we will email your personal
-            access token and next steps to your work address.
+            Archive access is available to everyone who fills out the form.
+            Scaling Neuro promises that contributed datasets will remain in the open
+            research commons and will never be reserved or gated for exclusive
+            commercial or private access. Every archive will be in the public domain under
+            <a href="https://creativecommons.org/publicdomain/zero/1.0/" target="_blank" rel="noopener">CC0 1.0</a>.
+            You must promise not to try to identify or contact participants, and to
+            report any observed identification risks of uploaded data. Following
+            access request, we will email your personal access token to your work address.
           </p>
         </div>
 
@@ -314,26 +315,56 @@ Original DICOMs: unchanged</code></pre>
               <input name="institution_name" autocomplete="organization" maxlength="160" required />
             </label>
             <label>
-              Lab
+              Name of your lab (or center / group)
               <input name="lab_name" maxlength="160" required />
             </label>
           </div>
-          <label class="check">
-            <input name="participation_commitment" type="checkbox" required />
-            <span>Our lab will participate in this shared functional MRI data effort.</span>
+          <fieldset class="choice-group">
+            <legend>Do you plan to contribute data?</legend>
+            <label class="choice">
+              <input name="plans_to_contribute" type="radio" value="yes" required />
+              <span>I plan to contribute data.</span>
+            </label>
+            <label class="choice">
+              <input name="plans_to_contribute" type="radio" value="no" />
+              <span>I do not plan to contribute data.</span>
+            </label>
+          </fieldset>
+          <input name="accepted_data_use_policy_version" type="hidden" value="archive-access-1.0.0" />
+          <input name="accepted_contribution_policy_version" type="hidden" value="open-epi-3.0.0" />
+          <label class="check check-policy">
+            <input name="data_use_agreement" type="checkbox" required />
+            <span id="accessAgreementCopy">
+              <span data-agreement-for="access">
+                Neither I nor anyone using my access will try to identify or reidentify
+                a participant or contact a participant if an identity becomes known. I
+                will promptly report any known or suspected identification to Scaling
+                Neuro and ensure my collaborators follow the same rules. I have read and
+                agree to the
+                <a href="/docs/archive-access-policy" target="_blank" rel="noopener">archive data-use policy</a>.
+              </span>
+              <span data-agreement-for="contributor" hidden>
+                I affirm that I will procure necessary institutional permission and
+                participant consent before uploading any data. Neither I nor anyone
+                using my access will try to identify or reidentify a participant or
+                contact a participant if an identity becomes known. I will promptly
+                report any known or suspected identification to Scaling Neuro and
+                ensure my collaborators follow the same rules. I have read and agree to
+                the <a href="/docs/archive-access-policy" target="_blank" rel="noopener">archive data-use policy</a>.
+              </span>
+            </span>
           </label>
           <button class="button" type="submit">Submit access request</button>
-          <p class="form-note">Your work email is used only to review and administer archive access and coordinate this effort.</p>
+          <p class="form-note">Your work email is used only to administer archive access and coordinate this effort.</p>
           <p class="form-status" id="formStatus" role="status" aria-live="polite"></p>
         </form>
 
         <div class="access-result" id="accessResult" hidden>
           <p class="eyebrow">Request received</p>
-          <h3>Please await an email with next steps.</h3>
+          <h3>Please check your work email for next steps.</h3>
           <p>
-            We will review your work email and lab information. If approved,
-            the email will include your personal access token and archive
-            instructions.
+            We will email your personal access token and archive instructions
+            to your work address.
           </p>
         </div>
       </div>
@@ -347,12 +378,13 @@ Original DICOMs: unchanged</code></pre>
       <p>Academic-led infrastructure for shared functional MRI data. Archive storage sponsored by <a href="https://sophont.med" target="_blank" rel="noopener">Sophont</a>.</p>
       <a href="/docs/de-identification-procedure">De-identification procedure</a>
       <a href="/docs/contribution-policy">Contribution policy</a>
+      <a href="/docs/archive-access-policy">Archive data-use policy</a>
       <a href="https://github.com/SophontAI/scalingneuro" target="_blank" rel="noopener">Source code</a>
       <a href="mailto:scottibrain@gmail.com">Contact</a>
     </div>
   </footer>
 
   <div class="toast" id="toast" role="status" aria-live="polite"></div>
-  <script type="module" src="/app.js?v=22"></script>
+  <script type="module" src="/app.js?v=24"></script>
 </body>
 </html>

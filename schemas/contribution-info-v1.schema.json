@@ -9,19 +9,25 @@
     "project_name",
     "consent_policy_version",
     "policy_url",
+    "data_license_id",
+    "data_license_url",
     "self_service_quota_bytes",
     "minimum_client_version"
   ],
   "properties": {
     "registration_open": { "type": "boolean" },
     "project_name": { "const": "Scaling Neuro shared EPI archive" },
-    "consent_policy_version": { "const": "open-epi-2.0.0" },
+    "consent_policy_version": { "const": "open-epi-3.0.0" },
     "policy_url": {
       "type": "string",
       "format": "uri",
       "pattern": "^https://scalingneuro\\.com/"
     },
+    "data_license_id": { "const": "CC0-1.0" },
+    "data_license_url": {
+      "const": "https://creativecommons.org/publicdomain/zero/1.0/"
+    },
     "self_service_quota_bytes": { "type": "null" },
-    "minimum_client_version": { "const": "0.5.0" }
+    "minimum_client_version": { "const": "0.6.1" }
   }
 }

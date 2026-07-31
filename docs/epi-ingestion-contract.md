@@ -55,9 +55,9 @@ receipt. No background job is created.
 
 ## Shared use
 
-A participation form creates a pending archive access request. It does not
-issue credentials. After the work email, institution, and lab information are
-reviewed, an approved researcher receives a personal access token by email.
+An access form creates a pending archive access request and records whether the
+requester plans to contribute data. It does not issue credentials. After the
+request is processed, the researcher receives a personal access token by email.
 The archive API lists committed, non-withdrawn functional EPI series and issues
 short-lived download URLs. The downloaded artifact is the deidentified DICOM
 archive. Each lab chooses its own conversion, preprocessing, compute, and

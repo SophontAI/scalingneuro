@@ -9,19 +9,29 @@ import {
 import { AppError } from "./errors";
 import type { Env } from "./env";
 import { presignGetObject } from "./r2";
+import {
+  DATA_LICENSE_ID,
+  DATA_LICENSE_URL,
+  PUBLIC_CONSENT_POLICY_VERSION,
+} from "./service";
 
 const EMAIL =
   /^[A-Za-z0-9.!#$%&'*+/=?^_`{|}~-]+@[A-Za-z0-9](?:[A-Za-z0-9.-]{0,251}[A-Za-z0-9])?$/u;
 const SERIES_ARCHIVE_ID = /^[a-f0-9]{24}$/u;
 const MAX_ARCHIVE_ROWS = 200;
 const MAX_REVIEW_ROWS = 100;
+export const ARCHIVE_ACCESS_POLICY_VERSION = "archive-access-1.0.0";
 
 export interface ArchiveAccessRequest {
   contact_name: string;
   contact_email: string;
   institution_name: string;
   lab_name: string;
-  participation_commitment: true;
+  plans_to_contribute: boolean;
+  contributor_attestation: boolean;
+  accepted_contribution_policy_version: string | null;
+  data_use_agreement: true;
+  accepted_data_use_policy_version: string;
 }
 
 export interface SubmittedArchiveAccessRequest {
@@ -32,12 +42,19 @@ export interface SubmittedArchiveAccessRequest {
     contact_email: string;
     institution_name: string;
     lab_name: string;
+    plans_to_contribute: boolean;
+    contributor_attestation: boolean;
+    accepted_contribution_policy_version: string | null;
+    accepted_data_use_policy_version: string;
     submitted_at: string;
   };
 }
 
 interface ArchiveAccessRow {
   id: string;
+  data_use_agreement: number;
+  accepted_data_use_policy_version: string | null;
+  data_use_agreement_accepted_at: number | null;
   revoked_at: number | null;
 }
 
@@ -54,6 +71,13 @@ interface ArchiveAccessRequestRow {
   created_at: number;
   updated_at: number;
   reviewed_at: number | null;
+  data_use_agreement: number;
+  accepted_data_use_policy_version: string | null;
+  data_use_agreement_accepted_at: number | null;
+  plans_to_contribute: number | null;
+  contributor_attestation: number | null;
+  accepted_contribution_policy_version: string | null;
+  contributor_attestation_accepted_at: number | null;
 }
 
 interface ArchiveSeriesRow {
@@ -66,6 +90,8 @@ interface ArchiveSeriesRow {
   archive_prefix: string;
   archive_relative_key: string;
   received_at: number;
+  data_license_id: string;
+  data_license_granted_at: number;
 }
 
 function nowSeconds(): number {
@@ -103,7 +129,11 @@ export function parseArchiveAccessRequest(
     "contact_email",
     "institution_name",
     "lab_name",
-    "participation_commitment",
+    "plans_to_contribute",
+    "contributor_attestation",
+    "accepted_contribution_policy_version",
+    "data_use_agreement",
+    "accepted_data_use_policy_version",
   ]);
   if (Object.keys(input).some((key) => !expected.has(key))) {
     throw new AppError(
@@ -121,11 +151,61 @@ export function parseArchiveAccessRequest(
       "Work email has an invalid format",
     );
   }
-  if (input.participation_commitment !== true) {
+  if (typeof input.plans_to_contribute !== "boolean") {
     throw new AppError(
       "INVALID_REQUEST",
       400,
-      "Lab participation must be confirmed",
+      "Choose whether you plan to contribute data",
+    );
+  }
+  if (input.data_use_agreement !== true) {
+    throw new AppError(
+      "INVALID_REQUEST",
+      400,
+      "The archive data-use agreement must be accepted",
+    );
+  }
+  if (
+    input.accepted_data_use_policy_version !== ARCHIVE_ACCESS_POLICY_VERSION
+  ) {
+    throw new AppError(
+      "ARCHIVE_ACCESS_POLICY_UPDATE_REQUIRED",
+      409,
+      "Review and accept the current archive data-use policy",
+      { data_use_policy_version: ARCHIVE_ACCESS_POLICY_VERSION },
+    );
+  }
+  if (
+    input.plans_to_contribute &&
+    input.contributor_attestation !== true
+  ) {
+    throw new AppError(
+      "INVALID_REQUEST",
+      400,
+      "The contributor attestation must be accepted before planning to upload data",
+    );
+  }
+  if (
+    input.plans_to_contribute &&
+    input.accepted_contribution_policy_version !==
+      PUBLIC_CONSENT_POLICY_VERSION
+  ) {
+    throw new AppError(
+      "CONSENT_POLICY_UPDATE_REQUIRED",
+      409,
+      "Review and accept the current contribution policy",
+      { consent_policy_version: PUBLIC_CONSENT_POLICY_VERSION },
+    );
+  }
+  if (
+    !input.plans_to_contribute &&
+    (input.contributor_attestation !== false ||
+      input.accepted_contribution_policy_version !== null)
+  ) {
+    throw new AppError(
+      "INVALID_REQUEST",
+      400,
+      "Contributor attestation must be omitted when you do not plan to contribute data",
     );
   }
   return {
@@ -133,7 +213,13 @@ export function parseArchiveAccessRequest(
     contact_email: contactEmail,
     institution_name: requiredText(input.institution_name, "Institution", 160),
     lab_name: requiredText(input.lab_name, "Lab", 160),
-    participation_commitment: true,
+    plans_to_contribute: input.plans_to_contribute,
+    contributor_attestation: input.plans_to_contribute,
+    accepted_contribution_policy_version: input.plans_to_contribute
+      ? PUBLIC_CONSENT_POLICY_VERSION
+      : null,
+    data_use_agreement: true,
+    accepted_data_use_policy_version: ARCHIVE_ACCESS_POLICY_VERSION,
   };
 }
 
@@ -158,15 +244,27 @@ export async function submitArchiveAccessRequest(
   await env.DB.prepare(
     `INSERT INTO archive_access_requests
        (id, email_hash, email_ciphertext, contact_name, institution_name,
-        lab_name, participation_commitment, status, created_at, updated_at,
+        lab_name, participation_commitment, plans_to_contribute,
+        contributor_attestation, accepted_contribution_policy_version,
+        contributor_attestation_accepted_at, data_use_agreement,
+        accepted_data_use_policy_version, data_use_agreement_accepted_at,
+        status, created_at, updated_at,
         reviewed_at, approved_registration_id)
-     VALUES (?1, ?2, ?3, ?4, ?5, ?6, 1, 'pending', ?7, ?7, NULL, NULL)
+     VALUES (?1, ?2, ?3, ?4, ?5, ?6, 1, ?7, ?8, ?9, ?10, 1, ?11, ?12,
+             'pending', ?12, ?12, NULL, NULL)
      ON CONFLICT(email_hash) DO UPDATE SET
        email_ciphertext = excluded.email_ciphertext,
        contact_name = excluded.contact_name,
        institution_name = excluded.institution_name,
        lab_name = excluded.lab_name,
        participation_commitment = 1,
+       plans_to_contribute = excluded.plans_to_contribute,
+       contributor_attestation = excluded.contributor_attestation,
+       accepted_contribution_policy_version = excluded.accepted_contribution_policy_version,
+       contributor_attestation_accepted_at = excluded.contributor_attestation_accepted_at,
+       data_use_agreement = 1,
+       accepted_data_use_policy_version = excluded.accepted_data_use_policy_version,
+       data_use_agreement_accepted_at = excluded.data_use_agreement_accepted_at,
        status = 'pending',
        updated_at = excluded.updated_at,
        reviewed_at = NULL,
@@ -179,6 +277,11 @@ export async function submitArchiveAccessRequest(
       input.contact_name,
       input.institution_name,
       input.lab_name,
+      input.plans_to_contribute ? 1 : 0,
+      input.contributor_attestation ? 1 : 0,
+      input.accepted_contribution_policy_version,
+      input.contributor_attestation ? timestamp : null,
+      input.accepted_data_use_policy_version,
       timestamp,
     )
     .run();
@@ -195,6 +298,12 @@ export async function submitArchiveAccessRequest(
       contact_email: input.contact_email,
       institution_name: input.institution_name,
       lab_name: input.lab_name,
+      plans_to_contribute: input.plans_to_contribute,
+      contributor_attestation: input.contributor_attestation,
+      accepted_contribution_policy_version:
+        input.accepted_contribution_policy_version,
+      accepted_data_use_policy_version:
+        input.accepted_data_use_policy_version,
       submitted_at: new Date(timestamp * 1000).toISOString(),
     },
   };
@@ -256,6 +365,20 @@ async function requestForAdministration(
     contact_email: contactEmail,
     institution_name: row.institution_name,
     lab_name: row.lab_name,
+    plans_to_contribute:
+      row.plans_to_contribute === null
+        ? null
+        : row.plans_to_contribute === 1,
+    contributor_attestation: row.contributor_attestation === 1,
+    accepted_contribution_policy_version:
+      row.accepted_contribution_policy_version,
+    contributor_attestation_accepted_at:
+      isoTime(row.contributor_attestation_accepted_at),
+    data_use_agreement: row.data_use_agreement === 1,
+    accepted_data_use_policy_version:
+      row.accepted_data_use_policy_version,
+    data_use_agreement_accepted_at:
+      isoTime(row.data_use_agreement_accepted_at),
     submitted_at: isoTime(row.created_at),
     updated_at: isoTime(row.updated_at),
     reviewed_at: isoTime(row.reviewed_at),
@@ -284,7 +407,11 @@ export async function listArchiveAccessRequests(
       ? env.DB.prepare(
           `SELECT id, email_hash, email_ciphertext, contact_name,
                   institution_name, lab_name, status, created_at, updated_at,
-                  reviewed_at
+                  reviewed_at, plans_to_contribute, contributor_attestation,
+                  accepted_contribution_policy_version,
+                  contributor_attestation_accepted_at, data_use_agreement,
+                  accepted_data_use_policy_version,
+                  data_use_agreement_accepted_at
            FROM archive_access_requests
            ORDER BY created_at ASC
            LIMIT ?1`,
@@ -292,7 +419,11 @@ export async function listArchiveAccessRequests(
       : env.DB.prepare(
           `SELECT id, email_hash, email_ciphertext, contact_name,
                   institution_name, lab_name, status, created_at, updated_at,
-                  reviewed_at
+                  reviewed_at, plans_to_contribute, contributor_attestation,
+                  accepted_contribution_policy_version,
+                  contributor_attestation_accepted_at, data_use_agreement,
+                  accepted_data_use_policy_version,
+                  data_use_agreement_accepted_at
            FROM archive_access_requests
            WHERE status = ?1
            ORDER BY created_at ASC
@@ -312,7 +443,12 @@ async function archiveAccessRequestRow(
 ): Promise<ArchiveAccessRequestRow> {
   const row = await env.DB.prepare(
     `SELECT id, email_hash, email_ciphertext, contact_name, institution_name,
-            lab_name, status, created_at, updated_at, reviewed_at
+            lab_name, status, created_at, updated_at, reviewed_at,
+            plans_to_contribute, contributor_attestation,
+            accepted_contribution_policy_version,
+            contributor_attestation_accepted_at,
+            data_use_agreement, accepted_data_use_policy_version,
+            data_use_agreement_accepted_at
      FROM archive_access_requests
      WHERE id = ?1
      LIMIT 1`,
@@ -337,6 +473,33 @@ export async function approveArchiveAccessRequest(
       "CONFLICT",
       409,
       "Only a pending archive access request can be approved",
+    );
+  }
+  if (
+    accessRequest.data_use_agreement !== 1 ||
+    accessRequest.accepted_data_use_policy_version !==
+      ARCHIVE_ACCESS_POLICY_VERSION ||
+    accessRequest.data_use_agreement_accepted_at === null
+  ) {
+    throw new AppError(
+      "ARCHIVE_ACCESS_POLICY_UPDATE_REQUIRED",
+      409,
+      "The requester must submit a new acceptance of the current archive data-use policy",
+      { data_use_policy_version: ARCHIVE_ACCESS_POLICY_VERSION },
+    );
+  }
+  if (
+    accessRequest.plans_to_contribute === 1 &&
+    (accessRequest.contributor_attestation !== 1 ||
+      accessRequest.accepted_contribution_policy_version !==
+        PUBLIC_CONSENT_POLICY_VERSION ||
+      accessRequest.contributor_attestation_accepted_at === null)
+  ) {
+    throw new AppError(
+      "CONSENT_POLICY_UPDATE_REQUIRED",
+      409,
+      "The requester must submit a current contributor attestation",
+      { consent_policy_version: PUBLIC_CONSENT_POLICY_VERSION },
     );
   }
   const contactEmail = await decryptArchiveAccessRequestEmail(
@@ -367,9 +530,19 @@ export async function approveArchiveAccessRequest(
       `INSERT INTO archive_access_registrations
          (id, token_hash, email_hash, email_ciphertext, contact_name,
           institution_name, lab_name, participation_commitment,
+          plans_to_contribute, contributor_attestation,
+          accepted_contribution_policy_version,
+          contributor_attestation_accepted_at,
+          data_use_agreement, accepted_data_use_policy_version,
+          data_use_agreement_accepted_at,
           created_at, updated_at, revoked_at)
        SELECT ?1, ?2, r.email_hash, ?3, r.contact_name, r.institution_name,
-              r.lab_name, 1, ?4, ?4, NULL
+              r.lab_name, 1, r.plans_to_contribute,
+              r.contributor_attestation,
+              r.accepted_contribution_policy_version,
+              r.contributor_attestation_accepted_at, r.data_use_agreement,
+              r.accepted_data_use_policy_version,
+              r.data_use_agreement_accepted_at, ?4, ?4, NULL
        FROM archive_access_requests r
        WHERE r.id = ?5 AND r.status = 'pending'
        ON CONFLICT(email_hash) DO UPDATE SET
@@ -379,6 +552,13 @@ export async function approveArchiveAccessRequest(
          institution_name = excluded.institution_name,
          lab_name = excluded.lab_name,
          participation_commitment = 1,
+         plans_to_contribute = excluded.plans_to_contribute,
+         contributor_attestation = excluded.contributor_attestation,
+         accepted_contribution_policy_version = excluded.accepted_contribution_policy_version,
+         contributor_attestation_accepted_at = excluded.contributor_attestation_accepted_at,
+         data_use_agreement = excluded.data_use_agreement,
+         accepted_data_use_policy_version = excluded.accepted_data_use_policy_version,
+         data_use_agreement_accepted_at = excluded.data_use_agreement_accepted_at,
          updated_at = excluded.updated_at,
          revoked_at = NULL`,
     ).bind(
@@ -409,6 +589,20 @@ export async function approveArchiveAccessRequest(
     contact_email: contactEmail,
     institution_name: accessRequest.institution_name,
     lab_name: accessRequest.lab_name,
+    plans_to_contribute:
+      accessRequest.plans_to_contribute === null
+        ? null
+        : accessRequest.plans_to_contribute === 1,
+    contributor_attestation:
+      accessRequest.contributor_attestation === 1,
+    accepted_contribution_policy_version:
+      accessRequest.accepted_contribution_policy_version,
+    contributor_attestation_accepted_at:
+      isoTime(accessRequest.contributor_attestation_accepted_at),
+    accepted_data_use_policy_version:
+      accessRequest.accepted_data_use_policy_version,
+    data_use_agreement_accepted_at:
+      isoTime(accessRequest.data_use_agreement_accepted_at),
     access_token: token,
     token_type: "Bearer",
     archive_url: "https://scalingneuro.org/v1/archive",
@@ -467,7 +661,9 @@ async function authenticateArchiveAccess(
 ): Promise<ArchiveAccessRow> {
   const tokenHash = await sha256Hex(bearerToken(request));
   const row = await env.DB.prepare(
-    `SELECT id, revoked_at FROM archive_access_registrations
+    `SELECT id, data_use_agreement, accepted_data_use_policy_version,
+            data_use_agreement_accepted_at, revoked_at
+     FROM archive_access_registrations
      WHERE token_hash = ?1 LIMIT 1`,
   )
     .bind(tokenHash)
@@ -477,6 +673,18 @@ async function authenticateArchiveAccess(
       "UNAUTHORIZED",
       401,
       "Archive access token is invalid",
+    );
+  }
+  if (
+    row.data_use_agreement !== 1 ||
+    row.accepted_data_use_policy_version !== ARCHIVE_ACCESS_POLICY_VERSION ||
+    row.data_use_agreement_accepted_at === null
+  ) {
+    throw new AppError(
+      "ARCHIVE_ACCESS_POLICY_UPDATE_REQUIRED",
+      403,
+      "Archive access requires acceptance of the current data-use policy",
+      { data_use_policy_version: ARCHIVE_ACCESS_POLICY_VERSION },
     );
   }
   await env.DB.prepare(
@@ -497,7 +705,8 @@ export async function listArchive(
     await env.DB.prepare(
       `SELECT u.id AS upload_id, d.series_archive_id, d.series_id,
               d.dicom_count, d.expected_size, d.expected_sha256,
-              u.archive_prefix, d.archive_relative_key, u.received_at
+              u.archive_prefix, d.archive_relative_key, u.received_at,
+              u.data_license_id, u.data_license_granted_at
        FROM dicom_upload_series d
        JOIN uploads u ON u.id = d.upload_id
        JOIN received_series_reservations r
@@ -505,10 +714,12 @@ export async function listArchive(
        WHERE u.status = 'committed' AND u.withdrawn_at IS NULL
          AND r.withdrawn_at IS NULL AND d.series_kind = 'functional_epi'
          AND d.completed_at IS NOT NULL
+         AND u.data_license_id = ?1
+         AND u.data_license_granted_at IS NOT NULL
        ORDER BY u.received_at DESC, d.series_archive_id
-       LIMIT ?1`,
+       LIMIT ?2`,
     )
-      .bind(MAX_ARCHIVE_ROWS)
+      .bind(DATA_LICENSE_ID, MAX_ARCHIVE_ROWS)
       .all<ArchiveSeriesRow>()
   ).results;
   return {
@@ -521,6 +732,13 @@ export async function listArchive(
       size: row.expected_size,
       sha256: row.expected_sha256,
       received_at: new Date(row.received_at * 1000).toISOString(),
+      data_license: {
+        id: row.data_license_id,
+        url: DATA_LICENSE_URL,
+        granted_at: new Date(
+          row.data_license_granted_at * 1000,
+        ).toISOString(),
+      },
       download_url:
         `https://scalingneuro.com/v1/archive/${row.upload_id}/` +
         `${row.series_archive_id}/download`,
@@ -541,7 +759,8 @@ export async function signArchiveDownload(
   const row = await env.DB.prepare(
     `SELECT u.id AS upload_id, d.series_archive_id, d.series_id,
             d.dicom_count, d.expected_size, d.expected_sha256,
-            u.archive_prefix, d.archive_relative_key, u.received_at
+            u.archive_prefix, d.archive_relative_key, u.received_at,
+            u.data_license_id, u.data_license_granted_at
      FROM dicom_upload_series d
      JOIN uploads u ON u.id = d.upload_id
      JOIN received_series_reservations r
@@ -550,9 +769,11 @@ export async function signArchiveDownload(
        AND u.status = 'committed' AND u.withdrawn_at IS NULL
        AND r.withdrawn_at IS NULL AND d.series_kind = 'functional_epi'
        AND d.completed_at IS NOT NULL
+       AND u.data_license_id = ?3
+       AND u.data_license_granted_at IS NOT NULL
      LIMIT 1`,
   )
-    .bind(uploadId, seriesArchiveId)
+    .bind(uploadId, seriesArchiveId, DATA_LICENSE_ID)
     .first<ArchiveSeriesRow>();
   if (!row) {
     throw new AppError("NOT_FOUND", 404, "Archive series was not found");

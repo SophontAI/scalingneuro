@@ -50,7 +50,7 @@ describe("Pages advanced-mode wrapper", () => {
     expect(response.headers.get("location")).toBeNull();
     expect(await response.json()).toMatchObject({
       registration_open: true,
-      minimum_client_version: "0.5.0",
+      minimum_client_version: "0.6.1",
     });
   });
 

@@ -12,7 +12,7 @@ use crate::{
     pipeline::{ContributorDetails, Runtime},
 };
 
-const POLICY_SUMMARY: &str = "Only confirmed functional EPI series are uploaded; everything else stays local.\nSource DICOMs stay unchanged. Uploaded copies preserve Pixel Data and essential acquisition metadata; identifiers and unsafe metadata are removed locally.\n\nInstitutional authorization is required. This does not replace participant consent, IRB review, data-use agreements, or other institutional review.\nWithdrawal: admin@sophont.med (include the upload ID from the local report).";
+const POLICY_SUMMARY: &str = "Only confirmed functional EPI series are uploaded; everything else stays local.\nSource DICOMs stay unchanged. Uploaded copies preserve Pixel Data and essential acquisition metadata; identifiers and unsafe metadata are removed locally.\n\nYou must own the selected data or be authorized by the owner and your institution to share it publicly. Each successfully received archive is irrevocably dedicated under CC0 1.0, allowing reuse for any purpose, including commercial use, without conditions. This does not replace participant consent, IRB review, data-use agreements, or other institutional review.\nRemoving Scaling Neuro's hosted copy does not revoke CC0 or retrieve copies already received by others.";
 
 pub async fn run(runtime: Runtime) -> Result<()> {
     run_for_optional_folder(runtime, None).await
@@ -229,7 +229,7 @@ fn confirm_upload(
     prompt_yes_no(
         input,
         output,
-        "Confirm this folder is institutionally approved for contribution?",
+        "Confirm you are authorized to share this folder's data publicly under CC0 1.0?",
         false,
     )
 }
@@ -574,10 +574,10 @@ mod tests {
                     Json(serde_json::json!({
                         "registration_open": true,
                         "project_name": "Scaling Neuro shared EPI archive",
-                        "consent_policy_version": "open-epi-2.0.0",
+                        "consent_policy_version": "open-epi-3.0.0",
                         "policy_url": "https://scalingneuro.com/docs/contribution-policy",
                         "self_service_quota_bytes": null,
-                        "minimum_client_version": "0.5.0"
+                        "minimum_client_version": "0.6.1"
                     }))
                 }),
             )
@@ -591,7 +591,7 @@ mod tests {
                                 .and_then(|value| value.to_str().ok()),
                             Some("Bearer sn_device_fixture")
                         );
-                        assert_eq!(body["accepted_consent_policy_version"], "open-epi-2.0.0");
+                        assert_eq!(body["accepted_consent_policy_version"], "open-epi-3.0.0");
                         (
                             StatusCode::OK,
                             Json(serde_json::json!({
@@ -600,7 +600,7 @@ mod tests {
                                 "site_id": "site",
                                 "project_id": "project",
                                 "project_name": "Scaling Neuro shared EPI archive",
-                                "consent_policy_version": "open-epi-2.0.0"
+                                "consent_policy_version": "open-epi-3.0.0"
                             })),
                         )
                     },
@@ -620,7 +620,7 @@ mod tests {
             site_id: "site".into(),
             project_id: "project".into(),
             project_name: "Scaling Neuro shared EPI archive".into(),
-            consent_policy_version: "open-epi-1.0.0".into(),
+            consent_policy_version: "open-epi-2.0.0".into(),
             pseudonym_key_b64: "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=".into(),
         }
         .save(&runtime.paths)
@@ -639,7 +639,7 @@ mod tests {
         .unwrap();
 
         let output = String::from_utf8(output).unwrap();
-        assert!(!output.contains("open-epi-1.0.0 → open-epi-2.0.0"));
+        assert!(!output.contains("open-epi-2.0.0 → open-epi-3.0.0"));
         assert!(
             output
                 .contains("Contribution policy  https://scalingneuro.com/docs/contribution-policy")
@@ -654,7 +654,7 @@ mod tests {
         );
         assert!(output.contains("Cancelled. Nothing was uploaded."));
         let persisted = ClientConfig::load(&runtime.paths).unwrap();
-        assert_eq!(persisted.consent_policy_version, "open-epi-2.0.0");
+        assert_eq!(persisted.consent_policy_version, "open-epi-3.0.0");
         assert_eq!(persisted.project_name, "Scaling Neuro shared EPI archive");
         server.abort();
     }

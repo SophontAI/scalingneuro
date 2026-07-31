@@ -32,7 +32,8 @@ neuro-sync "C:\path\to\dicom-export"
 ```
 
 The first run registers the workstation and asks the researcher to confirm that
-the selected functional MRI data are institutionally authorized for sharing.
+they own the selected functional MRI data or are authorized by the owner and
+their institution to share it publicly under CC0 1.0.
 Registration, selection, deidentification, progress, and the final receipt all
 stay in the terminal.
 
@@ -97,11 +98,19 @@ object-scoped multipart URLs and never receives reusable R2 credentials.
 ## Shared access
 
 Researchers request access at
-[scalingneuro.org/#access](https://scalingneuro.org/#access). A lab provides a
-work email, institution, lab name, and a commitment to participate in the shared
-functional MRI effort. The service records a pending request but does not issue
-credentials from the public form. After the request is reviewed, an approved
-researcher receives a personal bearer token and archive instructions by email.
+[scalingneuro.org/#access](https://scalingneuro.org/#access). A requester
+provides a work email, institution, lab name, and an explicit yes-or-no answer
+about whether they plan to contribute data. A requester who selects yes also
+accepts the current contribution policy and uploader attestation. Every
+requester must accept the current versioned
+[archive data-use policy](docs/archive-access-policy.html), including the
+institutional-permission, no-identification, no-reidentification, no-contact,
+incident-reporting, and collaborator obligations. The service records the exact
+accepted versions, contribution choice, and acceptance times with a pending
+request but does not issue
+credentials from the public form. After the request is reviewed, an approved researcher receives a
+personal bearer token and archive instructions by email. Grants that are not
+bound to the current policy cannot list or download archive data.
 
 ```sh
 curl -H "Authorization: Bearer $SCALING_NEURO_ACCESS_TOKEN" \
@@ -109,7 +118,9 @@ curl -H "Authorization: Bearer $SCALING_NEURO_ACCESS_TOKEN" \
 ```
 
 The archive response lists available series and authenticated download routes.
-Each download route redirects to a short-lived R2 GET URL:
+For archives received under the current contribution policy, the listing also
+records the `CC0-1.0` license and grant time. Each download route redirects to a
+short-lived R2 GET URL:
 
 ```sh
 curl -L -H "Authorization: Bearer $SCALING_NEURO_ACCESS_TOKEN" \
@@ -186,11 +197,21 @@ Worker.
 ## Contracts
 
 - [EPI sync contract](docs/epi-ingestion-contract.md)
+- [Archive data-use policy](docs/archive-access-policy.html)
 - [DICOM deidentification](docs/dicom-deidentification-policy.md)
 - [Artifacts and APIs](docs/artifact-and-api-contracts.md)
 - [Terminal onboarding](docs/collaborator-onboarding.md)
 - [Client release](docs/client-release.md)
 
-## License
+## Data license
 
-Scaling Neuro is licensed under the [Apache License 2.0](LICENSE).
+Every functional EPI archive successfully received under contribution policy
+`open-epi-3.0.0` is irrevocably dedicated under
+[Creative Commons CC0 1.0 Universal](https://creativecommons.org/publicdomain/zero/1.0/).
+The uploader must own the relevant rights or have authorization from the owner
+and institution to make that dedication. The exact license and grant time are
+stored with the upload receipt.
+
+## Software license
+
+Scaling Neuro software is licensed under the [Apache License 2.0](LICENSE).

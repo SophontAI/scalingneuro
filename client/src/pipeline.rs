@@ -1788,7 +1788,7 @@ fn ensure_dicom_receipt_chunks(
     )
 }
 
-const MINIMUM_EPI_CLIENT_VERSION: &str = "0.5.0";
+const MINIMUM_EPI_CLIENT_VERSION: &str = "0.6.1";
 
 fn load_checkpoint_manifest(run: &RunRecord) -> Result<LocalManifest> {
     let path = run

@@ -68,18 +68,24 @@ describe("minimal EPI contract", () => {
     expect(parseCompleteUploadRequest(completion)).toEqual(completion);
   });
 
-  it("requires archive users to identify their lab and participate", () => {
+  it("records whether archive users plan to contribute", () => {
     expect(
       parseArchiveAccessRequest({
         contact_name: "Researcher Name",
         contact_email: "researcher@example.edu",
         institution_name: "Example University",
         lab_name: "Example Lab",
-        participation_commitment: true,
+        plans_to_contribute: true,
+        contributor_attestation: true,
+        accepted_contribution_policy_version: "open-epi-3.0.0",
+        data_use_agreement: true,
+        accepted_data_use_policy_version: "archive-access-1.0.0",
       }),
     ).toMatchObject({
       contact_email: "researcher@example.edu",
-      participation_commitment: true,
+      plans_to_contribute: true,
+      contributor_attestation: true,
+      data_use_agreement: true,
     });
     expect(() =>
       parseArchiveAccessRequest({
@@ -87,8 +93,12 @@ describe("minimal EPI contract", () => {
         contact_email: "researcher@example.edu",
         institution_name: "Example University",
         lab_name: "Example Lab",
-        participation_commitment: false,
+        plans_to_contribute: false,
+        contributor_attestation: false,
+        accepted_contribution_policy_version: null,
+        data_use_agreement: true,
+        accepted_data_use_policy_version: "archive-access-1.0.0",
       }),
-    ).toThrow(/participation must be confirmed/u);
+    ).not.toThrow();
   });
 });

@@ -34,8 +34,8 @@ function deviceToken(): string {
 }
 
 function registration(
-  clientVersion = "0.5.0",
-  policyVersion = "open-epi-2.0.0",
+  clientVersion = "0.6.1",
+  policyVersion = "open-epi-3.0.0",
 ): Record<string, unknown> {
   return {
     registration_id: crypto.randomUUID(),
@@ -60,10 +60,13 @@ describe("functional EPI contributor registration", () => {
     expect(await response.json()).toEqual({
       registration_open: true,
       project_name: "Scaling Neuro shared EPI archive",
-      consent_policy_version: "open-epi-2.0.0",
+      consent_policy_version: "open-epi-3.0.0",
       policy_url: "https://scalingneuro.com/docs/contribution-policy",
+      data_license_id: "CC0-1.0",
+      data_license_url:
+        "https://creativecommons.org/publicdomain/zero/1.0/",
       self_service_quota_bytes: null,
-      minimum_client_version: "0.5.0",
+      minimum_client_version: "0.6.1",
     });
   });
 
@@ -77,7 +80,7 @@ describe("functional EPI contributor registration", () => {
       registration_id: input.registration_id,
       device_token: input.device_token,
       project_name: "Scaling Neuro shared EPI archive",
-      consent_policy_version: "open-epi-2.0.0",
+      consent_policy_version: "open-epi-3.0.0",
     });
 
     const stored = await env.DB.prepare(
@@ -105,26 +108,26 @@ describe("functional EPI contributor registration", () => {
     const oldClient = await call(
       "POST",
       "/v1/register",
-      registration("0.4.9"),
+      registration("0.6.0"),
     );
     expect(oldClient.status).toBe(426);
     expect(await oldClient.json()).toMatchObject({
       error: {
         code: "CLIENT_UPDATE_REQUIRED",
-        details: { minimum_client_version: "0.5.0" },
+        details: { minimum_client_version: "0.6.1" },
       },
     });
 
     const stalePolicy = await call(
       "POST",
       "/v1/register",
-      registration("0.5.0", "open-epi-1.0.0"),
+      registration("0.6.1", "open-epi-2.0.0"),
     );
     expect(stalePolicy.status).toBe(409);
     expect(await stalePolicy.json()).toMatchObject({
       error: {
         code: "CONSENT_POLICY_UPDATE_REQUIRED",
-        details: { consent_policy_version: "open-epi-2.0.0" },
+        details: { consent_policy_version: "open-epi-3.0.0" },
       },
     });
   });

@@ -44,7 +44,7 @@ Useful explicit commands:
 neuro-sync help
 neuro-sync register --email researcher@example.edu --name "Researcher Name" \
   --institution "Example University" --lab "Example Lab" \
-  --accept-policy-version open-epi-2.0.0
+  --accept-policy-version open-epi-3.0.0
 neuro-sync upload /path/to/dicoms --confirm-authorized
 neuro-sync upload /path/to/dicoms --dry-run
 neuro-sync status --json
@@ -72,6 +72,9 @@ client stores bare ETags in owner-only local SQLite state and never receives a
 reusable R2 credential.
 
 A successful run means every selected EPI series has a durable R2 receipt.
+Each successfully received archive is irrevocably dedicated under CC0 1.0.
+Use `--confirm-authorized` only when the data owner and institution authorize
+public sharing under those terms.
 
 ## Development
 

@@ -3,8 +3,8 @@
   "run_id": "0190f86f-e0de-7f2a-a24c-0a6abf16ec84",
   "site_id": "0190f870-1111-7f2a-a24c-0a6abf16ec81",
   "project_id": "0190f870-2222-7f2a-a24c-0a6abf16ec81",
-  "consent_policy_version": "open-epi-2.0.0",
-  "client_version": "0.5.0",
+  "consent_policy_version": "open-epi-3.0.0",
+  "client_version": "0.6.1",
   "classifier_contract_version": "2.0.0",
   "archive_contract_version": "2.0.0",
   "metadata_policy": {

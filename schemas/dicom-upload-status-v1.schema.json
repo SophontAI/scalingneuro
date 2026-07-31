@@ -30,7 +30,22 @@
       "minimum": 32,
       "maximum": 68719476736
     },
-    "consent_policy_version": { "const": "open-epi-2.0.0" },
+    "consent_policy_version": { "const": "open-epi-3.0.0" },
+    "data_license": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "url", "granted_at"],
+      "properties": {
+        "id": { "const": "CC0-1.0" },
+        "url": {
+          "const": "https://creativecommons.org/publicdomain/zero/1.0/"
+        },
+        "granted_at": {
+          "type": ["string", "null"],
+          "format": "date-time"
+        }
+      }
+    },
     "deidentification": {
       "type": "object",
       "additionalProperties": false,
@@ -101,6 +116,7 @@
           "object_prefix",
           "total_bytes",
           "consent_policy_version",
+          "data_license",
           "deidentification",
           "receipt",
           "created_at",
@@ -110,6 +126,7 @@
           "object_prefix": {},
           "total_bytes": {},
           "consent_policy_version": {},
+          "data_license": {},
           "deidentification": {},
           "receipt": {},
           "created_at": {},

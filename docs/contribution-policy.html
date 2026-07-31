@@ -4,7 +4,7 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Functional EPI contribution policy | Scaling Neuro</title>
-  <meta name="description" content="The policy for sharing functional EPI DICOMs through neuro-sync." />
+  <meta name="description" content="The authorization and CC0 policy for sharing functional EPI DICOMs through neuro-sync." />
   <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
   <style>
     :root{--paper:#f7f6f1;--ink:#192033;--muted:#565d6e;--line:#d7d5ce;--accent:#a34b53}*{box-sizing:border-box}body{margin:0;background:var(--paper);color:var(--muted);font:18px/1.65 Georgia,serif}main{width:min(760px,calc(100% - 40px));margin:auto;padding:54px 0 100px}a{color:inherit;text-underline-offset:4px}.brand{color:var(--ink);font-weight:700;text-decoration:none}h1,h2{color:var(--ink);line-height:1.08}h1{margin:64px 0 16px;font-size:clamp(40px,7vw,66px);letter-spacing:-.03em}h2{margin:42px 0 10px;font-size:28px}.version{display:inline-block;padding:7px 10px;border:1px solid var(--line);border-radius:999px;color:var(--accent);font:12px/1.2 ui-monospace,monospace;letter-spacing:.06em}li{margin:9px 0}.notice{margin-top:44px;padding:3px 0 3px 20px;border-left:4px solid var(--accent)}
@@ -14,7 +14,7 @@
 <main>
   <a class="brand" href="/">Scaling Neuro</a>
   <h1>Functional EPI contribution policy</h1>
-  <div class="version">open-epi-2.0.0 · effective 23 July 2026</div>
+  <div class="version">open-epi-3.0.0 · effective 31 July 2026</div>
 
   <h2>What neuro-sync shares</h2>
   <p>neuro-sync searches the selected folder for functional echo-planar imaging
@@ -23,11 +23,24 @@
   diffusion, field maps, secondary captures, non-image objects, and ambiguous
   series stay on the workstation.</p>
 
-  <h2>Your authority to contribute</h2>
-  <p>By continuing, you confirm that your institution authorizes the selected
-  functional MRI data to be deidentified and placed in the shared Scaling Neuro
-  research archive. This confirmation does not replace participant consent, an
-  IRB determination, a data-use agreement, or institutional review.</p>
+  <h2>Your authority to contribute and license</h2>
+  <p>By continuing, you confirm that you are the owner of the selected functional
+  MRI data or are authorized by the owner and your institution to deidentify the
+  data, share it publicly, and apply the CC0 dedication described below. You also
+  confirm that you have every participant-consent, ethics, IRB, data-use,
+  contractual, and institutional permission required for this public sharing.
+  This confirmation does not replace any of those reviews or permissions.</p>
+
+  <h2>CC0 public-domain dedication</h2>
+  <p>When Scaling Neuro successfully receives an uploaded archive, you dedicate
+  all copyright and related rights in that archive that you are authorized to
+  grant to the public domain under
+  <a href="https://creativecommons.org/publicdomain/zero/1.0/" target="_blank" rel="noopener">Creative Commons CC0 1.0 Universal</a>.
+  CC0 is irrevocable and permits anyone to copy, modify, distribute, and use the
+  data for any purpose, including commercial purposes, without conditions.</p>
+  <p>CC0 applies only to rights you own or are authorized to grant. It does not
+  make the data anonymous, waive participant privacy or publicity rights, or
+  replace compliance with applicable law and ethical obligations.</p>
 
   <h2>What leaves the workstation</h2>
   <ul>
@@ -50,14 +63,18 @@
 
   <h2>Storage and use</h2>
   <p>One deidentified DICOM archive per selected series is stored in Cloudflare
-  R2. Participating research labs can request access, download the DICOM
+  R2. Researchers can request access, download the DICOM
   archives, and choose their own conversion and preprocessing workflow.
-  Scaling Neuro does not run conversion, preprocessing, or analysis.</p>
+  Scaling Neuro does not run conversion, preprocessing, or analysis. Access
+  controls and the archive privacy agreement are separate from the CC0
+  dedication and do not narrow the CC0 license.</p>
 
   <h2>Withdrawal</h2>
-  <p>A lab may request workstation revocation or upload withdrawal by contacting
+  <p>A lab may request workstation revocation or removal of Scaling Neuro's
+  hosted copy by contacting
   <a href="mailto:admin@sophont.med">admin@sophont.med</a> with the pseudonymous
-  upload ID from its local report.</p>
+  upload ID from its local report. Removing a hosted copy does not revoke CC0 or
+  retrieve copies already received by others.</p>
 
   <p class="notice"><strong>Stopping is safe.</strong> Cancelling before the
   authorization prompt uploads nothing. <code>neuro-sync prepare</code> also

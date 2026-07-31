@@ -35,7 +35,7 @@
       "$ref": "https://scalingneuro.com/schemas/common-v1.schema.json#/$defs/uuid"
     },
     "project_name": { "const": "Scaling Neuro shared EPI archive" },
-    "consent_policy_version": { "const": "open-epi-2.0.0" },
+    "consent_policy_version": { "const": "open-epi-3.0.0" },
     "pseudonym_key_b64": {
       "type": "string",
       "minLength": 44,

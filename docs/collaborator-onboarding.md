@@ -89,7 +89,7 @@ multipart parts, and receipts are reused.
 ```sh
 neuro-sync register --email researcher@example.edu --name "Researcher Name" \
   --institution "Example University" --lab "Example Lab" \
-  --accept-policy-version open-epi-2.0.0
+  --accept-policy-version open-epi-3.0.0
 
 neuro-sync upload /path/to/dicom-export --confirm-authorized
 neuro-sync upload /path/to/dicom-export --dry-run
@@ -98,8 +98,8 @@ neuro-sync status --json
 neuro-sync report RUN_ID --json
 ```
 
-`--confirm-authorized` is for non-interactive use after authorization has been
-confirmed outside the tool.
+`--confirm-authorized` is for non-interactive use only after confirming that the
+data owner and institution authorize public sharing under CC0 1.0.
 
 ## Archive access
 

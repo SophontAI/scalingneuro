@@ -19,6 +19,7 @@ install -m 0644 \
 install -m 0644 "$ROOT_DIR/downloads/index.html" "$DIST_DIR/downloads/"
 install -m 0644 \
   "$ROOT_DIR/docs/contribution-policy.html" \
+  "$ROOT_DIR/docs/archive-access-policy.html" \
   "$ROOT_DIR/docs/de-identification-procedure.html" \
   "$ROOT_DIR/docs/dicom-deidentification-policy.md" \
   "$DIST_DIR/docs/"
@@ -30,6 +31,8 @@ install -m 0644 \
 for schema in \
   common-v1.schema.json \
   archive-access-request-v1.schema.json \
+  archive-access-request-v2.schema.json \
+  archive-access-request-v3.schema.json \
   archive-access-response-v1.schema.json \
   archive-list-v1.schema.json \
   contribution-info-v1.schema.json \
@@ -49,6 +52,8 @@ for schema in \
 done
 for example in \
   archive-access-request-v1.example.json \
+  archive-access-request-v2.example.json \
+  archive-access-request-v3.example.json \
   archive-access-response-v1.example.json \
   archive-list-v1.example.json \
   registration-request-v1.example.json \
