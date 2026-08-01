@@ -24,6 +24,7 @@ const BASE_PART_SIZE = 64 * 1024 * 1024;
 const PART_SIZE_GRANULARITY = 1024 * 1024;
 const RECEIPT_LEASE_SECONDS = 10 * 60;
 const PROVISIONAL_RETENTION_SECONDS = 90 * 24 * 60 * 60;
+export const BETA_PUBLICATION_DELAY_SECONDS = 7 * 24 * 60 * 60;
 
 interface UploadRow {
   id: string;
@@ -37,6 +38,7 @@ interface UploadRow {
   consent_policy_version: string;
   data_license_id: string | null;
   data_license_granted_at: number | null;
+  publication_scheduled_at: number | null;
   series_count: number;
   total_bytes: number;
   created_at: number;
@@ -89,6 +91,21 @@ function nowSeconds(): number {
 
 function iso(seconds: number | null): string | null {
   return seconds === null ? null : new Date(seconds * 1000).toISOString();
+}
+
+function publicationStatus(
+  upload: UploadRow,
+  timestamp = nowSeconds(),
+): "staged" | "published" | null {
+  if (
+    upload.status !== "committed" ||
+    upload.publication_scheduled_at === null
+  ) {
+    return null;
+  }
+  return upload.publication_scheduled_at <= timestamp
+    ? "published"
+    : "staged";
 }
 
 function writableUntil(upload: UploadRow): number {
@@ -224,6 +241,7 @@ async function statusResponse(
 ): Promise<Record<string, unknown>> {
   const series = await getSeries(env, upload.id);
   const received = series.completed_at === null ? 0 : 1;
+  const publication = publicationStatus(upload);
   const status =
     upload.status === "uploading" && received === 1
       ? "checkpointed"
@@ -236,13 +254,27 @@ async function statusResponse(
     series_count: 1,
     total_bytes: upload.total_bytes,
     consent_policy_version: upload.consent_policy_version,
-    ...(upload.data_license_id === null
+    ...(publication !== "published" || upload.data_license_id === null
       ? {}
       : {
           data_license: {
             id: upload.data_license_id,
             url: DATA_LICENSE_URL,
-            granted_at: iso(upload.data_license_granted_at),
+            granted_at: iso(
+              upload.data_license_granted_at ??
+                upload.publication_scheduled_at,
+            ),
+          },
+        }),
+    ...(publication === null
+      ? {}
+      : {
+          publication: {
+            status: publication,
+            scheduled_at: iso(upload.publication_scheduled_at),
+            ...(publication === "published"
+              ? { published_at: iso(upload.publication_scheduled_at) }
+              : { cancellation_email: "admin@sophont.med" }),
           },
         }),
     deidentification: {
@@ -279,9 +311,6 @@ async function ensureMultipart(
         series_archive_id: series.series_archive_id,
         sha256: series.expected_sha256,
         kind: "dicom_archive",
-        ...(upload.data_license_id === null
-          ? {}
-          : { data_license_id: upload.data_license_id }),
       },
     });
   } catch {
@@ -835,6 +864,8 @@ export async function completeDicomUpload(
   try {
     const series = await checkpointObject(env, claim.upload, input);
     const timestamp = nowSeconds();
+    const publicationScheduledAt =
+      timestamp + BETA_PUBLICATION_DELAY_SECONDS;
     try {
       await env.DB.batch([
         env.DB.prepare(
@@ -857,11 +888,11 @@ export async function completeDicomUpload(
         env.DB.prepare(
           `UPDATE uploads
            SET status = 'committed', received_at = ?1, updated_at = ?1,
-               data_license_granted_at = COALESCE(data_license_granted_at, ?1),
+               publication_scheduled_at = COALESCE(publication_scheduled_at, ?2),
                receipt_token = NULL,
                receipt_expires_at = NULL
-           WHERE id = ?2 AND receipt_token = ?3`,
-        ).bind(timestamp, upload.id, claim.token),
+           WHERE id = ?3 AND receipt_token = ?4`,
+        ).bind(timestamp, publicationScheduledAt, upload.id, claim.token),
         env.DB.prepare(
           `INSERT INTO audit_events
              (id, event_type, site_id, project_id, device_id, upload_id,
@@ -880,7 +911,7 @@ export async function completeDicomUpload(
           `INSERT INTO audit_events
              (id, event_type, site_id, project_id, device_id, upload_id,
               subject_type, subject_id, detail_code, created_at)
-           VALUES (?1, 'upload.licensed', ?2, ?3, ?4, ?5,
+           VALUES (?1, 'upload.publication_scheduled', ?2, ?3, ?4, ?5,
                    'upload', ?5, ?6, ?7)`,
         ).bind(
           crypto.randomUUID(),
@@ -933,6 +964,109 @@ export async function completeDicomUpload(
     await releaseReceipt(env, uploadId, claim.token);
     throw error;
   }
+}
+
+interface StagedUploadRow {
+  id: string;
+  status: UploadStatus;
+  site_id: string;
+  project_id: string;
+  device_id: string;
+  archive_prefix: string;
+  archive_relative_key: string;
+  publication_scheduled_at: number | null;
+  withdrawn_at: number | null;
+}
+
+export async function cancelStagedDicomUpload(
+  env: Env,
+  uploadId: string,
+): Promise<Record<string, unknown>> {
+  const row = await env.DB.prepare(
+    `SELECT u.id, u.status, u.site_id, u.project_id, u.device_id,
+            u.archive_prefix, d.archive_relative_key,
+            u.publication_scheduled_at, u.withdrawn_at
+     FROM uploads u
+     JOIN dicom_upload_series d ON d.upload_id = u.id
+     WHERE u.id = ?1
+     LIMIT 1`,
+  )
+    .bind(uploadId)
+    .first<StagedUploadRow>();
+  if (!row) throw new AppError("NOT_FOUND", 404, "Upload was not found");
+
+  const objectKey = `${row.archive_prefix}${row.archive_relative_key}`;
+  if (row.status === "withdrawn") {
+    await env.ARCHIVE.delete(objectKey);
+    return {
+      upload_id: row.id,
+      publication_status: "cancelled",
+      cancelled_at: iso(row.withdrawn_at),
+    };
+  }
+
+  const timestamp = nowSeconds();
+  if (
+    row.status !== "committed" ||
+    row.publication_scheduled_at === null ||
+    row.publication_scheduled_at <= timestamp
+  ) {
+    throw new AppError(
+      "CONFLICT",
+      409,
+      "Only an archive still inside its seven-day staging period can be cancelled",
+    );
+  }
+
+  const results = await env.DB.batch([
+    env.DB.prepare(
+      `UPDATE uploads
+       SET status = 'withdrawn', withdrawn_at = ?1, updated_at = ?1,
+           data_license_id = NULL, data_license_granted_at = NULL
+       WHERE id = ?2 AND status = 'committed'
+         AND publication_scheduled_at > ?1`,
+    ).bind(timestamp, row.id),
+    env.DB.prepare(
+      `UPDATE received_series_reservations
+       SET withdrawn_at = ?1
+       WHERE upload_id = ?2 AND withdrawn_at IS NULL
+         AND EXISTS (
+           SELECT 1 FROM uploads
+           WHERE id = ?2 AND status = 'withdrawn' AND withdrawn_at = ?1
+         )`,
+    ).bind(timestamp, row.id),
+    env.DB.prepare(
+      `INSERT INTO audit_events
+         (id, event_type, site_id, project_id, device_id, upload_id,
+          subject_type, subject_id, detail_code, created_at)
+       SELECT ?1, 'upload.cancelled_before_publication', ?2, ?3, ?4, ?5,
+              'upload', ?5, 'contributor-request', ?6
+       WHERE EXISTS (
+         SELECT 1 FROM uploads
+         WHERE id = ?5 AND status = 'withdrawn' AND withdrawn_at = ?6
+       )`,
+    ).bind(
+      crypto.randomUUID(),
+      row.site_id,
+      row.project_id,
+      row.device_id,
+      row.id,
+      timestamp,
+    ),
+  ]);
+  if (results[0]?.meta.changes !== 1) {
+    throw new AppError(
+      "CONFLICT",
+      409,
+      "The archive is no longer inside its staging period",
+    );
+  }
+  await env.ARCHIVE.delete(objectKey);
+  return {
+    upload_id: row.id,
+    publication_status: "cancelled",
+    cancelled_at: iso(timestamp),
+  };
 }
 
 export async function getDicomUploadStatus(

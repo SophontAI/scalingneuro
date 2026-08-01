@@ -77,9 +77,9 @@ describe("minimal EPI contract", () => {
         lab_name: "Example Lab",
         plans_to_contribute: true,
         contributor_attestation: true,
-        accepted_contribution_policy_version: "open-epi-3.0.0",
+        accepted_contribution_policy_version: "open-epi-4.0.0",
         data_use_agreement: true,
-        accepted_data_use_policy_version: "archive-access-1.0.0",
+        accepted_data_use_policy_version: "archive-access-2.0.0",
       }),
     ).toMatchObject({
       contact_email: "researcher@example.edu",
@@ -97,7 +97,7 @@ describe("minimal EPI contract", () => {
         contributor_attestation: false,
         accepted_contribution_policy_version: null,
         data_use_agreement: true,
-        accepted_data_use_policy_version: "archive-access-1.0.0",
+        accepted_data_use_policy_version: "archive-access-2.0.0",
       }),
     ).not.toThrow();
   });

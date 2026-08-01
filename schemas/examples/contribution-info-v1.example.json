@@ -1,10 +1,10 @@
 {
   "registration_open": true,
   "project_name": "Scaling Neuro shared EPI archive",
-  "consent_policy_version": "open-epi-3.0.0",
+  "consent_policy_version": "open-epi-4.0.0",
   "policy_url": "https://scalingneuro.com/docs/contribution-policy",
   "data_license_id": "CC0-1.0",
   "data_license_url": "https://creativecommons.org/publicdomain/zero/1.0/",
   "self_service_quota_bytes": null,
-  "minimum_client_version": "0.6.1"
+  "minimum_client_version": "0.6.2"
 }

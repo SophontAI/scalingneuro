@@ -1,6 +1,6 @@
 {
   "format": "dicom-series-v1",
-  "client_version": "0.6.1",
+  "client_version": "0.6.2",
   "deidentification": {
     "policy_id": "scaling-neuro.dicom-deidentification",
     "policy_version": "2.0.0"

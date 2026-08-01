@@ -12,7 +12,7 @@ use crate::{
     pipeline::{ContributorDetails, Runtime},
 };
 
-const POLICY_SUMMARY: &str = "Only confirmed functional EPI series are uploaded; everything else stays local.\nSource DICOMs stay unchanged. Uploaded copies preserve Pixel Data and essential acquisition metadata; identifiers and unsafe metadata are removed locally.\n\nYou must own the selected data or be authorized by the owner and your institution to share it publicly. Each successfully received archive is irrevocably dedicated under CC0 1.0, allowing reuse for any purpose, including commercial use, without conditions. This does not replace participant consent, IRB review, data-use agreements, or other institutional review.\nRemoving Scaling Neuro's hosted copy does not revoke CC0 or retrieve copies already received by others.";
+const POLICY_SUMMARY: &str = "Only confirmed functional EPI series are uploaded; everything else stays local.\nSource DICOMs stay unchanged. Uploaded copies preserve Pixel Data and essential acquisition metadata; identifiers and unsafe metadata are removed locally.\n\nYou must own the selected data or be authorized by the owner and your institution to share it publicly. For every upload, the participant consent and approvals for the specific data must expressly permit irrevocable sharing, commercial reuse by any party, and public-domain redistribution without conditions.\n\nEach received archive is restricted for seven days. Unless it is cancelled during staging, it is then irrevocably dedicated under CC0 1.0 and made available to researchers. CC0 cannot be revoked, and withdrawal cannot retrieve copies already distributed.";
 
 pub async fn run(runtime: Runtime) -> Result<()> {
     run_for_optional_folder(runtime, None).await
@@ -208,7 +208,7 @@ pub fn confirm_authorized_upload(
 ) -> Result<bool> {
     if !io::stdin().is_terminal() || !io::stdout().is_terminal() {
         bail!(
-            "non-interactive upload requires --confirm-authorized; use it only after confirming the selected functional MRI data are approved under the contribution policy"
+            "non-interactive upload requires --confirm-authorized; use it only after confirming the specific data permit irrevocable sharing, commercial reuse by any party, and public-domain redistribution without conditions"
         );
     }
     let mut input = BufReader::new(io::stdin());
@@ -226,10 +226,14 @@ fn confirm_upload(
     writeln!(output, "Ready to sync")?;
     writeln!(output, "  Folder   {}", folder.display())?;
     writeln!(output, "  Project  {project_name}\n")?;
+    writeln!(
+        output,
+        "I confirm the participant consent and approvals for this specific data expressly permit: (1) irrevocable sharing, (2) commercial reuse by any party, and (3) public-domain redistribution without conditions. I understand CC0 cannot be revoked and that withdrawal cannot retrieve copies already distributed.\n"
+    )?;
     prompt_yes_no(
         input,
         output,
-        "Confirm you are authorized to share this folder's data publicly under CC0 1.0?",
+        "Do you affirm this specific-data confirmation?",
         false,
     )
 }
@@ -285,11 +289,17 @@ pub fn print_run_summary(runtime: &Runtime, run_id: &str, output: &mut impl Writ
                     .sum::<u64>();
                 writeln!(
                     output,
-                    "Receipt: {received_files} DICOM files in {received} series safely stored"
+                    "Receipt: {received_files} DICOM files in {received} series safely stored in restricted staging"
                 )?;
+                if !report.worker_upload_ids.is_empty() {
+                    writeln!(output, "Upload IDs:")?;
+                    for upload_id in &report.worker_upload_ids {
+                        writeln!(output, "  {upload_id}")?;
+                    }
+                }
                 writeln!(
                     output,
-                    "Sync complete. The shared archive now contains the deidentified EPI DICOMs."
+                    "For seven days, email admin@sophont.med with an upload ID to cancel it. After seven days, an uncancelled archive becomes CC0 and available to researchers."
                 )?;
             }
         }
@@ -546,6 +556,8 @@ mod tests {
         assert!(!output.contains("No browser is needed or opened."));
         assert!(output.contains("This workstation is ready to sync approved EPI data."));
         assert!(output.contains("Ready to sync"));
+        assert!(output.contains("commercial reuse by any party"));
+        assert!(output.contains("Do you affirm this specific-data confirmation?"));
         assert!(output.contains("  Folder   "));
         assert_eq!(
             output
@@ -574,10 +586,10 @@ mod tests {
                     Json(serde_json::json!({
                         "registration_open": true,
                         "project_name": "Scaling Neuro shared EPI archive",
-                        "consent_policy_version": "open-epi-3.0.0",
+                        "consent_policy_version": "open-epi-4.0.0",
                         "policy_url": "https://scalingneuro.com/docs/contribution-policy",
                         "self_service_quota_bytes": null,
-                        "minimum_client_version": "0.6.1"
+                        "minimum_client_version": "0.6.2"
                     }))
                 }),
             )
@@ -591,7 +603,7 @@ mod tests {
                                 .and_then(|value| value.to_str().ok()),
                             Some("Bearer sn_device_fixture")
                         );
-                        assert_eq!(body["accepted_consent_policy_version"], "open-epi-3.0.0");
+                        assert_eq!(body["accepted_consent_policy_version"], "open-epi-4.0.0");
                         (
                             StatusCode::OK,
                             Json(serde_json::json!({
@@ -600,7 +612,7 @@ mod tests {
                                 "site_id": "site",
                                 "project_id": "project",
                                 "project_name": "Scaling Neuro shared EPI archive",
-                                "consent_policy_version": "open-epi-3.0.0"
+                                "consent_policy_version": "open-epi-4.0.0"
                             })),
                         )
                     },
@@ -639,12 +651,13 @@ mod tests {
         .unwrap();
 
         let output = String::from_utf8(output).unwrap();
-        assert!(!output.contains("open-epi-2.0.0 → open-epi-3.0.0"));
+        assert!(!output.contains("open-epi-2.0.0 → open-epi-4.0.0"));
         assert!(
             output
                 .contains("Contribution policy  https://scalingneuro.com/docs/contribution-policy")
         );
         assert!(output.contains("Accept the current contribution policy?"));
+        assert!(output.contains("commercial reuse by any party"));
         assert!(output.contains("  Project  Scaling Neuro shared EPI archive"));
         assert_eq!(
             output
@@ -654,7 +667,7 @@ mod tests {
         );
         assert!(output.contains("Cancelled. Nothing was uploaded."));
         let persisted = ClientConfig::load(&runtime.paths).unwrap();
-        assert_eq!(persisted.consent_policy_version, "open-epi-3.0.0");
+        assert_eq!(persisted.consent_policy_version, "open-epi-4.0.0");
         assert_eq!(persisted.project_name, "Scaling Neuro shared EPI archive");
         server.abort();
     }

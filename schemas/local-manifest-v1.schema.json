@@ -19,7 +19,7 @@
     "run_id": { "type": "string", "minLength": 1 },
     "site_id": { "type": "string", "minLength": 1 },
     "project_id": { "type": "string", "minLength": 1 },
-    "consent_policy_version": { "const": "open-epi-3.0.0" },
+    "consent_policy_version": { "const": "open-epi-4.0.0" },
     "client_version": { "type": "string" },
     "classifier_contract_version": { "type": "string" },
     "archive_contract_version": { "type": "string" },

@@ -30,7 +30,7 @@
       "minimum": 32,
       "maximum": 68719476736
     },
-    "consent_policy_version": { "const": "open-epi-3.0.0" },
+    "consent_policy_version": { "const": "open-epi-4.0.0" },
     "data_license": {
       "type": "object",
       "additionalProperties": false,
@@ -41,10 +41,43 @@
           "const": "https://creativecommons.org/publicdomain/zero/1.0/"
         },
         "granted_at": {
-          "type": ["string", "null"],
+          "type": "string",
           "format": "date-time"
         }
       }
+    },
+    "publication": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "scheduled_at"],
+      "properties": {
+        "status": { "enum": ["staged", "published"] },
+        "scheduled_at": { "type": "string", "format": "date-time" },
+        "published_at": { "type": "string", "format": "date-time" },
+        "cancellation_email": { "const": "admin@sophont.med" }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": { "status": { "const": "staged" } },
+            "required": ["status"]
+          },
+          "then": {
+            "required": ["cancellation_email"],
+            "properties": { "cancellation_email": {} }
+          }
+        },
+        {
+          "if": {
+            "properties": { "status": { "const": "published" } },
+            "required": ["status"]
+          },
+          "then": {
+            "required": ["published_at"],
+            "properties": { "published_at": {} }
+          }
+        }
+      ]
     },
     "deidentification": {
       "type": "object",
@@ -116,7 +149,6 @@
           "object_prefix",
           "total_bytes",
           "consent_policy_version",
-          "data_license",
           "deidentification",
           "receipt",
           "created_at",
@@ -126,12 +158,37 @@
           "object_prefix": {},
           "total_bytes": {},
           "consent_policy_version": {},
-          "data_license": {},
           "deidentification": {},
           "receipt": {},
           "created_at": {},
           "updated_at": {}
         }
+      }
+    },
+    {
+      "if": {
+        "properties": { "status": { "const": "committed" } },
+        "required": ["status"]
+      },
+      "then": {
+        "required": ["publication"],
+        "properties": { "publication": {} }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "publication": {
+            "type": "object",
+            "properties": { "status": { "const": "published" } },
+            "required": ["status"]
+          }
+        },
+        "required": ["publication"]
+      },
+      "then": {
+        "required": ["data_license"],
+        "properties": { "data_license": {} }
       }
     }
   ]

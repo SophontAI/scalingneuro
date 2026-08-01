@@ -6,6 +6,6 @@
   "additionalProperties": false,
   "required": ["accepted_consent_policy_version"],
   "properties": {
-    "accepted_consent_policy_version": { "const": "open-epi-3.0.0" }
+    "accepted_consent_policy_version": { "const": "open-epi-4.0.0" }
   }
 }

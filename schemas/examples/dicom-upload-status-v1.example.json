@@ -5,11 +5,11 @@
   "object_prefix": "dicom/v1/site/project/0190f86f-e0de-7f2a-a24c-0a6abf16ec81/",
   "series_count": 1,
   "total_bytes": 104857600,
-  "consent_policy_version": "open-epi-3.0.0",
-  "data_license": {
-    "id": "CC0-1.0",
-    "url": "https://creativecommons.org/publicdomain/zero/1.0/",
-    "granted_at": "2026-07-31T16:00:01Z"
+  "consent_policy_version": "open-epi-4.0.0",
+  "publication": {
+    "status": "staged",
+    "scheduled_at": "2026-08-07T16:00:01Z",
+    "cancellation_email": "admin@sophont.med"
   },
   "deidentification": {
     "policy_id": "scaling-neuro.dicom-deidentification",

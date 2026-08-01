@@ -14,8 +14,8 @@ function notification(): Record<string, unknown> {
     lab_name: "Example Neuroimaging Lab",
     plans_to_contribute: true,
     contributor_attestation: true,
-    accepted_contribution_policy_version: "open-epi-3.0.0",
-    accepted_data_use_policy_version: "archive-access-1.0.0",
+    accepted_contribution_policy_version: "open-epi-4.0.0",
+    accepted_data_use_policy_version: "archive-access-2.0.0",
     submitted_at: "2026-07-26T17:00:00.000Z",
   };
 }
@@ -34,13 +34,13 @@ describe("archive access notifier", () => {
       "New archive access request: Example & University",
     );
     expect(email.text).toContain(parsed.request_id);
-    expect(email.text).toContain("archive-access-1.0.0");
+    expect(email.text).toContain("archive-access-2.0.0");
     expect(email.text).toContain("Plans to contribute data: Yes");
     expect(email.text).toContain(
-      "Accepted data contribution and CC0 policy: open-epi-3.0.0",
+      "Accepted data contribution and CC0 policy: open-epi-4.0.0",
     );
     expect(email.text).toContain(
-      "Accepted archive access and privacy agreement: archive-access-1.0.0",
+      "Accepted archive access and privacy agreement: archive-access-2.0.0",
     );
     expect(email.html).toContain("Example &lt;Researcher&gt;");
     expect(email.html).toContain("Example &amp; University");

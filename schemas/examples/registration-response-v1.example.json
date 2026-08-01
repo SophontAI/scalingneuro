@@ -5,6 +5,6 @@
   "site_id": "0190f870-1111-7f2a-a24c-0a6abf16ec81",
   "project_id": "0190f870-2222-7f2a-a24c-0a6abf16ec81",
   "project_name": "Scaling Neuro shared EPI archive",
-  "consent_policy_version": "open-epi-3.0.0",
+  "consent_policy_version": "open-epi-4.0.0",
   "pseudonym_key_b64": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8="
 }

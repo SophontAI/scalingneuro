@@ -33,7 +33,9 @@ neuro-sync "C:\path\to\dicom-export"
 
 The first run registers the workstation and asks the researcher to confirm that
 they own the selected functional MRI data or are authorized by the owner and
-their institution to share it publicly under CC0 1.0.
+their institution to share it publicly under CC0 1.0, and that the specific
+data permits irrevocable sharing, commercial reuse, and unconditional
+public-domain redistribution.
 Registration, selection, deidentification, progress, and the final receipt all
 stay in the terminal.
 
@@ -118,9 +120,9 @@ curl -H "Authorization: Bearer $SCALING_NEURO_ACCESS_TOKEN" \
   https://scalingneuro.org/v1/archive
 ```
 
-The archive response lists available series and authenticated download routes.
-For archives received under the current contribution policy, the listing also
-records the `CC0-1.0` license and grant time. Each download route redirects to a
+The archive response lists published series and authenticated download routes.
+Each new receipt is restricted for seven days before the `CC0-1.0` dedication
+and researcher access take effect. Each download route redirects to a
 short-lived R2 GET URL:
 
 ```sh
@@ -208,11 +210,12 @@ Worker.
 ## Data license
 
 Every functional EPI archive successfully received under contribution policy
-`open-epi-3.0.0` is irrevocably dedicated under
+`open-epi-4.0.0` is restricted for seven days and, unless cancelled during that
+period, is then irrevocably dedicated under
 [Creative Commons CC0 1.0 Universal](https://creativecommons.org/publicdomain/zero/1.0/).
 The uploader must own the relevant rights or have authorization from the owner
-and institution to make that dedication. The exact license and grant time are
-stored with the upload receipt.
+and institution to make that dedication. The scheduled effective time is stored
+with the upload receipt.
 
 ## Software license
 

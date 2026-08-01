@@ -39,10 +39,10 @@ function accessRequest(
     plans_to_contribute: plansToContribute,
     contributor_attestation: plansToContribute,
     accepted_contribution_policy_version: plansToContribute
-      ? "open-epi-3.0.0"
+      ? "open-epi-4.0.0"
       : null,
     data_use_agreement: true,
-    accepted_data_use_policy_version: "archive-access-1.0.0",
+    accepted_data_use_policy_version: "archive-access-2.0.0",
   };
 }
 
@@ -129,12 +129,12 @@ describe("shared EPI archive access", () => {
     expect(stored?.plans_to_contribute).toBe(1);
     expect(stored?.contributor_attestation).toBe(1);
     expect(stored?.accepted_contribution_policy_version).toBe(
-      "open-epi-3.0.0",
+      "open-epi-4.0.0",
     );
     expect(stored?.contributor_attestation_accepted_at).toBeGreaterThan(0);
     expect(stored?.data_use_agreement).toBe(1);
     expect(stored?.accepted_data_use_policy_version).toBe(
-      "archive-access-1.0.0",
+      "archive-access-2.0.0",
     );
     expect(stored?.data_use_agreement_accepted_at).toBeGreaterThan(0);
     expect(
@@ -168,10 +168,10 @@ describe("shared EPI archive access", () => {
           lab_name: "Example Neuroimaging Lab",
           plans_to_contribute: true,
           contributor_attestation: true,
-          accepted_contribution_policy_version: "open-epi-3.0.0",
+          accepted_contribution_policy_version: "open-epi-4.0.0",
           contributor_attestation_accepted_at: expect.any(String),
           data_use_agreement: true,
-          accepted_data_use_policy_version: "archive-access-1.0.0",
+          accepted_data_use_policy_version: "archive-access-2.0.0",
           data_use_agreement_accepted_at: expect.any(String),
         },
       ],
@@ -194,7 +194,7 @@ describe("shared EPI archive access", () => {
     expect(grant).toMatchObject({
       token_type: "Bearer",
       archive_url: "https://scalingneuro.org/v1/archive",
-      accepted_data_use_policy_version: "archive-access-1.0.0",
+      accepted_data_use_policy_version: "archive-access-2.0.0",
       data_use_agreement_accepted_at: expect.any(String),
     });
     expect(grant.access_token).toMatch(/^sn_access_[A-Za-z0-9_-]{43}$/u);
@@ -227,14 +227,14 @@ describe("shared EPI archive access", () => {
     expect(registration?.plans_to_contribute).toBe(1);
     expect(registration?.contributor_attestation).toBe(1);
     expect(registration?.accepted_contribution_policy_version).toBe(
-      "open-epi-3.0.0",
+      "open-epi-4.0.0",
     );
     expect(registration?.contributor_attestation_accepted_at).toBe(
       stored?.contributor_attestation_accepted_at,
     );
     expect(registration?.data_use_agreement).toBe(1);
     expect(registration?.accepted_data_use_policy_version).toBe(
-      "archive-access-1.0.0",
+      "archive-access-2.0.0",
     );
     expect(registration?.data_use_agreement_accepted_at).toBe(
       stored?.data_use_agreement_accepted_at,
@@ -320,7 +320,7 @@ describe("shared EPI archive access", () => {
     expect(await staleResponse.json()).toMatchObject({
       error: {
         code: "CONSENT_POLICY_UPDATE_REQUIRED",
-        details: { consent_policy_version: "open-epi-3.0.0" },
+        details: { consent_policy_version: "open-epi-4.0.0" },
       },
     });
   });
@@ -349,7 +349,7 @@ describe("shared EPI archive access", () => {
     expect(await staleResponse.json()).toMatchObject({
       error: {
         code: "ARCHIVE_ACCESS_POLICY_UPDATE_REQUIRED",
-        details: { data_use_policy_version: "archive-access-1.0.0" },
+        details: { data_use_policy_version: "archive-access-2.0.0" },
       },
     });
   });
@@ -380,7 +380,7 @@ describe("shared EPI archive access", () => {
     expect(await approval.json()).toMatchObject({
       error: {
         code: "ARCHIVE_ACCESS_POLICY_UPDATE_REQUIRED",
-        details: { data_use_policy_version: "archive-access-1.0.0" },
+        details: { data_use_policy_version: "archive-access-2.0.0" },
       },
     });
   });
@@ -406,7 +406,7 @@ describe("shared EPI archive access", () => {
     expect(await response.json()).toMatchObject({
       error: {
         code: "ARCHIVE_ACCESS_POLICY_UPDATE_REQUIRED",
-        details: { data_use_policy_version: "archive-access-1.0.0" },
+        details: { data_use_policy_version: "archive-access-2.0.0" },
       },
     });
   });
@@ -484,7 +484,7 @@ describe("shared EPI archive access", () => {
     ).toEqual({ count: 0 });
   });
 
-  it("lists and redirects to a signed download for a committed EPI archive", async () => {
+  it("hides a staged archive and publishes it after its effective time", async () => {
     const email = `download+${crypto.randomUUID()}@example.edu`;
     const grant = await submitAndApprove(email);
     const siteId = crypto.randomUUID();
@@ -505,25 +505,25 @@ describe("shared EPI archive access", () => {
       env.DB.prepare(
         `INSERT INTO projects
            (id, site_id, slug, name, consent_policy_version, active, created_at)
-         VALUES (?1, ?2, ?3, 'Download Test', 'open-epi-3.0.0', 1, ?4)`,
+         VALUES (?1, ?2, ?3, 'Download Test', 'open-epi-4.0.0', 1, ?4)`,
       ).bind(projectId, siteId, `project-${projectId}`, timestamp),
       env.DB.prepare(
         `INSERT INTO devices
            (id, site_id, project_id, token_hash, device_name, platform,
             client_version, accepted_consent_policy_version,
             created_at, last_seen_at)
-         VALUES (?1, ?2, ?3, ?4, 'Download Test', 'test', '0.6.1',
-                 'open-epi-3.0.0', ?5, ?5)`,
+         VALUES (?1, ?2, ?3, ?4, 'Download Test', 'test', '0.6.2',
+                 'open-epi-4.0.0', ?5, ?5)`,
       ).bind(deviceId, siteId, projectId, `token-${deviceId}`, timestamp),
       env.DB.prepare(
         `INSERT INTO uploads
            (id, site_id, project_id, device_id, status, archive_prefix,
             request_hash, client_version, consent_policy_version,
-            data_license_id, data_license_granted_at, series_count,
+            data_license_id, publication_scheduled_at, series_count,
             total_bytes, created_at, updated_at, expires_at, received_at)
-         VALUES (?1, ?2, ?3, ?4, 'committed', ?5, ?6, '0.6.1',
-                 'open-epi-3.0.0', 'CC0-1.0', ?7, 1, 1024,
-                 ?7, ?7, ?8, ?7)`,
+         VALUES (?1, ?2, ?3, ?4, 'committed', ?5, ?6, '0.6.2',
+                 'open-epi-4.0.0', 'CC0-1.0', ?7, 1, 1024,
+                 ?8, ?8, ?9, ?8)`,
       ).bind(
         uploadId,
         siteId,
@@ -531,6 +531,7 @@ describe("shared EPI archive access", () => {
         deviceId,
         `dicom/v1/${siteId}/${projectId}/${uploadId}/`,
         `request-${uploadId}`,
+        timestamp + 7 * 24 * 60 * 60,
         timestamp,
         timestamp + 3600,
       ),
@@ -578,7 +579,24 @@ describe("shared EPI archive access", () => {
       grant.access_token,
     );
     expect(archive.status).toBe(200);
-    const listing = await archive.json<{
+    expect((await archive.json<{ series: unknown[] }>()).series).toHaveLength(0);
+
+    await env.DB.prepare(
+      `UPDATE uploads
+       SET publication_scheduled_at = ?1
+       WHERE id = ?2`,
+    )
+      .bind(timestamp - 1, uploadId)
+      .run();
+
+    const publishedArchive = await call(
+      "GET",
+      "/v1/archive",
+      undefined,
+      grant.access_token,
+    );
+    expect(publishedArchive.status).toBe(200);
+    const listing = await publishedArchive.json<{
       series: Array<{
         download_url: string;
         sha256: string;
@@ -607,5 +625,13 @@ describe("shared EPI archive access", () => {
         "u",
       ),
     );
+
+    const lateCancellation = await call(
+      "POST",
+      `/v1/admin/dicom-uploads/${uploadId}/cancel`,
+      undefined,
+      ADMIN_TOKEN,
+    );
+    expect(lateCancellation.status).toBe(409);
   });
 });

@@ -7,6 +7,7 @@ Usage:
   scripts/archive-access-admin.sh list [pending|approved|rejected|all]
   scripts/archive-access-admin.sh approve REQUEST_ID
   scripts/archive-access-admin.sh reject REQUEST_ID
+  scripts/archive-access-admin.sh cancel-upload UPLOAD_ID
 
 The admin credential is read from ARCHIVE_ACCESS_ADMIN_TOKEN or from the
 macOS Keychain service scalingneuro-archive-access-admin.
@@ -103,6 +104,18 @@ case "$command_name" in
     response=$(request --request POST \
       "${api_base}/v1/admin/archive-access-requests/${argument}/reject")
     jq -r '"Rejected request \(.request_id)."' <<<"$response"
+    ;;
+  cancel-upload)
+    if [[ ! "$argument" =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$ ]]; then
+      usage >&2
+      exit 2
+    fi
+    response=$(request --request POST \
+      "${api_base}/v1/admin/dicom-uploads/${argument}/cancel")
+    jq -r '
+      "Cancelled staged upload \(.upload_id) at \(.cancelled_at). " +
+      "It will not receive CC0 or become available to researchers."
+    ' <<<"$response"
     ;;
   *)
     usage >&2

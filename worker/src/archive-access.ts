@@ -20,7 +20,7 @@ const EMAIL =
 const SERIES_ARCHIVE_ID = /^[a-f0-9]{24}$/u;
 const MAX_ARCHIVE_ROWS = 200;
 const MAX_REVIEW_ROWS = 100;
-export const ARCHIVE_ACCESS_POLICY_VERSION = "archive-access-1.0.0";
+export const ARCHIVE_ACCESS_POLICY_VERSION = "archive-access-2.0.0";
 
 export interface ArchiveAccessRequest {
   contact_name: string;
@@ -321,7 +321,7 @@ function adminBearerToken(request: Request): string {
   return token;
 }
 
-async function authenticateArchiveAccessAdmin(
+export async function authenticateArchiveAccessAdmin(
   request: Request,
   env: Env,
 ): Promise<void> {
@@ -706,7 +706,9 @@ export async function listArchive(
       `SELECT u.id AS upload_id, d.series_archive_id, d.series_id,
               d.dicom_count, d.expected_size, d.expected_sha256,
               u.archive_prefix, d.archive_relative_key, u.received_at,
-              u.data_license_id, u.data_license_granted_at
+              u.data_license_id,
+              COALESCE(u.data_license_granted_at, u.publication_scheduled_at)
+                AS data_license_granted_at
        FROM dicom_upload_series d
        JOIN uploads u ON u.id = d.upload_id
        JOIN received_series_reservations r
@@ -715,11 +717,12 @@ export async function listArchive(
          AND r.withdrawn_at IS NULL AND d.series_kind = 'functional_epi'
          AND d.completed_at IS NOT NULL
          AND u.data_license_id = ?1
-         AND u.data_license_granted_at IS NOT NULL
+         AND u.publication_scheduled_at IS NOT NULL
+         AND u.publication_scheduled_at <= ?2
        ORDER BY u.received_at DESC, d.series_archive_id
-       LIMIT ?2`,
+       LIMIT ?3`,
     )
-      .bind(DATA_LICENSE_ID, MAX_ARCHIVE_ROWS)
+      .bind(DATA_LICENSE_ID, nowSeconds(), MAX_ARCHIVE_ROWS)
       .all<ArchiveSeriesRow>()
   ).results;
   return {
@@ -760,7 +763,9 @@ export async function signArchiveDownload(
     `SELECT u.id AS upload_id, d.series_archive_id, d.series_id,
             d.dicom_count, d.expected_size, d.expected_sha256,
             u.archive_prefix, d.archive_relative_key, u.received_at,
-            u.data_license_id, u.data_license_granted_at
+            u.data_license_id,
+            COALESCE(u.data_license_granted_at, u.publication_scheduled_at)
+              AS data_license_granted_at
      FROM dicom_upload_series d
      JOIN uploads u ON u.id = d.upload_id
      JOIN received_series_reservations r
@@ -770,10 +775,11 @@ export async function signArchiveDownload(
        AND r.withdrawn_at IS NULL AND d.series_kind = 'functional_epi'
        AND d.completed_at IS NOT NULL
        AND u.data_license_id = ?3
-       AND u.data_license_granted_at IS NOT NULL
+       AND u.publication_scheduled_at IS NOT NULL
+       AND u.publication_scheduled_at <= ?4
      LIMIT 1`,
   )
-    .bind(uploadId, seriesArchiveId, DATA_LICENSE_ID)
+    .bind(uploadId, seriesArchiveId, DATA_LICENSE_ID, nowSeconds())
     .first<ArchiveSeriesRow>();
   if (!row) {
     throw new AppError("NOT_FOUND", 404, "Archive series was not found");

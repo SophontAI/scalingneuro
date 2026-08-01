@@ -18,11 +18,11 @@ import type {
 } from "./validation";
 import packageManifest from "../package.json";
 
-const MINIMUM_CLIENT_VERSION = "0.6.1";
-export const MINIMUM_EPI_CLIENT_VERSION = "0.6.1";
+const MINIMUM_CLIENT_VERSION = "0.6.2";
+export const MINIMUM_EPI_CLIENT_VERSION = "0.6.2";
 const PUBLIC_PROJECT_NAME = "Scaling Neuro shared EPI archive";
 const PUBLIC_PROJECT_SLUG = "shared-epi";
-export const PUBLIC_CONSENT_POLICY_VERSION = "open-epi-3.0.0";
+export const PUBLIC_CONSENT_POLICY_VERSION = "open-epi-4.0.0";
 export const DATA_LICENSE_ID = "CC0-1.0";
 export const DATA_LICENSE_URL =
   "https://creativecommons.org/publicdomain/zero/1.0/";

@@ -17,7 +17,7 @@
   "properties": {
     "registration_open": { "type": "boolean" },
     "project_name": { "const": "Scaling Neuro shared EPI archive" },
-    "consent_policy_version": { "const": "open-epi-3.0.0" },
+    "consent_policy_version": { "const": "open-epi-4.0.0" },
     "policy_url": {
       "type": "string",
       "format": "uri",
@@ -28,6 +28,6 @@
       "const": "https://creativecommons.org/publicdomain/zero/1.0/"
     },
     "self_service_quota_bytes": { "type": "null" },
-    "minimum_client_version": { "const": "0.6.1" }
+    "minimum_client_version": { "const": "0.6.2" }
   }
 }

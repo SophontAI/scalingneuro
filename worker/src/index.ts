@@ -1,5 +1,6 @@
 import {
   approveArchiveAccessRequest,
+  authenticateArchiveAccessAdmin,
   listArchive,
   listArchiveAccessRequests,
   parseArchiveAccessRequest,
@@ -8,6 +9,7 @@ import {
   submitArchiveAccessRequest,
 } from "./archive-access";
 import {
+  cancelStagedDicomUpload,
   checkpointDicomUpload,
   completeDicomUpload,
   createDicomUpload,
@@ -66,6 +68,10 @@ const archiveAccessApproveRoute = new RegExp(
 );
 const archiveAccessRejectRoute = new RegExp(
   `^/v1/admin/archive-access-requests/${UUID}/reject$`,
+  "u",
+);
+const stagedUploadCancelRoute = new RegExp(
+  `^/v1/admin/dicom-uploads/${UUID}/cancel$`,
   "u",
 );
 
@@ -188,6 +194,9 @@ function routeLabel(pathname: string): string {
   if (archiveAccessRejectRoute.test(pathname)) {
     return "/v1/admin/archive-access-requests/:id/reject";
   }
+  if (stagedUploadCancelRoute.test(pathname)) {
+    return "/v1/admin/dicom-uploads/:id/cancel";
+  }
   return "unknown";
 }
 
@@ -283,6 +292,14 @@ export async function fetchHandler(
           env,
           archiveAccessRejectId,
         ),
+        requestId,
+      );
+    }
+    const stagedUploadCancelId = idMatch(stagedUploadCancelRoute, path);
+    if (request.method === "POST" && stagedUploadCancelId) {
+      await authenticateArchiveAccessAdmin(request, env);
+      return json(
+        await cancelStagedDicomUpload(env, stagedUploadCancelId),
         requestId,
       );
     }

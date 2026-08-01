@@ -23,9 +23,9 @@ the current `archive-access-request-v3` contribution-intent and data-use form:
   "lab_name": "Example Lab",
   "plans_to_contribute": true,
   "contributor_attestation": true,
-  "accepted_contribution_policy_version": "open-epi-3.0.0",
+  "accepted_contribution_policy_version": "open-epi-4.0.0",
   "data_use_agreement": true,
-  "accepted_data_use_policy_version": "archive-access-1.0.0"
+  "accepted_data_use_policy_version": "archive-access-2.0.0"
 }
 ```
 
@@ -61,14 +61,17 @@ reject credentials that are not bound to the current policy.
 - `POST /v1/dicom-uploads/{id}/checkpoint`
 - `POST /v1/dicom-uploads/{id}/complete`
 - `GET /v1/dicom-uploads/{id}`
+- `POST /v1/admin/dicom-uploads/{id}/cancel` (admin only)
 
 The upload request may contain one `functional_epi` series under the current
 DICOM deidentification contract. The Worker rejects every other series kind.
-One series per durable receipt keeps continuation and withdrawal scoped to one
-scientific unit. New receipts store `data_license_id = CC0-1.0` and the exact
-time the dedication becomes effective. The same license is attached to R2 object
-metadata, upload status, and archive listings. A policy-version gate prevents an
-older client or stale device acceptance from creating a new upload.
+One series per durable receipt keeps continuation and cancellation scoped to one
+scientific unit. New receipts schedule `data_license_id = CC0-1.0` to take
+effect seven days after receipt. Before that time, status reports the archive as
+`staged`, archive routes exclude it, and an administrator can cancel it after a
+contributor emails the upload ID. The same status reports `published` after the
+effective time without a scheduled job. A policy-version gate prevents an older
+client or stale device acceptance from creating a new upload.
 
 Part grants are short-lived R2 `UploadPart` URLs bound to the exact object key,
 multipart ID, part number, content length, and SHA-256 header. The client never
@@ -84,7 +87,8 @@ the scientific object body or starts downstream work.
 - `GET /v1/archive/{upload_id}/{series_archive_id}/download`
 
 Both require the bearer token emailed after an access request is approved.
-Listing returns committed, non-withdrawn functional EPI series only. Each
+Listing returns committed, non-withdrawn functional EPI series only after their
+seven-day publication time. Each
 download route redirects to a short-lived signed R2 GET URL. Size and SHA-256
 are included in the listing so researchers can verify each downloaded archive.
 CC0-licensed entries also include the license identifier, canonical URL, and

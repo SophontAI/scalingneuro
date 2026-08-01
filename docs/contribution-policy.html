@@ -14,7 +14,7 @@
 <main>
   <a class="brand" href="/">Scaling Neuro</a>
   <h1>Data contribution and CC0 policy</h1>
-  <div class="version">open-epi-3.0.0 · effective 31 July 2026</div>
+  <div class="version">open-epi-4.0.0 · effective 31 July 2026</div>
 
   <h2>Who must follow this policy</h2>
   <p>This policy applies to every person, lab, center, or group that contributes
@@ -34,15 +34,26 @@
   <h2>Your authority to contribute</h2>
   <p>By continuing, you confirm that you are the owner of the selected functional
   MRI data or are authorized by the owner and your institution to deidentify the
-  data, share it publicly, and apply the CC0 dedication described below. You also
-  confirm that you have every participant-consent, ethics, IRB, data-use,
-  contractual, and institutional permission required for this public sharing.
-  This confirmation does not replace any of those reviews or permissions.</p>
+  data, share it publicly, and apply the CC0 dedication described below.</p>
+  <p>For each upload, you confirm that the participant consent and approvals for
+  the specific data expressly permit: (1) irrevocable sharing, (2) commercial
+  reuse by any party, and (3) public-domain redistribution without conditions.
+  You understand that CC0 cannot be revoked and that withdrawal cannot retrieve
+  copies already distributed. This confirmation does not replace any consent,
+  ethics, IRB, data-use, contractual, or institutional review or permission.</p>
 
   <h2>CC0 public-domain dedication</h2>
-  <p>When Scaling Neuro successfully receives an uploaded archive, you dedicate
-  all copyright and related rights in that archive that you are authorized to
-  grant to the public domain under
+  <p>During the beta period, an uploaded archive is held in a restricted staging
+  area for seven days after Scaling Neuro receives it. At receipt,
+  <code>neuro-sync</code> provides the contributor with the upload ID and notice
+  of this staging period. Until the seven-day period ends, no public-domain
+  dedication has occurred and researchers cannot access the archive. The
+  contributor may cancel the upload during this period by emailing
+  <a href="mailto:admin@sophont.med">admin@sophont.med</a> with the upload ID.</p>
+  <p>Unless Scaling Neuro or the contributor cancels the archive during staging,
+  CC0 dedication and researcher access take effect automatically seven days
+  after receipt. At that time, you dedicate all copyright and related rights in
+  the archive that you are authorized to grant to the public domain under
   <a href="https://creativecommons.org/publicdomain/zero/1.0/" target="_blank" rel="noopener">Creative Commons CC0 1.0 Universal</a>.
   CC0 is irrevocable and permits anyone to copy, modify, distribute, and use the
   data for any purpose, including commercial purposes, without conditions.</p>
@@ -80,11 +91,13 @@
   on the public-domain data.</p>
 
   <h2>Withdrawal</h2>
-  <p>A lab may request workstation revocation or removal of Scaling Neuro's
-  hosted copy by contacting
+  <p>During the seven-day staging period, a lab may cancel an upload before CC0
+  takes effect by contacting
   <a href="mailto:admin@sophont.med">admin@sophont.med</a> with the pseudonymous
-  upload ID from its local report. Removing a hosted copy does not revoke CC0 or
-  retrieve copies already received by others.</p>
+  upload ID from its local report. After publication, a lab may request
+  workstation revocation or removal of Scaling Neuro's hosted copy through the
+  same address. Removing a published hosted copy does not revoke CC0 or retrieve
+  copies already received by others.</p>
 
   <p class="notice"><strong>Stopping is safe.</strong> Cancelling before the
   authorization prompt uploads nothing. <code>neuro-sync prepare</code> also

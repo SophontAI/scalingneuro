@@ -35,7 +35,7 @@
     },
     "data_use_agreement": { "const": true },
     "accepted_data_use_policy_version": {
-      "const": "archive-access-1.0.0"
+      "const": "archive-access-2.0.0"
     }
   },
   "if": {
@@ -46,7 +46,7 @@
     "properties": {
       "contributor_attestation": { "const": true },
       "accepted_contribution_policy_version": {
-        "const": "open-epi-3.0.0"
+        "const": "open-epi-4.0.0"
       }
     }
   },

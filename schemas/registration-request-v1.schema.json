@@ -77,6 +77,6 @@
       "pattern": "^[^\\u0000-\\u001F\\u007F]+$"
     },
     "contact_opt_in": { "type": "boolean" },
-    "accepted_consent_policy_version": { "const": "open-epi-3.0.0" }
+    "accepted_consent_policy_version": { "const": "open-epi-4.0.0" }
   }
 }
