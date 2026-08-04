@@ -1375,7 +1375,7 @@ dependencies = [
 
 [[package]]
 name = "neuro-sync"
-version = "0.6.3"
+version = "0.6.4"
 dependencies = [
  "anyhow",
  "axum",

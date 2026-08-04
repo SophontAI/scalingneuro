@@ -67,11 +67,6 @@ async fn run_with_io(
     selected_folder: Option<PathBuf>,
 ) -> Result<()> {
     writeln!(output, "Scaling Neuro · functional EPI DICOM sync\n")?;
-    writeln!(
-        output,
-        "One command:  neuro-sync /path/to/dicom-export\nReview first: neuro-sync prepare /path/to/dicom-export\n"
-    )?;
-
     let mut config = if runtime.paths.config.is_file() {
         ClientConfig::load(&runtime.paths)?
     } else {
@@ -153,7 +148,6 @@ async fn register_interactively(
         bail!("public contribution registration is temporarily paused");
     }
 
-    writeln!(output, "Project  {}", contribution.project_name)?;
     writeln!(output, "Policy   {}", contribution.policy_url)?;
     writeln!(output, "\n{POLICY_SUMMARY}\n")?;
 
@@ -236,7 +230,7 @@ fn prompt_experiment_description_with_io(
     let description = prompt_optional(
         input,
         output,
-        "Experiment that produced these DICOMs (optional; no participant identifiers)",
+        "Optionally, please describe the experiment you are uploading",
     )?;
     let Some(description) = description else {
         return Ok(None);
@@ -252,14 +246,14 @@ fn confirm_upload(
     input: &mut impl BufRead,
     output: &mut impl Write,
     folder: &Path,
-    project_name: &str,
+    _project_name: &str,
 ) -> Result<bool> {
     writeln!(output, "Ready to sync")?;
     writeln!(output, "  Folder   {}", folder.display())?;
-    writeln!(output, "  Project  {project_name}\n")?;
+    writeln!(output)?;
     writeln!(
         output,
-        "I confirm the participant consent and approvals for this specific data expressly permit: (1) irrevocable sharing, (2) commercial reuse by any party, and (3) public-domain redistribution without conditions. I understand CC0 cannot be revoked and that withdrawal cannot retrieve copies already distributed.\n"
+        "I confirm the participant consent and institutional/facility approvals for this specific data permit open and irrevocable sharing. I understand the data will be licensed under CC0 which cannot be revoked, and that withdrawal cannot retrieve copies already distributed.\n"
     )?;
     prompt_yes_no(
         input,
@@ -504,7 +498,7 @@ mod tests {
         assert!(
             String::from_utf8(output)
                 .unwrap()
-                .contains("Experiment that produced these DICOMs")
+                .contains("Optionally, please describe the experiment you are uploading")
         );
     }
 
@@ -609,7 +603,9 @@ mod tests {
         assert!(!output.contains("No browser is needed or opened."));
         assert!(output.contains("This workstation is ready to sync approved EPI data."));
         assert!(output.contains("Ready to sync"));
-        assert!(output.contains("commercial reuse by any party"));
+        assert!(output.contains("institutional/facility approvals"));
+        assert!(!output.contains("One command:  neuro-sync"));
+        assert!(!output.contains("Project  "));
         assert!(output.contains("Do you affirm this specific-data confirmation?"));
         assert!(output.contains("  Folder   "));
         assert_eq!(
@@ -710,8 +706,8 @@ mod tests {
                 .contains("Contribution policy  https://scalingneuro.com/docs/contribution-policy")
         );
         assert!(output.contains("Accept the current contribution policy?"));
-        assert!(output.contains("commercial reuse by any party"));
-        assert!(output.contains("  Project  Scaling Neuro shared EPI archive"));
+        assert!(output.contains("institutional/facility approvals"));
+        assert!(!output.contains("Project  "));
         assert_eq!(
             output
                 .matches("Only confirmed functional EPI series are uploaded")
