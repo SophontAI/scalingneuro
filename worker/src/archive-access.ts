@@ -84,6 +84,7 @@ interface ArchiveSeriesRow {
   upload_id: string;
   series_archive_id: string;
   series_id: string;
+  experiment_description: string | null;
   dicom_count: number;
   expected_size: number;
   expected_sha256: string;
@@ -704,7 +705,8 @@ export async function listArchive(
   const rows = (
     await env.DB.prepare(
       `SELECT u.id AS upload_id, d.series_archive_id, d.series_id,
-              d.dicom_count, d.expected_size, d.expected_sha256,
+              u.experiment_description, d.dicom_count,
+              d.expected_size, d.expected_sha256,
               u.archive_prefix, d.archive_relative_key, u.received_at,
               u.data_license_id,
               COALESCE(u.data_license_granted_at, u.publication_scheduled_at)
@@ -731,6 +733,9 @@ export async function listArchive(
       upload_id: row.upload_id,
       series_archive_id: row.series_archive_id,
       series_id: row.series_id,
+      ...(row.experiment_description === null
+        ? {}
+        : { experiment_description: row.experiment_description }),
       dicom_count: row.dicom_count,
       size: row.expected_size,
       sha256: row.expected_sha256,
@@ -761,7 +766,8 @@ export async function signArchiveDownload(
   }
   const row = await env.DB.prepare(
     `SELECT u.id AS upload_id, d.series_archive_id, d.series_id,
-            d.dicom_count, d.expected_size, d.expected_sha256,
+            u.experiment_description, d.dicom_count,
+            d.expected_size, d.expected_sha256,
             u.archive_prefix, d.archive_relative_key, u.received_at,
             u.data_license_id,
             COALESCE(u.data_license_granted_at, u.publication_scheduled_at)

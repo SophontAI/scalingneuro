@@ -123,6 +123,8 @@ pub struct CreateDicomUploadRequest {
     pub format: &'static str,
     pub client_version: String,
     pub deidentification: DicomDeidentificationRequest,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub experiment_description: Option<String>,
     pub series: Vec<DicomSeriesUploadRequest>,
 }
 
@@ -307,6 +309,7 @@ impl IngestApi {
         client_version: &str,
         policy_id: &str,
         policy_version: &str,
+        experiment_description: Option<&str>,
     ) -> Result<CreateUploadResponse> {
         let mut series = Vec::with_capacity(bundles.len());
         for bundle in bundles {
@@ -352,6 +355,7 @@ impl IngestApi {
                 policy_id: policy_id.into(),
                 policy_version: policy_version.into(),
             },
+            experiment_description: experiment_description.map(str::to_owned),
             series,
         };
         self.send_idempotent(|| {

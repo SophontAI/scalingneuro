@@ -92,7 +92,7 @@ pub enum Command {
 }
 
 pub async fn execute(cli: Cli) -> Result<()> {
-    let runtime = Runtime::initialize(cli.state_dir.as_deref())?;
+    let mut runtime = Runtime::initialize(cli.state_dir.as_deref())?;
     if let Some(folder) = cli.folder {
         if cli.command.is_some() {
             bail!("a DICOM folder cannot be combined with a subcommand");
@@ -196,6 +196,12 @@ pub async fn execute(cli: Cli) -> Result<()> {
                     println!("Contribution policy accepted: {}", contribution.policy_url);
                 }
             }
+            let experiment_description = if dry_run {
+                None
+            } else {
+                crate::terminal::prompt_experiment_description()?
+            };
+            runtime.set_experiment_description(experiment_description);
             if reviewed {
                 if dry_run {
                     println!(

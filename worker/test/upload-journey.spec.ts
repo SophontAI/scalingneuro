@@ -142,6 +142,7 @@ describe("new PI EPI archive journey", () => {
           policy_id: "scaling-neuro.dicom-deidentification",
           policy_version: "2.0.0",
         },
+        experiment_description: "Visual oddball task, run 2",
         series: [
           {
             series_archive_id: seriesArchiveId,
@@ -167,12 +168,21 @@ describe("new PI EPI archive journey", () => {
     expect(created.status).toBe(201);
     const upload = await created.json<{
       upload_id: string;
+      experiment_description: string;
       multipart_objects: Array<{
         key: string;
         upload_id: string;
         part_size: number;
       }>;
     }>();
+    expect(upload.experiment_description).toBe("Visual oddball task, run 2");
+    expect(
+      await env.DB.prepare(
+        `SELECT experiment_description FROM uploads WHERE id = ?1`,
+      )
+        .bind(upload.upload_id)
+        .first(),
+    ).toEqual({ experiment_description: "Visual oddball task, run 2" });
     expect(upload.multipart_objects).toHaveLength(1);
     const object = upload.multipart_objects[0]!;
     expect(object.key).toContain(relativeKey);

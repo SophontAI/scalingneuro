@@ -36,6 +36,7 @@ interface UploadRow {
   request_hash: string;
   client_version: string;
   consent_policy_version: string;
+  experiment_description: string | null;
   data_license_id: string | null;
   data_license_granted_at: number | null;
   publication_scheduled_at: number | null;
@@ -254,6 +255,9 @@ async function statusResponse(
     series_count: 1,
     total_bytes: upload.total_bytes,
     consent_policy_version: upload.consent_policy_version,
+    ...(upload.experiment_description === null
+      ? {}
+      : { experiment_description: upload.experiment_description }),
     ...(publication !== "published" || upload.data_license_id === null
       ? {}
       : {
@@ -376,6 +380,9 @@ async function credentialsResponse(
     upload_id: upload.id,
     status: series.completed_at === null ? "uploading" : "checkpointed",
     format: "dicom-series-v1",
+    ...(upload.experiment_description === null
+      ? {}
+      : { experiment_description: upload.experiment_description }),
     object_prefix: upload.archive_prefix,
     multipart_objects:
       series.completed_at === null
@@ -528,11 +535,11 @@ export async function createDicomUpload(
         `INSERT INTO uploads
            (id, site_id, project_id, device_id, status, archive_prefix,
             request_hash, client_version, consent_policy_version,
-            data_license_id, series_count, total_bytes,
+            data_license_id, experiment_description, series_count, total_bytes,
             created_at, updated_at, expires_at,
             deidentification_policy_id, deidentification_policy_version)
          VALUES (?1, ?2, ?3, ?4, 'created', ?5, ?6, ?7, ?8, ?9,
-                 1, ?10, ?11, ?11, ?12, ?13, ?14)`,
+                 ?10, 1, ?11, ?12, ?12, ?13, ?14, ?15)`,
       ).bind(
         uploadId,
         device.site_id,
@@ -543,6 +550,7 @@ export async function createDicomUpload(
         input.client_version,
         PUBLIC_CONSENT_POLICY_VERSION,
         DATA_LICENSE_ID,
+        input.experiment_description ?? null,
         item.archive.size,
         timestamp,
         expiresAt,

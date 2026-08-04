@@ -39,6 +39,23 @@ describe("minimal EPI contract", () => {
     expect(parseCreateDicomUploadRequest(request)).toEqual(request);
   });
 
+  it("accepts optional experiment context", () => {
+    expect(
+      parseCreateDicomUploadRequest({
+        ...request,
+        experiment_description: "visual oddball task, run 2",
+      }),
+    ).toMatchObject({
+      experiment_description: "visual oddball task, run 2",
+    });
+    expect(() =>
+      parseCreateDicomUploadRequest({
+        ...request,
+        experiment_description: "x".repeat(1_001),
+      }),
+    ).toThrow(/experiment_description is invalid/u);
+  });
+
   it("rejects structural and multi-series upload requests", () => {
     expect(() =>
       parseCreateDicomUploadRequest({

@@ -56,6 +56,7 @@ export interface CreateDicomUploadRequest {
   format: "dicom-series-v1";
   client_version: string;
   deidentification: { policy_id: string; policy_version: string };
+  experiment_description?: string;
   series: [DicomSeriesDescriptor];
 }
 
@@ -249,7 +250,7 @@ export function parseCreateDicomUploadRequest(
   exactKeys(
     input,
     ["format", "client_version", "deidentification", "series"],
-    [],
+    ["experiment_description"],
     "request",
   );
   if (input.format !== "dicom-series-v1") {
@@ -371,6 +372,15 @@ export function parseCreateDicomUploadRequest(
         { max: 64, pattern: VERSION },
       ),
     },
+    ...(input.experiment_description === undefined
+      ? {}
+      : {
+          experiment_description: text(
+            input.experiment_description,
+            "experiment_description",
+            { max: 1_000 },
+          ),
+        }),
     series: [descriptor],
   };
 }

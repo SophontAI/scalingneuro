@@ -60,7 +60,7 @@ async fn run_for_optional_folder(runtime: Runtime, folder: Option<PathBuf>) -> R
 }
 
 async fn run_with_io(
-    runtime: Runtime,
+    mut runtime: Runtime,
     input: &mut impl BufRead,
     output: &mut impl Write,
     api_url: &str,
@@ -111,6 +111,8 @@ async fn run_with_io(
         writeln!(output, "Cancelled. Nothing was uploaded.")?;
         return Ok(());
     }
+    let experiment_description = prompt_experiment_description_with_io(input, output)?;
+    runtime.set_experiment_description(experiment_description);
 
     let reviewed = Runtime::is_review_folder(&folder);
     if reviewed {
@@ -215,6 +217,35 @@ pub fn confirm_authorized_upload(
     let mut output = io::stdout();
     writeln!(output, "Contribution policy  {policy_url}\n")?;
     confirm_upload(&mut input, &mut output, folder, project_name)
+}
+
+pub fn prompt_experiment_description() -> Result<Option<String>> {
+    if !io::stdin().is_terminal() || !io::stdout().is_terminal() {
+        return Ok(None);
+    }
+    let mut input = BufReader::new(io::stdin());
+    let mut output = io::stdout();
+    prompt_experiment_description_with_io(&mut input, &mut output)
+}
+
+fn prompt_experiment_description_with_io(
+    input: &mut impl BufRead,
+    output: &mut impl Write,
+) -> Result<Option<String>> {
+    const MAX_EXPERIMENT_DESCRIPTION_CHARS: usize = 1_000;
+    let description = prompt_optional(
+        input,
+        output,
+        "Experiment that produced these DICOMs (optional; no participant identifiers)",
+    )?;
+    let Some(description) = description else {
+        return Ok(None);
+    };
+    let normalized = description.split_whitespace().collect::<Vec<_>>().join(" ");
+    if normalized.chars().count() > MAX_EXPERIMENT_DESCRIPTION_CHARS {
+        bail!("experiment description must be at most 1000 characters");
+    }
+    Ok((!normalized.is_empty()).then_some(normalized))
 }
 
 fn confirm_upload(
@@ -452,6 +483,28 @@ mod tests {
             String::from_utf8(output)
                 .unwrap()
                 .contains("Enter yes or no.")
+        );
+    }
+
+    #[test]
+    fn experiment_description_is_optional_and_normalized() {
+        let mut blank = "\n".as_bytes();
+        let mut output = Vec::new();
+        assert_eq!(
+            prompt_experiment_description_with_io(&mut blank, &mut output).unwrap(),
+            None
+        );
+
+        let mut described = "visual oddball   task, run 2\n".as_bytes();
+        let mut output = Vec::new();
+        assert_eq!(
+            prompt_experiment_description_with_io(&mut described, &mut output).unwrap(),
+            Some("visual oddball task, run 2".into())
+        );
+        assert!(
+            String::from_utf8(output)
+                .unwrap()
+                .contains("Experiment that produced these DICOMs")
         );
     }
 

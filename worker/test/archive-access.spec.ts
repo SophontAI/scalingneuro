@@ -519,10 +519,12 @@ describe("shared EPI archive access", () => {
         `INSERT INTO uploads
            (id, site_id, project_id, device_id, status, archive_prefix,
             request_hash, client_version, consent_policy_version,
-            data_license_id, publication_scheduled_at, series_count,
+            data_license_id, experiment_description,
+            publication_scheduled_at, series_count,
             total_bytes, created_at, updated_at, expires_at, received_at)
          VALUES (?1, ?2, ?3, ?4, 'committed', ?5, ?6, '0.6.2',
-                 'open-epi-4.0.0', 'CC0-1.0', ?7, 1, 1024,
+                 'open-epi-4.0.0', 'CC0-1.0',
+                 'Visual oddball task, run 2', ?7, 1, 1024,
                  ?8, ?8, ?9, ?8)`,
       ).bind(
         uploadId,
@@ -600,11 +602,15 @@ describe("shared EPI archive access", () => {
       series: Array<{
         download_url: string;
         sha256: string;
+        experiment_description: string;
         data_license: { id: string };
       }>;
     }>();
     expect(listing.series).toHaveLength(1);
     expect(listing.series[0]?.sha256).toBe("a".repeat(64));
+    expect(listing.series[0]?.experiment_description).toBe(
+      "Visual oddball task, run 2",
+    );
     expect(listing.series[0]?.data_license.id).toBe("CC0-1.0");
 
     const downloadPath = new URL(

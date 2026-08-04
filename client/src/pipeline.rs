@@ -180,6 +180,7 @@ struct PendingRegistration {
 pub struct Runtime {
     pub paths: AppPaths,
     pub state: StateStore,
+    experiment_description: Option<String>,
     _instance_lock: Arc<File>,
 }
 
@@ -195,8 +196,13 @@ impl Runtime {
         Ok(Self {
             paths,
             state,
+            experiment_description: None,
             _instance_lock: Arc::new(instance_lock),
         })
+    }
+
+    pub fn set_experiment_description(&mut self, description: Option<String>) {
+        self.experiment_description = description;
     }
 
     pub async fn contribution_info(&self, api_url: &str) -> Result<ContributionInfo> {
@@ -1459,6 +1465,7 @@ impl Runtime {
                                 preparation_client_version,
                                 DICOM_METADATA_POLICY_ID,
                                 DICOM_METADATA_POLICY_VERSION,
+                                self.experiment_description.as_deref(),
                             )
                             .await?;
                         (
@@ -1492,6 +1499,7 @@ impl Runtime {
                                 preparation_client_version,
                                 DICOM_METADATA_POLICY_ID,
                                 DICOM_METADATA_POLICY_VERSION,
+                                self.experiment_description.as_deref(),
                             )
                             .await?;
                         (
@@ -1511,6 +1519,7 @@ impl Runtime {
                         preparation_client_version,
                         DICOM_METADATA_POLICY_ID,
                         DICOM_METADATA_POLICY_VERSION,
+                        self.experiment_description.as_deref(),
                     )
                     .await?;
                 (
