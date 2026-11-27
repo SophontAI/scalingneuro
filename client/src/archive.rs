@@ -95,6 +95,7 @@ const MULTI_COIL_ELEMENT_NAME: Tag = Tag(0x0018, 0x9047);
 const MULTI_COIL_ELEMENT_USED: Tag = Tag(0x0018, 0x9048);
 const MAX_MULTI_COIL_ELEMENTS: usize = 256;
 const MR_TRANSMIT_COIL_SEQUENCE: Tag = Tag(0x0018, 0x9049);
+const MR_SPATIAL_SATURATION_SEQUENCE: Tag = Tag(0x0018, 0x9107);
 const TRANSMIT_COIL_NAME: Tag = Tag(0x0018, 0x1251);
 const TRANSMIT_COIL_MANUFACTURER_NAME: Tag = Tag(0x0018, 0x9050);
 const TRANSMIT_COIL_TYPE: Tag = Tag(0x0018, 0x9051);
@@ -104,6 +105,7 @@ const UNASSIGNED_PER_FRAME_CONVERTED_ATTRIBUTES_SEQUENCE: Tag = Tag(0x0020, 0x91
 const CONVERSION_SOURCE_ATTRIBUTES_SEQUENCE: Tag = Tag(0x0020, 0x9172);
 const REFERENCED_IMAGE_SEQUENCE: Tag = Tag(0x0008, 0x1140);
 const SOURCE_IMAGE_SEQUENCE: Tag = Tag(0x0008, 0x2112);
+const REFERENCED_IMAGE_EVIDENCE_SEQUENCE: Tag = Tag(0x0008, 0x9092);
 const DERIVATION_IMAGE_SEQUENCE: Tag = Tag(0x0008, 0x9124);
 const DERIVATION_CODE_SEQUENCE: Tag = Tag(0x0008, 0x9215);
 const PURPOSE_OF_REFERENCE_CODE_SEQUENCE: Tag = Tag(0x0040, 0xa170);
@@ -898,8 +900,9 @@ fn prepare_sanitized_dicom<F: FnMut(u64)>(
         sanitized.put_str(Tag(0x0008, 0x0023), VR::DA, ENHANCED_CONTENT_DATE_SENTINEL);
         sanitized.put_str(Tag(0x0008, 0x0033), VR::TM, ENHANCED_CONTENT_TIME_SENTINEL);
         // Acquisition Context is Type 2 for both Enhanced MR IODs. Source
-        // contexts are accepted only when already empty; write a canonical
-        // zero-item shell so the privacy and conformance contracts agree.
+        // contexts are accepted only when already empty or the exact Siemens
+        // XA BOLD technique code; write a canonical zero-item shell so the
+        // privacy and conformance contracts agree.
         sanitized.put(DataElement::new(
             ACQUISITION_CONTEXT_SEQUENCE,
             VR::SQ,
@@ -3986,6 +3989,16 @@ fn validate_reference_semantics(
         PURPOSE_OF_REFERENCE_CODE_SEQUENCE,
     ];
     for element in object.iter() {
+        // Siemens XA writes a root Referenced Image Evidence Sequence that
+        // repeats the localizer reference with its purpose code. It is not
+        // allowlisted, so sanitize_dataset drops the whole subtree; the
+        // Sanitized-stage pass still rejects it if it ever survives.
+        if stage == ReferenceValidationStage::Source
+            && depth == 0
+            && element.tag() == REFERENCED_IMAGE_EVIDENCE_SEQUENCE
+        {
+            continue;
+        }
         if UNSUPPORTED_REFERENCE_SEMANTICS.contains(&element.tag()) {
             bail!(
                 "DICOM contains derived/reference semantics that cannot yet be preserved atomically"
@@ -4144,7 +4157,11 @@ fn validate_referenced_image_sequence(
         .filter(|items| !items.is_empty() && items.len() <= MAX_SEQUENCE_ITEMS)
         .context("DICOM Referenced Image Sequence is empty or exceeds the bounded item limit")?;
     for item in items {
-        let expected_count = if stage == ReferenceValidationStage::Source {
+        // Philips adds a private creator and a private duplicate of the
+        // instance UID; Siemens XA writes only the four standard attributes.
+        // Both are rebuilt into the same canonical four-attribute item.
+        let philips_private = item.get(Tag(0x2005, 0x0014)).is_some();
+        let expected_count = if stage == ReferenceValidationStage::Source && philips_private {
             6
         } else {
             4
@@ -4189,9 +4206,9 @@ fn validate_referenced_image_sequence(
         if stage == ReferenceValidationStage::Sanitized && frame_text != frame.to_string() {
             bail!("sanitized DICOM retained a non-canonical referenced frame");
         }
-        validate_localizer_purpose_code(item)?;
+        validate_localizer_purpose_code(item, stage)?;
 
-        if stage == ReferenceValidationStage::Source {
+        if stage == ReferenceValidationStage::Source && philips_private {
             if root_text(item, Tag(0x2005, 0x0014), VR::LO).as_deref()
                 != Some("Philips MR Imaging DD 005")
             {
@@ -4207,12 +4224,18 @@ fn validate_referenced_image_sequence(
     Ok(())
 }
 
-fn validate_localizer_purpose_code(item: &InMemDicomObject) -> Result<()> {
+fn validate_localizer_purpose_code(
+    item: &InMemDicomObject,
+    stage: ReferenceValidationStage,
+) -> Result<()> {
     let purpose = exact_sequence_items(item, PURPOSE_OF_REFERENCE_CODE_SEQUENCE)
         .filter(|items| items.len() == 1)
         .context("DICOM Referenced Image Sequence has an invalid purpose code sequence")?;
     let purpose = &purpose[0];
-    if purpose.iter().count() != 4
+    // Siemens XA omits the optional Context UID; the rebuilt code always has it.
+    let context_uid_optional =
+        stage == ReferenceValidationStage::Source && purpose.get(Tag(0x0008, 0x0117)).is_none();
+    if purpose.iter().count() != 4 - usize::from(context_uid_optional)
         || purpose.iter().any(|element| {
             !matches!(
                 element.tag(),
@@ -4225,8 +4248,9 @@ fn validate_localizer_purpose_code(item: &InMemDicomObject) -> Result<()> {
         || root_text(purpose, Tag(0x0008, 0x0100), VR::SH).as_deref() != Some("121311")
         || root_text(purpose, Tag(0x0008, 0x0102), VR::SH).as_deref() != Some("DCM")
         || root_text(purpose, Tag(0x0008, 0x0104), VR::LO).as_deref() != Some("Localizer")
-        || root_text(purpose, Tag(0x0008, 0x0117), VR::UI).as_deref()
-            != Some(LOCALIZER_PURPOSE_CONTEXT_UID)
+        || !context_uid_optional
+            && root_text(purpose, Tag(0x0008, 0x0117), VR::UI).as_deref()
+                != Some(LOCALIZER_PURPOSE_CONTEXT_UID)
     {
         bail!("DICOM Referenced Image Sequence has an unsupported purpose code");
     }
@@ -4305,6 +4329,34 @@ fn validate_source_image_sequence(
     Ok(())
 }
 
+/// Siemens XA records "MR Technique: BOLD" in its private 99SMS_CTMR coding
+/// scheme. It only restates the functional EPI classification, which the
+/// manifest already carries, so dropping it to the empty shell loses nothing
+/// that is archived today. Any other context is still held.
+fn siemens_xa_bold_context(items: &[InMemDicomObject]) -> bool {
+    let [item] = items else {
+        return false;
+    };
+    item.iter().count() == 3
+        && root_text(item, Tag(0x0040, 0xa040), VR::CS).as_deref() == Some("CODE")
+        && siemens_ctmr_code(item, Tag(0x0040, 0xa043), "MR Technique")
+        && siemens_ctmr_code(item, Tag(0x0040, 0xa168), "BOLD")
+}
+
+fn siemens_ctmr_code(item: &InMemDicomObject, tag: Tag, meaning: &str) -> bool {
+    let Some([code]) = exact_sequence_items(item, tag) else {
+        return false;
+    };
+    code.iter().all(|element| {
+        matches!(
+            element.tag(),
+            Tag(0x0008, 0x0100) | Tag(0x0008, 0x0102) | Tag(0x0008, 0x0103) | Tag(0x0008, 0x0104)
+        )
+    }) && root_text(code, Tag(0x0008, 0x0100), VR::SH).is_some()
+        && root_text(code, Tag(0x0008, 0x0102), VR::SH).as_deref() == Some("99SMS_CTMR")
+        && root_text(code, Tag(0x0008, 0x0104), VR::LO).as_deref() == Some(meaning)
+}
+
 fn validate_source_enhanced_mr_surface(
     object: &InMemDicomObject,
     profile: MrImageTypeProfile,
@@ -4318,7 +4370,7 @@ fn validate_source_enhanced_mr_surface(
             || context
                 .value()
                 .items()
-                .is_none_or(|items| !items.is_empty())
+                .is_none_or(|items| !items.is_empty() && !siemens_xa_bold_context(items))
         {
             bail!(
                 "Enhanced MR Acquisition Context is non-empty and cannot yet be de-identified without semantic loss"
@@ -4395,12 +4447,18 @@ fn validate_source_functional_group_container(
             validate_philips_per_frame_functional_group_duplicate(sequence)?;
         }
     }
+    let creators = private_creators(container);
     for element in container.iter() {
         let tag = element.tag();
         if matches!(
             tag,
             Tag(0x2005, 0x0014) | Tag(0x2005, 0x140e) | Tag(0x2005, 0x140f)
         ) {
+            continue;
+        }
+        if profile == MrImageTypeProfile::Enhanced
+            && siemens_xa_functional_group_private(&creators, tag)
+        {
             continue;
         }
         if element.vr() != VR::SQ {
@@ -4439,11 +4497,20 @@ fn validate_source_functional_group_container(
             profile == MrImageTypeProfile::Enhanced && shared && tag == REFERENCED_IMAGE_SEQUENCE;
         let metabolite_map =
             profile == MrImageTypeProfile::Enhanced && !shared && tag == MR_METABOLITE_MAP_SEQUENCE;
+        // Siemens XA always writes this Type 2 macro. An empty one says no
+        // saturation slabs were used; slab geometry is not reviewed yet.
+        let empty_spatial_saturation = profile == MrImageTypeProfile::Enhanced
+            && tag == MR_SPATIAL_SATURATION_SEQUENCE
+            && element
+                .value()
+                .items()
+                .is_some_and(|items| items.is_empty());
         if !(common
             || profile == MrImageTypeProfile::Enhanced && current_enhanced
             || profile == MrImageTypeProfile::LegacyConvertedEnhanced && legacy_converted
             || referenced_image
-            || metabolite_map)
+            || metabolite_map
+            || empty_spatial_saturation)
         {
             bail!("Enhanced MR contains an unsupported functional-group macro {tag}");
         }
@@ -4482,6 +4549,23 @@ fn validate_source_functional_group_container(
         }
     }
     Ok(())
+}
+
+/// Siemens XA keeps vendor data in private SDS (shared) and SDI (per-frame)
+/// blocks inside functional groups. Nothing is read from them, and
+/// sanitize_dataset default-drops all private data, so none of it is archived.
+fn siemens_xa_functional_group_private(creators: &BTreeMap<Tag, String>, tag: Tag) -> bool {
+    if tag.group() != 0x0021 {
+        return false;
+    }
+    let creator = if (0x0010..=0x00ff).contains(&tag.element()) {
+        tag
+    } else {
+        Tag(0x0021, tag.element() >> 8)
+    };
+    ["SIEMENS MR SDS 01", "SIEMENS MR SDI 02"]
+        .iter()
+        .any(|expected| creators_match(creators, creator, expected))
 }
 
 fn validate_philips_shared_functional_group_duplicate(
@@ -4635,6 +4719,15 @@ fn canonical_multi_coil_name_alias(value: &str) -> Option<&'static str> {
     }
 }
 
+/// One SH token of ASCII letters, digits, `_` or `-`: no spaces, so no
+/// free text. The value is only checked, never written.
+fn coil_product_label(value: &str) -> bool {
+    (1..=16).contains(&value.len())
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
+}
+
 fn canonical_multi_coil_element_alias(value: &str) -> Option<&'static str> {
     match value
         .trim_matches([' ', '\0'])
@@ -4649,8 +4742,11 @@ fn canonical_multi_coil_element_alias(value: &str) -> Option<&'static str> {
 /// Validate and atomically rebuild the conditional Enhanced MR multi-coil
 /// macro. `None` means the receive-coil macro is not a multi-coil macro and is
 /// left to the normal field-level sanitizer. A multi-coil surface is never
-/// partially accepted: arbitrary coil/element labels, configuration text,
+/// partially accepted: free-text coil/element labels, configuration text,
 /// extra fields, wrong VR/VM, or incomplete items reject the source object.
+/// Generic aliases and single-token product labels (Siemens XA writes e.g.
+/// `HeadNeck_64` and `H55`) are accepted; neither is written, because the
+/// rebuilt macro carries only the fixed canonical labels.
 type RebuiltMultiCoilSequence = Option<(Value<InMemDicomObject, Vec<u8>>, usize)>;
 
 fn rebuild_multi_coil_receive_sequence(
@@ -4686,7 +4782,10 @@ fn rebuild_multi_coil_receive_sequence(
         bail!("Enhanced MR multi-coil receive macro has an unsupported field surface");
     }
     let name = root_text(source, RECEIVE_COIL_NAME, VR::SH)
-        .and_then(|value| canonical_multi_coil_name_alias(&value))
+        .and_then(|value| {
+            canonical_multi_coil_name_alias(&value)
+                .or_else(|| coil_product_label(&value).then_some("MULTI_COIL"))
+        })
         .context("Enhanced MR multi-coil receive name is not an exact generic alias")?;
     if name != "MULTI_COIL"
         || source
@@ -4721,7 +4820,10 @@ fn rebuild_multi_coil_receive_sequence(
             bail!("Enhanced MR multi-coil definition item has an unsupported field surface");
         }
         let element_name = root_text(source_element, MULTI_COIL_ELEMENT_NAME, VR::SH)
-            .and_then(|value| canonical_multi_coil_element_alias(&value))
+            .and_then(|value| {
+                canonical_multi_coil_element_alias(&value)
+                    .or_else(|| coil_product_label(&value).then_some("MULTI_ELEMENT"))
+            })
             .context("Enhanced MR multi-coil element name is not an exact generic alias")?;
         let used = root_text(source_element, MULTI_COIL_ELEMENT_USED, VR::CS)
             .filter(|value| matches!(value.as_str(), "YES" | "NO"))
@@ -6706,6 +6808,222 @@ fn archive_writer_contract() -> ArchiveWriterContract {
 mod tests {
     use super::*;
     use crate::model::{ClassificationDecision, ClassificationEvidence};
+
+    fn siemens_xa_localizer_reference(context_uid: bool) -> InMemDicomObject {
+        let mut purpose = InMemDicomObject::new_empty();
+        purpose.put_str(Tag(0x0008, 0x0100), VR::SH, "121311");
+        purpose.put_str(Tag(0x0008, 0x0102), VR::SH, "DCM");
+        purpose.put_str(Tag(0x0008, 0x0104), VR::LO, "Localizer");
+        if context_uid {
+            purpose.put_str(Tag(0x0008, 0x0117), VR::UI, LOCALIZER_PURPOSE_CONTEXT_UID);
+        }
+        let mut item = InMemDicomObject::new_empty();
+        item.put_str(Tag(0x0008, 0x1150), VR::UI, ENHANCED_MR_IMAGE_STORAGE_UID);
+        item.put_str(Tag(0x0008, 0x1155), VR::UI, "1.3.12.2.1107.5.2.43.1");
+        item.put_str(Tag(0x0008, 0x1160), VR::IS, "48");
+        item.put(DataElement::new(
+            PURPOSE_OF_REFERENCE_CODE_SEQUENCE,
+            VR::SQ,
+            Value::Sequence(DataSetSequence::new(vec![purpose], Length::UNDEFINED)),
+        ));
+        item
+    }
+
+    fn sequence_of(tag: Tag, items: Vec<InMemDicomObject>) -> DataElement<InMemDicomObject> {
+        DataElement::new(
+            tag,
+            VR::SQ,
+            Value::Sequence(DataSetSequence::new(items, Length::UNDEFINED)),
+        )
+    }
+
+    #[test]
+    fn siemens_xa_localizer_reference_is_accepted_at_source_only() {
+        // Shape written by syngo MR XA30: four standard attributes, no Philips
+        // private duplicate, no Context UID on the purpose code.
+        let source = sequence_of(
+            REFERENCED_IMAGE_SEQUENCE,
+            vec![siemens_xa_localizer_reference(false)],
+        );
+        validate_referenced_image_sequence(&source, ReferenceValidationStage::Source).unwrap();
+        assert!(
+            validate_referenced_image_sequence(&source, ReferenceValidationStage::Sanitized)
+                .is_err()
+        );
+
+        let pseudonymizer =
+            Pseudonymizer::from_base64("AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=").unwrap();
+        let mut remapper = UidRemapper {
+            pseudonymizer: &pseudonymizer,
+            mapped: HashMap::new(),
+        };
+        let rebuilt = rebuild_referenced_image_sequence(source.value(), &mut remapper).unwrap();
+        let rebuilt = DataElement::new(REFERENCED_IMAGE_SEQUENCE, VR::SQ, rebuilt);
+        validate_referenced_image_sequence(&rebuilt, ReferenceValidationStage::Sanitized).unwrap();
+    }
+
+    #[test]
+    fn root_evidence_sequence_is_skipped_at_source_and_rejected_after_sanitizing() {
+        let evidence = sequence_of(
+            REFERENCED_IMAGE_EVIDENCE_SEQUENCE,
+            vec![siemens_xa_localizer_reference(false)],
+        );
+        let mut object = InMemDicomObject::new_empty();
+        object.put(evidence);
+        validate_reference_semantics(&object, 0, ReferenceValidationStage::Source, false).unwrap();
+        assert!(
+            validate_reference_semantics(&object, 0, ReferenceValidationStage::Sanitized, false)
+                .is_err()
+        );
+        assert!(!public_attribute_allowed(
+            REFERENCED_IMAGE_EVIDENCE_SEQUENCE,
+            VR::SQ
+        ));
+    }
+
+    fn siemens_xa_receive_coil(name: &str, element_name: &str) -> DataElement<InMemDicomObject> {
+        let mut coil_element = InMemDicomObject::new_empty();
+        coil_element.put_str(MULTI_COIL_ELEMENT_NAME, VR::SH, element_name);
+        coil_element.put_str(MULTI_COIL_ELEMENT_USED, VR::CS, "YES");
+        let mut coil = InMemDicomObject::new_empty();
+        coil.put_str(RECEIVE_COIL_NAME, VR::SH, name);
+        coil.put_str(RECEIVE_COIL_MANUFACTURER_NAME, VR::LO, "NN");
+        coil.put_str(RECEIVE_COIL_TYPE, VR::CS, "MULTICOIL");
+        coil.put_str(QUADRATURE_RECEIVE_COIL, VR::CS, "NO");
+        coil.put(sequence_of(
+            MULTI_COIL_DEFINITION_SEQUENCE,
+            vec![coil_element],
+        ));
+        sequence_of(MR_RECEIVE_COIL_SEQUENCE, vec![coil])
+    }
+
+    #[test]
+    fn siemens_xa_coil_labels_are_rebuilt_to_canonical_labels() {
+        let (value, elements) =
+            rebuild_multi_coil_receive_sequence(&siemens_xa_receive_coil("HeadNeck_64", "H55"))
+                .unwrap()
+                .unwrap();
+        assert_eq!(elements, 1);
+        let coil = &value.items().unwrap()[0];
+        assert_eq!(
+            root_text(coil, RECEIVE_COIL_NAME, VR::SH).as_deref(),
+            Some("MULTI_COIL")
+        );
+        let element = &exact_sequence_items(coil, MULTI_COIL_DEFINITION_SEQUENCE).unwrap()[0];
+        assert_eq!(
+            root_text(element, MULTI_COIL_ELEMENT_NAME, VR::SH).as_deref(),
+            Some("MULTI_ELEMENT")
+        );
+
+        for (name, element_name) in [("Head coil A", "H55"), ("HeadNeck_64", "H5;H6")] {
+            assert!(
+                rebuild_multi_coil_receive_sequence(&siemens_xa_receive_coil(name, element_name))
+                    .is_err()
+            );
+        }
+    }
+
+    #[test]
+    fn only_an_empty_spatial_saturation_macro_is_accepted() {
+        let root = InMemDicomObject::new_empty();
+        let mut container = InMemDicomObject::new_empty();
+        container.put(sequence_of(MR_SPATIAL_SATURATION_SEQUENCE, Vec::new()));
+        validate_source_functional_group_container(
+            &root,
+            &container,
+            MrImageTypeProfile::Enhanced,
+            true,
+        )
+        .unwrap();
+
+        let mut slab = InMemDicomObject::new_empty();
+        slab.put_str(Tag(0x0018, 0x9104), VR::FD, "20");
+        let mut container = InMemDicomObject::new_empty();
+        container.put(sequence_of(MR_SPATIAL_SATURATION_SEQUENCE, vec![slab]));
+        let error = validate_source_functional_group_container(
+            &root,
+            &container,
+            MrImageTypeProfile::Enhanced,
+            true,
+        )
+        .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("unsupported functional-group macro")
+        );
+    }
+
+    #[test]
+    fn siemens_xa_private_functional_group_blocks_are_accepted_by_creator() {
+        let root = InMemDicomObject::new_empty();
+        let mut siemens = InMemDicomObject::new_empty();
+        siemens.put_str(Tag(0x0021, 0x0010), VR::LO, "SIEMENS MR SDS 01");
+        siemens.put(sequence_of(
+            Tag(0x0021, 0x10fe),
+            vec![InMemDicomObject::new_empty()],
+        ));
+        validate_source_functional_group_container(
+            &root,
+            &siemens,
+            MrImageTypeProfile::Enhanced,
+            true,
+        )
+        .unwrap();
+
+        let mut other = InMemDicomObject::new_empty();
+        other.put_str(Tag(0x0021, 0x0010), VR::LO, "ACME PRIVATE");
+        other.put(sequence_of(
+            Tag(0x0021, 0x10fe),
+            vec![InMemDicomObject::new_empty()],
+        ));
+        assert!(
+            validate_source_functional_group_container(
+                &root,
+                &other,
+                MrImageTypeProfile::Enhanced,
+                true,
+            )
+            .is_err()
+        );
+    }
+
+    fn siemens_ctmr(value: &str, meaning: &str) -> InMemDicomObject {
+        let mut code = InMemDicomObject::new_empty();
+        code.put_str(Tag(0x0008, 0x0100), VR::SH, value);
+        code.put_str(Tag(0x0008, 0x0102), VR::SH, "99SMS_CTMR");
+        code.put_str(Tag(0x0008, 0x0103), VR::SH, "1.0");
+        code.put_str(Tag(0x0008, 0x0104), VR::LO, meaning);
+        code
+    }
+
+    fn siemens_xa_context(technique: &str) -> Vec<InMemDicomObject> {
+        let mut item = InMemDicomObject::new_empty();
+        item.put_str(Tag(0x0040, 0xa040), VR::CS, "CODE");
+        item.put(sequence_of(
+            Tag(0x0040, 0xa043),
+            vec![siemens_ctmr("A-52", "MR Technique")],
+        ));
+        item.put(sequence_of(
+            Tag(0x0040, 0xa168),
+            vec![siemens_ctmr("A-206", technique)],
+        ));
+        vec![item]
+    }
+
+    #[test]
+    fn only_the_siemens_xa_bold_acquisition_context_is_accepted() {
+        assert!(siemens_xa_bold_context(&siemens_xa_context("BOLD")));
+        assert!(!siemens_xa_bold_context(&siemens_xa_context("ASL")));
+
+        let mut with_text = siemens_xa_context("BOLD");
+        with_text[0].put_str(Tag(0x0040, 0xa160), VR::UT, "patient anxious");
+        assert!(!siemens_xa_bold_context(&with_text));
+
+        let mut twice = siemens_xa_context("BOLD");
+        twice.extend(siemens_xa_context("BOLD"));
+        assert!(!siemens_xa_bold_context(&twice));
+    }
 
     #[test]
     fn archive_identity_is_stable_across_binary_patches_but_changes_with_contract() {
