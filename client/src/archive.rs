@@ -4657,6 +4657,15 @@ fn canonical_multi_coil_name_alias(value: &str) -> Option<&'static str> {
     }
 }
 
+/// One SH token of ASCII letters, digits, `_` or `-`: no spaces, so no
+/// free text. The value is only checked, never written.
+fn coil_product_label(value: &str) -> bool {
+    (1..=16).contains(&value.len())
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
+}
+
 fn canonical_multi_coil_element_alias(value: &str) -> Option<&'static str> {
     match value
         .trim_matches([' ', '\0'])
@@ -4671,8 +4680,11 @@ fn canonical_multi_coil_element_alias(value: &str) -> Option<&'static str> {
 /// Validate and atomically rebuild the conditional Enhanced MR multi-coil
 /// macro. `None` means the receive-coil macro is not a multi-coil macro and is
 /// left to the normal field-level sanitizer. A multi-coil surface is never
-/// partially accepted: arbitrary coil/element labels, configuration text,
+/// partially accepted: free-text coil/element labels, configuration text,
 /// extra fields, wrong VR/VM, or incomplete items reject the source object.
+/// Generic aliases and single-token product labels (Siemens XA writes e.g.
+/// `HeadNeck_64` and `H55`) are accepted; neither is written, because the
+/// rebuilt macro carries only the fixed canonical labels.
 type RebuiltMultiCoilSequence = Option<(Value<InMemDicomObject, Vec<u8>>, usize)>;
 
 fn rebuild_multi_coil_receive_sequence(
@@ -4708,7 +4720,10 @@ fn rebuild_multi_coil_receive_sequence(
         bail!("Enhanced MR multi-coil receive macro has an unsupported field surface");
     }
     let name = root_text(source, RECEIVE_COIL_NAME, VR::SH)
-        .and_then(|value| canonical_multi_coil_name_alias(&value))
+        .and_then(|value| {
+            canonical_multi_coil_name_alias(&value)
+                .or_else(|| coil_product_label(&value).then_some("MULTI_COIL"))
+        })
         .context("Enhanced MR multi-coil receive name is not an exact generic alias")?;
     if name != "MULTI_COIL"
         || source
@@ -4743,7 +4758,10 @@ fn rebuild_multi_coil_receive_sequence(
             bail!("Enhanced MR multi-coil definition item has an unsupported field surface");
         }
         let element_name = root_text(source_element, MULTI_COIL_ELEMENT_NAME, VR::SH)
-            .and_then(|value| canonical_multi_coil_element_alias(&value))
+            .and_then(|value| {
+                canonical_multi_coil_element_alias(&value)
+                    .or_else(|| coil_product_label(&value).then_some("MULTI_ELEMENT"))
+            })
             .context("Enhanced MR multi-coil element name is not an exact generic alias")?;
         let used = root_text(source_element, MULTI_COIL_ELEMENT_USED, VR::CS)
             .filter(|value| matches!(value.as_str(), "YES" | "NO"))
@@ -6799,6 +6817,48 @@ mod tests {
             REFERENCED_IMAGE_EVIDENCE_SEQUENCE,
             VR::SQ
         ));
+    }
+
+    fn siemens_xa_receive_coil(name: &str, element_name: &str) -> DataElement<InMemDicomObject> {
+        let mut coil_element = InMemDicomObject::new_empty();
+        coil_element.put_str(MULTI_COIL_ELEMENT_NAME, VR::SH, element_name);
+        coil_element.put_str(MULTI_COIL_ELEMENT_USED, VR::CS, "YES");
+        let mut coil = InMemDicomObject::new_empty();
+        coil.put_str(RECEIVE_COIL_NAME, VR::SH, name);
+        coil.put_str(RECEIVE_COIL_MANUFACTURER_NAME, VR::LO, "NN");
+        coil.put_str(RECEIVE_COIL_TYPE, VR::CS, "MULTICOIL");
+        coil.put_str(QUADRATURE_RECEIVE_COIL, VR::CS, "NO");
+        coil.put(sequence_of(
+            MULTI_COIL_DEFINITION_SEQUENCE,
+            vec![coil_element],
+        ));
+        sequence_of(MR_RECEIVE_COIL_SEQUENCE, vec![coil])
+    }
+
+    #[test]
+    fn siemens_xa_coil_labels_are_rebuilt_to_canonical_labels() {
+        let (value, elements) =
+            rebuild_multi_coil_receive_sequence(&siemens_xa_receive_coil("HeadNeck_64", "H55"))
+                .unwrap()
+                .unwrap();
+        assert_eq!(elements, 1);
+        let coil = &value.items().unwrap()[0];
+        assert_eq!(
+            root_text(coil, RECEIVE_COIL_NAME, VR::SH).as_deref(),
+            Some("MULTI_COIL")
+        );
+        let element = &exact_sequence_items(coil, MULTI_COIL_DEFINITION_SEQUENCE).unwrap()[0];
+        assert_eq!(
+            root_text(element, MULTI_COIL_ELEMENT_NAME, VR::SH).as_deref(),
+            Some("MULTI_ELEMENT")
+        );
+
+        for (name, element_name) in [("Head coil A", "H55"), ("HeadNeck_64", "H5;H6")] {
+            assert!(
+                rebuild_multi_coil_receive_sequence(&siemens_xa_receive_coil(name, element_name))
+                    .is_err()
+            );
+        }
     }
 
     #[test]
