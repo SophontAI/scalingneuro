@@ -95,6 +95,7 @@ const MULTI_COIL_ELEMENT_NAME: Tag = Tag(0x0018, 0x9047);
 const MULTI_COIL_ELEMENT_USED: Tag = Tag(0x0018, 0x9048);
 const MAX_MULTI_COIL_ELEMENTS: usize = 256;
 const MR_TRANSMIT_COIL_SEQUENCE: Tag = Tag(0x0018, 0x9049);
+const MR_SPATIAL_SATURATION_SEQUENCE: Tag = Tag(0x0018, 0x9107);
 const TRANSMIT_COIL_NAME: Tag = Tag(0x0018, 0x1251);
 const TRANSMIT_COIL_MANUFACTURER_NAME: Tag = Tag(0x0018, 0x9050);
 const TRANSMIT_COIL_TYPE: Tag = Tag(0x0018, 0x9051);
@@ -4461,11 +4462,20 @@ fn validate_source_functional_group_container(
             profile == MrImageTypeProfile::Enhanced && shared && tag == REFERENCED_IMAGE_SEQUENCE;
         let metabolite_map =
             profile == MrImageTypeProfile::Enhanced && !shared && tag == MR_METABOLITE_MAP_SEQUENCE;
+        // Siemens XA always writes this Type 2 macro. An empty one says no
+        // saturation slabs were used; slab geometry is not reviewed yet.
+        let empty_spatial_saturation = profile == MrImageTypeProfile::Enhanced
+            && tag == MR_SPATIAL_SATURATION_SEQUENCE
+            && element
+                .value()
+                .items()
+                .is_some_and(|items| items.is_empty());
         if !(common
             || profile == MrImageTypeProfile::Enhanced && current_enhanced
             || profile == MrImageTypeProfile::LegacyConvertedEnhanced && legacy_converted
             || referenced_image
-            || metabolite_map)
+            || metabolite_map
+            || empty_spatial_saturation)
         {
             bail!("Enhanced MR contains an unsupported functional-group macro {tag}");
         }
@@ -6859,6 +6869,37 @@ mod tests {
                     .is_err()
             );
         }
+    }
+
+    #[test]
+    fn only_an_empty_spatial_saturation_macro_is_accepted() {
+        let root = InMemDicomObject::new_empty();
+        let mut container = InMemDicomObject::new_empty();
+        container.put(sequence_of(MR_SPATIAL_SATURATION_SEQUENCE, Vec::new()));
+        validate_source_functional_group_container(
+            &root,
+            &container,
+            MrImageTypeProfile::Enhanced,
+            true,
+        )
+        .unwrap();
+
+        let mut slab = InMemDicomObject::new_empty();
+        slab.put_str(Tag(0x0018, 0x9104), VR::FD, "20");
+        let mut container = InMemDicomObject::new_empty();
+        container.put(sequence_of(MR_SPATIAL_SATURATION_SEQUENCE, vec![slab]));
+        let error = validate_source_functional_group_container(
+            &root,
+            &container,
+            MrImageTypeProfile::Enhanced,
+            true,
+        )
+        .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("unsupported functional-group macro")
+        );
     }
 
     #[test]
