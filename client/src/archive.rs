@@ -900,8 +900,9 @@ fn prepare_sanitized_dicom<F: FnMut(u64)>(
         sanitized.put_str(Tag(0x0008, 0x0023), VR::DA, ENHANCED_CONTENT_DATE_SENTINEL);
         sanitized.put_str(Tag(0x0008, 0x0033), VR::TM, ENHANCED_CONTENT_TIME_SENTINEL);
         // Acquisition Context is Type 2 for both Enhanced MR IODs. Source
-        // contexts are accepted only when already empty; write a canonical
-        // zero-item shell so the privacy and conformance contracts agree.
+        // contexts are accepted only when already empty or the exact Siemens
+        // XA BOLD technique code; write a canonical zero-item shell so the
+        // privacy and conformance contracts agree.
         sanitized.put(DataElement::new(
             ACQUISITION_CONTEXT_SEQUENCE,
             VR::SQ,
@@ -4328,6 +4329,34 @@ fn validate_source_image_sequence(
     Ok(())
 }
 
+/// Siemens XA records "MR Technique: BOLD" in its private 99SMS_CTMR coding
+/// scheme. It only restates the functional EPI classification, which the
+/// manifest already carries, so dropping it to the empty shell loses nothing
+/// that is archived today. Any other context is still held.
+fn siemens_xa_bold_context(items: &[InMemDicomObject]) -> bool {
+    let [item] = items else {
+        return false;
+    };
+    item.iter().count() == 3
+        && root_text(item, Tag(0x0040, 0xa040), VR::CS).as_deref() == Some("CODE")
+        && siemens_ctmr_code(item, Tag(0x0040, 0xa043), "MR Technique")
+        && siemens_ctmr_code(item, Tag(0x0040, 0xa168), "BOLD")
+}
+
+fn siemens_ctmr_code(item: &InMemDicomObject, tag: Tag, meaning: &str) -> bool {
+    let Some([code]) = exact_sequence_items(item, tag) else {
+        return false;
+    };
+    code.iter().all(|element| {
+        matches!(
+            element.tag(),
+            Tag(0x0008, 0x0100) | Tag(0x0008, 0x0102) | Tag(0x0008, 0x0103) | Tag(0x0008, 0x0104)
+        )
+    }) && root_text(code, Tag(0x0008, 0x0100), VR::SH).is_some()
+        && root_text(code, Tag(0x0008, 0x0102), VR::SH).as_deref() == Some("99SMS_CTMR")
+        && root_text(code, Tag(0x0008, 0x0104), VR::LO).as_deref() == Some(meaning)
+}
+
 fn validate_source_enhanced_mr_surface(
     object: &InMemDicomObject,
     profile: MrImageTypeProfile,
@@ -4341,7 +4370,7 @@ fn validate_source_enhanced_mr_surface(
             || context
                 .value()
                 .items()
-                .is_none_or(|items| !items.is_empty())
+                .is_none_or(|items| !items.is_empty() && !siemens_xa_bold_context(items))
         {
             bail!(
                 "Enhanced MR Acquisition Context is non-empty and cannot yet be de-identified without semantic loss"
@@ -6957,6 +6986,43 @@ mod tests {
             )
             .is_err()
         );
+    }
+
+    fn siemens_ctmr(value: &str, meaning: &str) -> InMemDicomObject {
+        let mut code = InMemDicomObject::new_empty();
+        code.put_str(Tag(0x0008, 0x0100), VR::SH, value);
+        code.put_str(Tag(0x0008, 0x0102), VR::SH, "99SMS_CTMR");
+        code.put_str(Tag(0x0008, 0x0103), VR::SH, "1.0");
+        code.put_str(Tag(0x0008, 0x0104), VR::LO, meaning);
+        code
+    }
+
+    fn siemens_xa_context(technique: &str) -> Vec<InMemDicomObject> {
+        let mut item = InMemDicomObject::new_empty();
+        item.put_str(Tag(0x0040, 0xa040), VR::CS, "CODE");
+        item.put(sequence_of(
+            Tag(0x0040, 0xa043),
+            vec![siemens_ctmr("A-52", "MR Technique")],
+        ));
+        item.put(sequence_of(
+            Tag(0x0040, 0xa168),
+            vec![siemens_ctmr("A-206", technique)],
+        ));
+        vec![item]
+    }
+
+    #[test]
+    fn only_the_siemens_xa_bold_acquisition_context_is_accepted() {
+        assert!(siemens_xa_bold_context(&siemens_xa_context("BOLD")));
+        assert!(!siemens_xa_bold_context(&siemens_xa_context("ASL")));
+
+        let mut with_text = siemens_xa_context("BOLD");
+        with_text[0].put_str(Tag(0x0040, 0xa160), VR::UT, "patient anxious");
+        assert!(!siemens_xa_bold_context(&with_text));
+
+        let mut twice = siemens_xa_context("BOLD");
+        twice.extend(siemens_xa_context("BOLD"));
+        assert!(!siemens_xa_bold_context(&twice));
     }
 
     #[test]
