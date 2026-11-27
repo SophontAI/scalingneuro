@@ -104,6 +104,7 @@ const UNASSIGNED_PER_FRAME_CONVERTED_ATTRIBUTES_SEQUENCE: Tag = Tag(0x0020, 0x91
 const CONVERSION_SOURCE_ATTRIBUTES_SEQUENCE: Tag = Tag(0x0020, 0x9172);
 const REFERENCED_IMAGE_SEQUENCE: Tag = Tag(0x0008, 0x1140);
 const SOURCE_IMAGE_SEQUENCE: Tag = Tag(0x0008, 0x2112);
+const REFERENCED_IMAGE_EVIDENCE_SEQUENCE: Tag = Tag(0x0008, 0x9092);
 const DERIVATION_IMAGE_SEQUENCE: Tag = Tag(0x0008, 0x9124);
 const DERIVATION_CODE_SEQUENCE: Tag = Tag(0x0008, 0x9215);
 const PURPOSE_OF_REFERENCE_CODE_SEQUENCE: Tag = Tag(0x0040, 0xa170);
@@ -3986,6 +3987,16 @@ fn validate_reference_semantics(
         PURPOSE_OF_REFERENCE_CODE_SEQUENCE,
     ];
     for element in object.iter() {
+        // Siemens XA writes a root Referenced Image Evidence Sequence that
+        // repeats the localizer reference with its purpose code. It is not
+        // allowlisted, so sanitize_dataset drops the whole subtree; the
+        // Sanitized-stage pass still rejects it if it ever survives.
+        if stage == ReferenceValidationStage::Source
+            && depth == 0
+            && element.tag() == REFERENCED_IMAGE_EVIDENCE_SEQUENCE
+        {
+            continue;
+        }
         if UNSUPPORTED_REFERENCE_SEMANTICS.contains(&element.tag()) {
             bail!(
                 "DICOM contains derived/reference semantics that cannot yet be preserved atomically"
@@ -4144,7 +4155,11 @@ fn validate_referenced_image_sequence(
         .filter(|items| !items.is_empty() && items.len() <= MAX_SEQUENCE_ITEMS)
         .context("DICOM Referenced Image Sequence is empty or exceeds the bounded item limit")?;
     for item in items {
-        let expected_count = if stage == ReferenceValidationStage::Source {
+        // Philips adds a private creator and a private duplicate of the
+        // instance UID; Siemens XA writes only the four standard attributes.
+        // Both are rebuilt into the same canonical four-attribute item.
+        let philips_private = item.get(Tag(0x2005, 0x0014)).is_some();
+        let expected_count = if stage == ReferenceValidationStage::Source && philips_private {
             6
         } else {
             4
@@ -4189,9 +4204,9 @@ fn validate_referenced_image_sequence(
         if stage == ReferenceValidationStage::Sanitized && frame_text != frame.to_string() {
             bail!("sanitized DICOM retained a non-canonical referenced frame");
         }
-        validate_localizer_purpose_code(item)?;
+        validate_localizer_purpose_code(item, stage)?;
 
-        if stage == ReferenceValidationStage::Source {
+        if stage == ReferenceValidationStage::Source && philips_private {
             if root_text(item, Tag(0x2005, 0x0014), VR::LO).as_deref()
                 != Some("Philips MR Imaging DD 005")
             {
@@ -4207,12 +4222,18 @@ fn validate_referenced_image_sequence(
     Ok(())
 }
 
-fn validate_localizer_purpose_code(item: &InMemDicomObject) -> Result<()> {
+fn validate_localizer_purpose_code(
+    item: &InMemDicomObject,
+    stage: ReferenceValidationStage,
+) -> Result<()> {
     let purpose = exact_sequence_items(item, PURPOSE_OF_REFERENCE_CODE_SEQUENCE)
         .filter(|items| items.len() == 1)
         .context("DICOM Referenced Image Sequence has an invalid purpose code sequence")?;
     let purpose = &purpose[0];
-    if purpose.iter().count() != 4
+    // Siemens XA omits the optional Context UID; the rebuilt code always has it.
+    let context_uid_optional =
+        stage == ReferenceValidationStage::Source && purpose.get(Tag(0x0008, 0x0117)).is_none();
+    if purpose.iter().count() != 4 - usize::from(context_uid_optional)
         || purpose.iter().any(|element| {
             !matches!(
                 element.tag(),
@@ -4225,8 +4246,9 @@ fn validate_localizer_purpose_code(item: &InMemDicomObject) -> Result<()> {
         || root_text(purpose, Tag(0x0008, 0x0100), VR::SH).as_deref() != Some("121311")
         || root_text(purpose, Tag(0x0008, 0x0102), VR::SH).as_deref() != Some("DCM")
         || root_text(purpose, Tag(0x0008, 0x0104), VR::LO).as_deref() != Some("Localizer")
-        || root_text(purpose, Tag(0x0008, 0x0117), VR::UI).as_deref()
-            != Some(LOCALIZER_PURPOSE_CONTEXT_UID)
+        || !context_uid_optional
+            && root_text(purpose, Tag(0x0008, 0x0117), VR::UI).as_deref()
+                != Some(LOCALIZER_PURPOSE_CONTEXT_UID)
     {
         bail!("DICOM Referenced Image Sequence has an unsupported purpose code");
     }
@@ -6706,6 +6728,78 @@ fn archive_writer_contract() -> ArchiveWriterContract {
 mod tests {
     use super::*;
     use crate::model::{ClassificationDecision, ClassificationEvidence};
+
+    fn siemens_xa_localizer_reference(context_uid: bool) -> InMemDicomObject {
+        let mut purpose = InMemDicomObject::new_empty();
+        purpose.put_str(Tag(0x0008, 0x0100), VR::SH, "121311");
+        purpose.put_str(Tag(0x0008, 0x0102), VR::SH, "DCM");
+        purpose.put_str(Tag(0x0008, 0x0104), VR::LO, "Localizer");
+        if context_uid {
+            purpose.put_str(Tag(0x0008, 0x0117), VR::UI, LOCALIZER_PURPOSE_CONTEXT_UID);
+        }
+        let mut item = InMemDicomObject::new_empty();
+        item.put_str(Tag(0x0008, 0x1150), VR::UI, ENHANCED_MR_IMAGE_STORAGE_UID);
+        item.put_str(Tag(0x0008, 0x1155), VR::UI, "1.3.12.2.1107.5.2.43.1");
+        item.put_str(Tag(0x0008, 0x1160), VR::IS, "48");
+        item.put(DataElement::new(
+            PURPOSE_OF_REFERENCE_CODE_SEQUENCE,
+            VR::SQ,
+            Value::Sequence(DataSetSequence::new(vec![purpose], Length::UNDEFINED)),
+        ));
+        item
+    }
+
+    fn sequence_of(tag: Tag, items: Vec<InMemDicomObject>) -> DataElement<InMemDicomObject> {
+        DataElement::new(
+            tag,
+            VR::SQ,
+            Value::Sequence(DataSetSequence::new(items, Length::UNDEFINED)),
+        )
+    }
+
+    #[test]
+    fn siemens_xa_localizer_reference_is_accepted_at_source_only() {
+        // Shape written by syngo MR XA30: four standard attributes, no Philips
+        // private duplicate, no Context UID on the purpose code.
+        let source = sequence_of(
+            REFERENCED_IMAGE_SEQUENCE,
+            vec![siemens_xa_localizer_reference(false)],
+        );
+        validate_referenced_image_sequence(&source, ReferenceValidationStage::Source).unwrap();
+        assert!(
+            validate_referenced_image_sequence(&source, ReferenceValidationStage::Sanitized)
+                .is_err()
+        );
+
+        let pseudonymizer =
+            Pseudonymizer::from_base64("AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=").unwrap();
+        let mut remapper = UidRemapper {
+            pseudonymizer: &pseudonymizer,
+            mapped: HashMap::new(),
+        };
+        let rebuilt = rebuild_referenced_image_sequence(source.value(), &mut remapper).unwrap();
+        let rebuilt = DataElement::new(REFERENCED_IMAGE_SEQUENCE, VR::SQ, rebuilt);
+        validate_referenced_image_sequence(&rebuilt, ReferenceValidationStage::Sanitized).unwrap();
+    }
+
+    #[test]
+    fn root_evidence_sequence_is_skipped_at_source_and_rejected_after_sanitizing() {
+        let evidence = sequence_of(
+            REFERENCED_IMAGE_EVIDENCE_SEQUENCE,
+            vec![siemens_xa_localizer_reference(false)],
+        );
+        let mut object = InMemDicomObject::new_empty();
+        object.put(evidence);
+        validate_reference_semantics(&object, 0, ReferenceValidationStage::Source, false).unwrap();
+        assert!(
+            validate_reference_semantics(&object, 0, ReferenceValidationStage::Sanitized, false)
+                .is_err()
+        );
+        assert!(!public_attribute_allowed(
+            REFERENCED_IMAGE_EVIDENCE_SEQUENCE,
+            VR::SQ
+        ));
+    }
 
     #[test]
     fn archive_identity_is_stable_across_binary_patches_but_changes_with_contract() {
