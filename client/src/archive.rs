@@ -4418,12 +4418,18 @@ fn validate_source_functional_group_container(
             validate_philips_per_frame_functional_group_duplicate(sequence)?;
         }
     }
+    let creators = private_creators(container);
     for element in container.iter() {
         let tag = element.tag();
         if matches!(
             tag,
             Tag(0x2005, 0x0014) | Tag(0x2005, 0x140e) | Tag(0x2005, 0x140f)
         ) {
+            continue;
+        }
+        if profile == MrImageTypeProfile::Enhanced
+            && siemens_xa_functional_group_private(&creators, tag)
+        {
             continue;
         }
         if element.vr() != VR::SQ {
@@ -4514,6 +4520,23 @@ fn validate_source_functional_group_container(
         }
     }
     Ok(())
+}
+
+/// Siemens XA keeps vendor data in private SDS (shared) and SDI (per-frame)
+/// blocks inside functional groups. Nothing is read from them, and
+/// sanitize_dataset default-drops all private data, so none of it is archived.
+fn siemens_xa_functional_group_private(creators: &BTreeMap<Tag, String>, tag: Tag) -> bool {
+    if tag.group() != 0x0021 {
+        return false;
+    }
+    let creator = if (0x0010..=0x00ff).contains(&tag.element()) {
+        tag
+    } else {
+        Tag(0x0021, tag.element() >> 8)
+    };
+    ["SIEMENS MR SDS 01", "SIEMENS MR SDI 02"]
+        .iter()
+        .any(|expected| creators_match(creators, creator, expected))
 }
 
 fn validate_philips_shared_functional_group_duplicate(
@@ -6899,6 +6922,40 @@ mod tests {
             error
                 .to_string()
                 .contains("unsupported functional-group macro")
+        );
+    }
+
+    #[test]
+    fn siemens_xa_private_functional_group_blocks_are_accepted_by_creator() {
+        let root = InMemDicomObject::new_empty();
+        let mut siemens = InMemDicomObject::new_empty();
+        siemens.put_str(Tag(0x0021, 0x0010), VR::LO, "SIEMENS MR SDS 01");
+        siemens.put(sequence_of(
+            Tag(0x0021, 0x10fe),
+            vec![InMemDicomObject::new_empty()],
+        ));
+        validate_source_functional_group_container(
+            &root,
+            &siemens,
+            MrImageTypeProfile::Enhanced,
+            true,
+        )
+        .unwrap();
+
+        let mut other = InMemDicomObject::new_empty();
+        other.put_str(Tag(0x0021, 0x0010), VR::LO, "ACME PRIVATE");
+        other.put(sequence_of(
+            Tag(0x0021, 0x10fe),
+            vec![InMemDicomObject::new_empty()],
+        ));
+        assert!(
+            validate_source_functional_group_container(
+                &root,
+                &other,
+                MrImageTypeProfile::Enhanced,
+                true,
+            )
+            .is_err()
         );
     }
 
